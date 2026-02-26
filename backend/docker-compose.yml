@@ -1,0 +1,16 @@
+﻿services:
+  db:
+    image: postgres:16
+    container_name: cookops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cookops
+      POSTGRES_USER: cookops
+      POSTGRES_PASSWORD: cookops
+    ports:
+      - "5433:5432"
+    volumes:
+      - cookops_pg_data:/var/lib/postgresql/data
+
+volumes:
+  cookops_pg_data:

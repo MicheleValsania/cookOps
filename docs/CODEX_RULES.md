@@ -1,0 +1,7 @@
+- Usa UUIDField(primary_key=True, default=uuid4)
+- Usa TextChoices per enum
+- No business logic nei serializer
+- Usa services.py per logica complessa
+- No raw SQL
+- Test obbligatori per ogni endpoint
+- Strict typing

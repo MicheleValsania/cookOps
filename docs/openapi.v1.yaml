@@ -1,0 +1,168 @@
+openapi: 3.0.3
+info:
+  title: CookOps API
+  version: 0.1.0
+servers:
+  - url: http://localhost:4001/api/v1
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    UUID:
+      type: string
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+    Qty:
+      type: object
+      additionalProperties: false
+      required: [value, unit]
+      properties:
+        value: { type: number, exclusiveMinimum: 0 }
+        unit: { type: string, enum: [kg, g, l, ml, cl, pc] }
+paths:
+  /health:
+    get:
+      summary: Healthcheck
+      responses:
+        '200': { description: OK }
+  /suppliers:
+    get:
+      summary: List suppliers
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Upsert supplier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                vat_number: { type: string }
+                metadata: { type: object }
+      responses:
+        '200': { description: OK }
+  /suppliers/{supplierId}/products:
+    get:
+      summary: List supplier products
+      parameters:
+        - in: path
+          name: supplierId
+          required: true
+          schema: { $ref: '#/components/schemas/UUID' }
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Upsert supplier product
+      parameters:
+        - in: path
+          name: supplierId
+          required: true
+          schema: { $ref: '#/components/schemas/UUID' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, uom]
+              properties:
+                name: { type: string }
+                supplier_sku: { type: string }
+                ean: { type: string }
+                uom: { type: string, enum: [kg, g, l, ml, cl, pc] }
+                pack_qty: { type: number }
+                active: { type: boolean }
+                traceability_flag: { type: boolean }
+                allergens: { type: array, items: { type: string } }
+      responses:
+        '200': { description: OK }
+  /goods-receipts:
+    post:
+      summary: Create goods receipt (BL)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [site_id, supplier_id, delivery_note_number, received_at, lines]
+              properties:
+                site_id: { $ref: '#/components/schemas/UUID' }
+                supplier_id: { $ref: '#/components/schemas/UUID' }
+                delivery_note_number: { type: string }
+                received_at: { type: string, format: date-time }
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    required: [qty]
+                    properties:
+                      supplier_product_id: { $ref: '#/components/schemas/UUID' }
+                      raw_product_name: { type: string }
+                      supplier_lot_code: { type: string }
+                      dlc_date: { type: string, format: date }
+                      qty: { $ref: '#/components/schemas/Qty' }
+                      unit_price: { type: number }
+      responses:
+        '200': { description: OK }
+  /lots:
+    post:
+      summary: Create lot (from Traccia)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [site_id, source_type, internal_lot_code, qty]
+              properties:
+                site_id: { $ref: '#/components/schemas/UUID' }
+                source_type: { type: string, enum: [supplier_product, recipe] }
+                supplier_product_id: { $ref: '#/components/schemas/UUID' }
+                fiche_product_id: { $ref: '#/components/schemas/UUID' }
+                recipe_snapshot_hash: { type: string }
+                supplier_lot_code: { type: string }
+                internal_lot_code: { type: string }
+                received_at: { type: string, format: date-time }
+                production_date: { type: string, format: date }
+                dlc_date: { type: string, format: date }
+                qty: { $ref: '#/components/schemas/Qty' }
+                storage_location: { type: string }
+      responses:
+        '200': { description: OK }
+  /pos/import/daily:
+    post:
+      summary: Import daily POS sales (aggregated)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [site_id, pos_source_id, sales_date, lines]
+              properties:
+                site_id: { $ref: '#/components/schemas/UUID' }
+                pos_source_id: { $ref: '#/components/schemas/UUID' }
+                sales_date: { type: string, format: date }
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    required: [pos_name, qty]
+                    properties:
+                      pos_item_external_id: { type: string }
+                      pos_name: { type: string }
+                      qty: { type: number }
+                      gross: { type: number }
+                      net: { type: number }
+                      vat_rate: { type: number }
+      responses:
+        '200': { description: OK }
