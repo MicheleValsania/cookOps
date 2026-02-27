@@ -42,6 +42,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "apps.core.api.cors.SimpleCORSMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -109,6 +110,12 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 COOKOPS_API_KEYS = [
     item.strip()
     for item in os.getenv("COOKOPS_API_KEYS", "dev-api-key").split(",")
+    if item.strip()
+]
+
+CORS_ALLOWED_ORIGINS = [
+    item.strip()
+    for item in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
     if item.strip()
 ]
 
