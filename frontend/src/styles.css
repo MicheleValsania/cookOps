@@ -7,8 +7,8 @@
   --panel: #ffffff;
   --line: rgba(15, 23, 42, 0.12);
   --line-soft: rgba(15, 23, 42, 0.08);
-  --accent: #0f766e;
-  --accent-2: #1d4ed8;
+  --accent: #8fbf58;
+  --accent-2: #d6c96e;
   --danger: #dc2626;
   --ok-bg: rgba(236, 253, 245, 0.92);
 }
@@ -162,8 +162,8 @@ body {
 }
 
 .side-btn--active {
-  border-color: rgba(15, 118, 110, 0.35);
-  background: linear-gradient(120deg, rgba(15, 118, 110, 0.1), rgba(29, 78, 216, 0.06));
+  border-color: rgba(143, 191, 88, 0.35);
+  background: linear-gradient(120deg, rgba(143, 191, 88, 0.18), rgba(214, 201, 110, 0.14));
 }
 
 .sidebar--collapsed .sidebar-title,
@@ -193,6 +193,16 @@ body {
   padding: 14px;
 }
 
+.panel h2 {
+  font-size: 1.65rem;
+  line-height: 1.2;
+}
+
+.panel h3 {
+  font-size: 1.15rem;
+  line-height: 1.25;
+}
+
 .page-head h2 {
   margin: 0 0 8px;
   font-size: 24px;
@@ -216,6 +226,10 @@ body {
 
 .grid-2 {
   grid-template-columns: repeat(2, minmax(140px, 1fr));
+}
+
+.grid-single {
+  grid-template-columns: 1fr;
 }
 
 .metric-card strong {
@@ -269,8 +283,8 @@ button {
   margin-top: 10px;
   border: 1px solid transparent;
   border-radius: 12px;
-  background: linear-gradient(120deg, var(--accent), var(--accent-2));
-  color: #fff;
+  background: linear-gradient(120deg, rgba(143, 191, 88, 0.55), rgba(214, 201, 110, 0.55));
+  color: #1f2937;
   font-weight: 700;
   padding: 10px 12px;
   cursor: pointer;
@@ -311,8 +325,8 @@ button:disabled {
 }
 
 .space-tab-btn--active {
-  border-color: rgba(15, 118, 110, 0.35);
-  background: linear-gradient(120deg, rgba(15, 118, 110, 0.15), rgba(29, 78, 216, 0.08));
+  border-color: rgba(143, 191, 88, 0.35);
+  background: linear-gradient(120deg, rgba(143, 191, 88, 0.2), rgba(214, 201, 110, 0.16));
 }
 
 .menu-space-header-row {
@@ -362,13 +376,17 @@ button:disabled {
 
 .entry-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: flex-start;
 }
 
 .entry-actions button {
   width: auto;
   margin-top: 0;
+  min-width: 34px;
+  padding: 6px 8px;
+  font-size: 0.9rem;
+  border-radius: 10px;
 }
 
 .muted {
@@ -529,5 +547,13 @@ hr {
 
   .sidebar.sidebar--open-mobile {
     transform: translateX(0);
+  }
+
+  .panel h2 {
+    font-size: 1.4rem;
+  }
+
+  .panel h3 {
+    font-size: 1rem;
   }
 }

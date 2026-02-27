@@ -767,12 +767,14 @@ function App() {
         </aside>
 
         <main className="content">
-          <section className="panel page-head">
-            <h2>{NAV_ITEMS.find((item) => item.key === nav)?.label}</h2>
-            <p>
-              Punto vendita: <strong>{activeSite?.name ?? "non selezionato"}</strong> | API: {getApiBase()}
-            </p>
-          </section>
+          {nav !== "ricette" ? (
+            <section className="panel page-head">
+              <h2>{NAV_ITEMS.find((item) => item.key === nav)?.label}</h2>
+              <p>
+                Punto vendita: <strong>{activeSite?.name ?? "non selezionato"}</strong> | API: {getApiBase()}
+              </p>
+            </section>
+          ) : null}
 
           {nav === "dashboard" && (
             <section className="grid grid-3">
@@ -786,7 +788,7 @@ function App() {
           )}
 
           {nav === "ricette" && (
-            <div className="grid">
+            <div className="grid grid-single">
               <section className="panel menu-space-panel">
                 <h2>Spazi carta</h2>
                 <div className="space-tabs">
@@ -804,19 +806,9 @@ function App() {
                 {activeMenuSpace ? (
                   <div>
                     <div className="menu-space-header-row">
-                      <div>
-                        <h3>{activeMenuSpace.label}</h3>
-                        <p className="muted">Tipo carta: {activeMenuSpace.type.replace("_", " ")}</p>
-                      </div>
+                      <p className="muted">Tipo carta: {activeMenuSpace.type.replace("_", " ")}</p>
                       <button type="button" onClick={() => openMenuEditor(activeMenuSpace.id)}>Modifica</button>
                     </div>
-                    {activeMenuSpace.sections.length > 0 ? (
-                      <div className="section-tags">
-                        {activeMenuSpace.sections.map((section) => (
-                          <span key={section} className="section-tag">{section}</span>
-                        ))}
-                      </div>
-                    ) : null}
                     <ul className="menu-entry-list">
                       {activeMenuSpace.entries.map((entry, idx) => (
                         <li key={entry.id} className="menu-entry-item">
@@ -843,23 +835,6 @@ function App() {
                 ) : (
                   <p className="muted">Nessuno spazio attivo. Attivalo nei Parametri avanzati.</p>
                 )}
-              </section>
-
-              <section className="panel">
-                <h2>Pianificazione servizio</h2>
-                <label>Data servizio</label>
-                <input value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} type="date" />
-                <h3>Comande aggregate</h3>
-                <ul className="clean-list">
-                  {ordiniPerFornitore.map((r) => (
-                    <li key={r.fornitore}>{r.fornitore}: {r.coperti} coperti previsti</li>
-                  ))}
-                </ul>
-                <ul className="clean-list">
-                  {ordiniPerSettore.map((r) => (
-                    <li key={r.settore}>{r.settore}: {r.coperti} coperti previsti</li>
-                  ))}
-                </ul>
               </section>
             </div>
           )}
