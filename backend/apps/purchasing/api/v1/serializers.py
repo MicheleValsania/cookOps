@@ -44,6 +44,27 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "created_at", "updated_at")
 
+    def validate(self, attrs):
+        supplier = attrs.get("supplier")
+        lines = attrs.get("lines", [])
+        line_errors = []
+        has_errors = False
+
+        for line in lines:
+            supplier_product = line.get("supplier_product")
+            current_error = {}
+            if supplier_product and supplier_product.supplier_id != supplier.id:
+                current_error["supplier_product"] = (
+                    "supplier_product must belong to the selected supplier."
+                )
+                has_errors = True
+            line_errors.append(current_error)
+
+        if has_errors:
+            raise serializers.ValidationError({"lines": line_errors})
+
+        return attrs
+
     def create(self, validated_data):
         lines_data = validated_data.pop("lines", [])
         receipt = GoodsReceipt.objects.create(**validated_data)

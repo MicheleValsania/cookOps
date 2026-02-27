@@ -88,3 +88,23 @@ class PosImportDailyApiTests(APITestCase):
             IntegrationImportBatch.objects.filter(import_type="pos_sales_daily", idempotency_key="idem-pos-001").count(),
             1,
         )
+
+    def test_import_daily_with_pos_source_from_other_site_returns_400(self):
+        other_site = Site.objects.create(name="Site Other", code="SITE-OTHER")
+        foreign_source = PosSource.objects.create(site=other_site, name="Other POS", vendor="Lightspeed")
+        payload = {
+            "site_id": str(self.site.id),
+            "pos_source_id": str(foreign_source.id),
+            "sales_date": "2026-03-01",
+            "lines": [{"pos_name": "Soup", "qty": 2}],
+        }
+
+        response = self.client.post(
+            "/api/v1/pos/import/daily/",
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="pos-foreign-001",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("pos_source_id", response.json())

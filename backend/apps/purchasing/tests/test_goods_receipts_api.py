@@ -1,7 +1,7 @@
 ﻿from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.catalog.models import Supplier
+from apps.catalog.models import Supplier, SupplierProduct
 from apps.core.models import Site
 from apps.integration.models import IntegrationImportBatch
 from apps.purchasing.models import GoodsReceipt
@@ -111,3 +111,36 @@ class GoodsReceiptApiTests(APITestCase):
             IntegrationImportBatch.objects.filter(import_type="goods_receipt", idempotency_key="idem-gr-001").count(),
             1,
         )
+
+    def test_create_goods_receipt_with_supplier_product_from_other_supplier_returns_400(self):
+        other_supplier = Supplier.objects.create(name="Supplier B")
+        foreign_product = SupplierProduct.objects.create(
+            supplier=other_supplier,
+            name="Foreign Product",
+            uom="kg",
+        )
+        payload = {
+            "site": str(self.site.id),
+            "supplier": str(self.supplier.id),
+            "delivery_note_number": "BL-005",
+            "received_at": "2026-02-26T10:00:00Z",
+            "metadata": {},
+            "lines": [
+                {
+                    "supplier_product": str(foreign_product.id),
+                    "raw_product_name": "Foreign Product",
+                    "qty_value": "1.000",
+                    "qty_unit": "kg",
+                }
+            ],
+        }
+
+        response = self.client.post(
+            "/api/v1/goods-receipts/",
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="gr-foreign-001",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("supplier_product", response.json()["lines"][0])

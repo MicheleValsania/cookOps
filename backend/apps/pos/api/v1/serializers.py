@@ -37,6 +37,11 @@ class SalesEventDailyImportSerializer(serializers.ModelSerializer):
         except PosSource.DoesNotExist as exc:
             raise serializers.ValidationError({"pos_source_id": "Invalid pos_source_id."}) from exc
 
+        if pos_source.site_id != site.id:
+            raise serializers.ValidationError(
+                {"pos_source_id": "pos_source_id does not belong to the provided site_id."}
+            )
+
         attrs["site"] = site
         attrs["pos_source"] = pos_source
         return attrs
