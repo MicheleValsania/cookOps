@@ -181,6 +181,7 @@ function App() {
   const [newSpaceLabel, setNewSpaceLabel] = useState("");
   const [newSpaceType, setNewSpaceType] = useState<MenuSpaceType>("recipes");
   const [newSectionName, setNewSectionName] = useState("");
+  const [recipeTitleSuggestions, setRecipeTitleSuggestions] = useState<string[]>(FICHE_RECIPE_SUGGESTIONS);
 
   const canUpload = useMemo(() => siteId.trim().length > 0 && uploadFile !== null, [siteId, uploadFile]);
 
@@ -225,6 +226,13 @@ function App() {
     localStorage.setItem(MENU_ADVANCED_STORAGE_KEY, isMenuAdvancedMode ? "1" : "0");
   }, [isMenuAdvancedMode]);
 
+  useEffect(() => {
+    if (!isMenuEditorOpen) return;
+    if (entryKind === "product") return;
+    const search = entryTitle.trim();
+    void loadRecipeTitleSuggestions(search);
+  }, [isMenuEditorOpen, entryKind, entryTitle]);
+
   function buildSiteCode(raw: string) {
     return raw
       .normalize("NFD")
@@ -252,10 +260,26 @@ function App() {
 
   const menuSuggestions = useMemo(() => {
     if (!editingSpace) return FICHE_RECIPE_SUGGESTIONS;
-    if (editingSpace.type === "recipes") return FICHE_RECIPE_SUGGESTIONS;
+    if (editingSpace.type === "recipes") return recipeTitleSuggestions;
     if (editingSpace.type === "supplier_products") return SUPPLIER_PRODUCT_SUGGESTIONS;
-    return [...FICHE_RECIPE_SUGGESTIONS, ...SUPPLIER_PRODUCT_SUGGESTIONS];
-  }, [editingSpace]);
+    return [...recipeTitleSuggestions, ...SUPPLIER_PRODUCT_SUGGESTIONS];
+  }, [editingSpace, recipeTitleSuggestions]);
+
+  async function loadRecipeTitleSuggestions(search = "") {
+    try {
+      const query = search ? `?q=${encodeURIComponent(search)}&limit=30` : "?limit=30";
+      const res = await apiFetch(`/integration/fiches/recipe-titles/${query}`);
+      const body = await res.json();
+      if (!res.ok) {
+        setRecipeTitleSuggestions(FICHE_RECIPE_SUGGESTIONS);
+        return;
+      }
+      const titles = ((body.results ?? []) as Array<{ title: string }>).map((item) => item.title).filter(Boolean);
+      setRecipeTitleSuggestions(titles.length > 0 ? titles : FICHE_RECIPE_SUGGESTIONS);
+    } catch {
+      setRecipeTitleSuggestions(FICHE_RECIPE_SUGGESTIONS);
+    }
+  }
 
   function ensureActiveSpaceStillValid(nextSpaces: MenuSpace[]) {
     const nextEnabled = nextSpaces.filter((space) => space.enabled).sort((a, b) => a.order - b.order);

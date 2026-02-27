@@ -3,12 +3,14 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.integration.api.v1.serializers import (
     DocumentExtractionSerializer,
     ExtractionIngestSerializer,
     IntegrationDocumentSerializer,
 )
+from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
 from apps.integration.models import DocumentExtraction, IntegrationDocument
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
@@ -86,3 +88,15 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
         except Exception as exc:
             fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
             raise
+
+
+class FicheRecipeTitleListView(APIView):
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        try:
+            limit = int(request.query_params.get("limit", 30))
+        except ValueError:
+            limit = 30
+
+        titles = fetch_recipe_titles(query=query, limit=limit)
+        return Response({"results": [{"title": title} for title in titles]})

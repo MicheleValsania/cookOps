@@ -82,6 +82,16 @@ DATABASES = {
     }
 }
 
+if os.getenv("FICHES_DB_NAME"):
+    DATABASES["fiches"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("FICHES_DB_NAME"),
+        "USER": os.getenv("FICHES_DB_USER", ""),
+        "PASSWORD": os.getenv("FICHES_DB_PASSWORD", ""),
+        "HOST": os.getenv("FICHES_DB_HOST", "localhost"),
+        "PORT": os.getenv("FICHES_DB_PORT", "5432"),
+    }
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -118,6 +128,10 @@ CORS_ALLOWED_ORIGINS = [
     for item in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
     if item.strip()
 ]
+
+FICHES_RECIPE_TABLE = os.getenv("FICHES_RECIPE_TABLE", "public.fiches")
+FICHES_RECIPE_TITLE_COLUMN = os.getenv("FICHES_RECIPE_TITLE_COLUMN", "title")
+FICHES_RECIPE_ACTIVE_COLUMN = os.getenv("FICHES_RECIPE_ACTIVE_COLUMN", "")
 
 REST_FRAMEWORK = {
     "DEFAULT_VERSIONING_CLASS": "rest_framework.versioning.URLPathVersioning",
