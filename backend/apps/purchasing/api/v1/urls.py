@@ -1,6 +1,6 @@
 ﻿from django.urls import path
 
-from apps.purchasing.api.v1.views import GoodsReceiptViewSet
+from apps.purchasing.api.v1.views import GoodsReceiptViewSet, InvoiceViewSet
 
 
 urlpatterns = [
@@ -8,5 +8,10 @@ urlpatterns = [
         "goods-receipts/",
         GoodsReceiptViewSet.as_view({"post": "create"}),
         name="goods-receipt-create",
+    ),
+    path(
+        "invoices/",
+        InvoiceViewSet.as_view({"post": "create"}),
+        name="invoice-create",
     ),
 ]
