@@ -44,6 +44,7 @@ const AREA_LABELS: Record<AreaKey, string> = {
 function App() {
   const [area, setArea] = useState<AreaKey>("servizio");
   const [apiKey, setApiKey] = useState(getDefaultApiKey());
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [siteId, setSiteId] = useState("");
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [includeInactiveSites, setIncludeInactiveSites] = useState(false);
@@ -396,67 +397,76 @@ function App() {
             {AREA_LABELS[key]}
           </button>
         ))}
+        <div className="nav-spacer" />
+        <select
+          className="nav-site-select"
+          value={siteId}
+          onChange={(e) => setSiteId(e.target.value)}
+          aria-label="Seleziona punto vendita"
+        >
+          <option value="">Seleziona punto vendita</option>
+          {sites.filter((site) => site.is_active).map((site) => (
+            <option key={site.id} value={site.id}>
+              {site.name}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="nav-gear-btn" onClick={() => setIsSettingsOpen(true)} aria-label="Parametri">
+          ⚙
+        </button>
       </nav>
 
-      <section className="panel settings">
-        <h2>Impostazioni punto vendita</h2>
-        <div className="settings-grid">
-          <div>
-            <label>Punto vendita</label>
-            <select value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-              <option value="">Seleziona punto vendita</option>
-              {sites.map((site) => (
-                <option key={site.id} value={site.id}>
-                  {site.name}
-                </option>
-              ))}
-            </select>
-            <button type="button" onClick={() => loadSites(includeInactiveSites)}>Aggiorna punti vendita</button>
-          </div>
-          <div>
+      {isSettingsOpen ? (
+        <div className="modal-backdrop" onClick={() => setIsSettingsOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="modal-close-btn" onClick={() => setIsSettingsOpen(false)}>
+              Chiudi
+            </button>
+            <h2>Parametri</h2>
             <label>Chiave API (X-API-Key)</label>
             <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <label className="checkline">
+              <input
+                type="checkbox"
+                checked={includeInactiveSites}
+                onChange={(e) => setIncludeInactiveSites(e.target.checked)}
+              />
+              Mostra anche i punti vendita disattivati
+            </label>
+            <button type="button" onClick={() => loadSites(includeInactiveSites)}>Aggiorna punti vendita</button>
+            <div className="site-admin-grid">
+              <form onSubmit={onCreateSite}>
+                <h3>Nuovo punto vendita</h3>
+                <label>Nome</label>
+                <input value={newSiteName} onChange={(e) => setNewSiteName(e.target.value)} placeholder="Es. Paillotte Beach" />
+                <label>Codice</label>
+                <input value={newSiteCode} onChange={(e) => setNewSiteCode(e.target.value)} placeholder="Es. PAILLOTTE_BEACH" />
+                <button type="submit">Crea punto vendita</button>
+              </form>
+              <section>
+                <h3>Punti vendita disponibili</h3>
+                <ul className="clean-list">
+                  {sites.map((site) => (
+                    <li key={site.id}>
+                      {site.name} ({site.code})
+                      {!site.is_active ? " - disattivato" : ""}
+                      {site.is_active ? (
+                        <button type="button" className="danger-btn" onClick={() => onDisableSite(site.id)}>
+                          Disattiva
+                        </button>
+                      ) : (
+                        <button type="button" className="success-btn" onClick={() => onReactivateSite(site.id)}>
+                          Riattiva
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            </div>
           </div>
         </div>
-        <label className="checkline">
-          <input
-            type="checkbox"
-            checked={includeInactiveSites}
-            onChange={(e) => setIncludeInactiveSites(e.target.checked)}
-          />
-          Mostra anche i punti vendita disattivati
-        </label>
-        <div className="site-admin-grid">
-          <form onSubmit={onCreateSite}>
-            <h3>Nuovo punto vendita</h3>
-            <label>Nome</label>
-            <input value={newSiteName} onChange={(e) => setNewSiteName(e.target.value)} placeholder="Es. Paillotte Beach" />
-            <label>Codice</label>
-            <input value={newSiteCode} onChange={(e) => setNewSiteCode(e.target.value)} placeholder="Es. PAILLOTTE_BEACH" />
-            <button type="submit">Crea punto vendita</button>
-          </form>
-          <section>
-            <h3>Punti vendita disponibili</h3>
-            <ul className="clean-list">
-              {sites.map((site) => (
-                <li key={site.id}>
-                  {site.name} ({site.code})
-                  {!site.is_active ? " - disattivato" : ""}
-                  {site.is_active ? (
-                    <button type="button" className="danger-btn" onClick={() => onDisableSite(site.id)}>
-                      Disattiva
-                    </button>
-                  ) : (
-                    <button type="button" className="success-btn" onClick={() => onReactivateSite(site.id)}>
-                      Riattiva
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
-        </div>
-      </section>
+      ) : null}
 
       {area === "servizio" && (
         <div className="grid">
