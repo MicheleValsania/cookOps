@@ -87,6 +87,12 @@ paths:
   /goods-receipts:
     post:
       summary: Create goods receipt (BL)
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -141,6 +147,12 @@ paths:
   /pos/import/daily:
     post:
       summary: Import daily POS sales (aggregated)
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
       requestBody:
         required: true
         content:
