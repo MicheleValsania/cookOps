@@ -3,8 +3,12 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
-from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
-from apps.purchasing.models import GoodsReceipt, Invoice
+from apps.purchasing.api.v1.serializers import (
+    GoodsReceiptSerializer,
+    InvoiceGoodsReceiptMatchSerializer,
+    InvoiceSerializer,
+)
+from apps.purchasing.models import GoodsReceipt, Invoice, InvoiceGoodsReceiptMatch
 
 
 class GoodsReceiptViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
@@ -73,3 +77,8 @@ class InvoiceViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
         except Exception as exc:
             fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
             raise
+
+
+class InvoiceGoodsReceiptMatchViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+    queryset = InvoiceGoodsReceiptMatch.objects.all()
+    serializer_class = InvoiceGoodsReceiptMatchSerializer

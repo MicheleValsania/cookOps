@@ -1,6 +1,12 @@
 ﻿from rest_framework import serializers
 
-from apps.purchasing.models import GoodsReceipt, GoodsReceiptLine, Invoice, InvoiceLine
+from apps.purchasing.models import (
+    GoodsReceipt,
+    GoodsReceiptLine,
+    Invoice,
+    InvoiceGoodsReceiptMatch,
+    InvoiceLine,
+)
 
 
 class GoodsReceiptLineSerializer(serializers.ModelSerializer):
@@ -162,3 +168,43 @@ class InvoiceSerializer(serializers.ModelSerializer):
             [InvoiceLine(invoice=invoice, **line_data) for line_data in lines_data]
         )
         return invoice
+
+
+class InvoiceGoodsReceiptMatchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoiceGoodsReceiptMatch
+        fields = (
+            "id",
+            "invoice_line",
+            "goods_receipt_line",
+            "status",
+            "matched_qty_value",
+            "matched_amount",
+            "note",
+            "metadata",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        invoice_line = attrs.get("invoice_line")
+        goods_receipt_line = attrs.get("goods_receipt_line")
+
+        invoice = invoice_line.invoice
+        receipt = goods_receipt_line.receipt
+
+        if invoice.site_id != receipt.site_id:
+            raise serializers.ValidationError(
+                {"goods_receipt_line": "goods_receipt_line site does not match invoice_line site."}
+            )
+        if invoice.supplier_id != receipt.supplier_id:
+            raise serializers.ValidationError(
+                {"goods_receipt_line": "goods_receipt_line supplier does not match invoice_line supplier."}
+            )
+        if invoice_line.qty_unit != goods_receipt_line.qty_unit:
+            raise serializers.ValidationError(
+                {"goods_receipt_line": "qty_unit mismatch between invoice_line and goods_receipt_line."}
+            )
+
+        return attrs

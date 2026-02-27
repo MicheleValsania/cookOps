@@ -134,3 +134,48 @@ class InvoiceLine(models.Model):
 
     def __str__(self) -> str:
         return f"{self.invoice.invoice_number} - {self.qty_value} {self.qty_unit}"
+
+
+class ReconciliationStatus(models.TextChoices):
+    MATCHED = "matched", "matched"
+    PARTIAL = "partial", "partial"
+    MISMATCH = "mismatch", "mismatch"
+    MANUAL = "manual", "manual"
+
+
+class InvoiceGoodsReceiptMatch(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    invoice_line = models.ForeignKey(
+        InvoiceLine,
+        on_delete=models.CASCADE,
+        related_name="reconciliation_matches",
+    )
+    goods_receipt_line = models.ForeignKey(
+        GoodsReceiptLine,
+        on_delete=models.CASCADE,
+        related_name="reconciliation_matches",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=ReconciliationStatus.choices,
+        default=ReconciliationStatus.MANUAL,
+    )
+    matched_qty_value = models.DecimalField(max_digits=12, decimal_places=3, blank=True, null=True)
+    matched_amount = models.DecimalField(max_digits=14, decimal_places=4, blank=True, null=True)
+    note = models.TextField(blank=True, null=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "purchasing_invoice_goods_receipt_match"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice_line", "goods_receipt_line"],
+                name="uq_purchasing_invoice_goods_receipt_match_pair",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.invoice_line_id} <-> {self.goods_receipt_line_id} ({self.status})"

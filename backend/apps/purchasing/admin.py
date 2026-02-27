@@ -1,6 +1,12 @@
 ﻿from django.contrib import admin
 
-from apps.purchasing.models import GoodsReceipt, GoodsReceiptLine, Invoice, InvoiceLine
+from apps.purchasing.models import (
+    GoodsReceipt,
+    GoodsReceiptLine,
+    Invoice,
+    InvoiceGoodsReceiptMatch,
+    InvoiceLine,
+)
 
 
 class GoodsReceiptLineInline(admin.TabularInline):
@@ -47,3 +53,14 @@ class InvoiceLineAdmin(admin.ModelAdmin):
     )
     search_fields = ("invoice__invoice_number", "raw_product_name", "note")
     list_filter = ("qty_unit",)
+
+
+@admin.register(InvoiceGoodsReceiptMatch)
+class InvoiceGoodsReceiptMatchAdmin(admin.ModelAdmin):
+    list_display = ("invoice_line", "goods_receipt_line", "status", "matched_qty_value", "matched_amount")
+    list_filter = ("status",)
+    search_fields = (
+        "invoice_line__invoice__invoice_number",
+        "goods_receipt_line__receipt__delivery_note_number",
+        "note",
+    )
