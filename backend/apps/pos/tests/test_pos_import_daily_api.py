@@ -45,7 +45,8 @@ class PosImportDailyApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("lines", response.json())
+        self.assertEqual(response.json()["code"], "validation_error")
+        self.assertIn("lines", response.json()["field_errors"])
 
     def test_import_daily_without_idempotency_key_returns_400(self):
         payload = {
@@ -58,7 +59,11 @@ class PosImportDailyApiTests(APITestCase):
         response = self.client.post("/api/v1/pos/import/daily/", payload, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.json()["detail"], "Idempotency-Key header is required.")
+        self.assertEqual(response.json()["code"], "validation_error")
+        self.assertEqual(
+            response.json()["field_errors"]["idempotency_key"],
+            "Idempotency-Key header is required.",
+        )
 
     def test_import_daily_is_idempotent_with_header(self):
         payload = {
@@ -107,4 +112,5 @@ class PosImportDailyApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("pos_source_id", response.json())
+        self.assertEqual(response.json()["code"], "validation_error")
+        self.assertIn("pos_source_id", response.json()["field_errors"])

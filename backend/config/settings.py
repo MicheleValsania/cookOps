@@ -120,4 +120,5 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "apps.core.api.permissions.HasValidApiKey",
     ),
+    "EXCEPTION_HANDLER": "apps.core.api.exceptions.cookops_exception_handler",
 }

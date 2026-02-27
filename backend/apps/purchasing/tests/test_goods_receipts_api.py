@@ -64,7 +64,8 @@ class GoodsReceiptApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("qty_value", response.json()["lines"][0])
+        self.assertEqual(response.json()["code"], "validation_error")
+        self.assertIn("qty_value", response.json()["field_errors"]["lines"][0])
 
     def test_create_goods_receipt_without_idempotency_key_returns_400(self):
         payload = {
@@ -79,7 +80,11 @@ class GoodsReceiptApiTests(APITestCase):
         response = self.client.post("/api/v1/goods-receipts/", payload, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.json()["detail"], "Idempotency-Key header is required.")
+        self.assertEqual(response.json()["code"], "validation_error")
+        self.assertEqual(
+            response.json()["field_errors"]["idempotency_key"],
+            "Idempotency-Key header is required.",
+        )
 
     def test_create_goods_receipt_is_idempotent_with_header(self):
         payload = {
@@ -143,4 +148,5 @@ class GoodsReceiptApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("supplier_product", response.json()["lines"][0])
+        self.assertEqual(response.json()["code"], "validation_error")
+        self.assertIn("supplier_product", response.json()["field_errors"]["lines"][0])
