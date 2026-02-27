@@ -1,41 +1,134 @@
-openapi: 3.0.3
+﻿openapi: 3.0.3
 info:
   title: CookOps API
-  version: 0.1.0
+  version: 0.2.0
 servers:
-  - url: http://localhost:4001/api/v1
-security:
-  - ApiKeyAuth: []
+  - url: http://localhost:8000/api/v1
 components:
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
       in: header
       name: X-API-Key
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema:
+        type: string
   schemas:
     UUID:
       type: string
-      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
-    Qty:
+      format: uuid
+    Supplier:
       type: object
-      additionalProperties: false
-      required: [value, unit]
       properties:
-        value: { type: number, exclusiveMinimum: 0 }
-        unit: { type: string, enum: [kg, g, l, ml, cl, pc] }
+        id: { $ref: '#/components/schemas/UUID' }
+        name: { type: string }
+        vat_number: { type: string, nullable: true }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SupplierProduct:
+      type: object
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        supplier: { $ref: '#/components/schemas/UUID' }
+        name: { type: string }
+        supplier_sku: { type: string, nullable: true }
+        ean: { type: string, nullable: true }
+        uom: { type: string, enum: [kg, g, l, ml, cl, pc] }
+        pack_qty: { type: string, nullable: true }
+        active: { type: boolean }
+        traceability_flag: { type: boolean }
+        allergens:
+          type: array
+          items: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    GoodsReceiptLineInput:
+      type: object
+      required: [qty_value, qty_unit]
+      properties:
+        supplier_product: { $ref: '#/components/schemas/UUID' }
+        raw_product_name: { type: string }
+        supplier_lot_code: { type: string }
+        dlc_date: { type: string, format: date }
+        qty_value: { type: string }
+        qty_unit: { type: string, enum: [kg, g, l, ml, cl, pc] }
+        unit_price: { type: string }
+    GoodsReceiptInput:
+      type: object
+      required: [site, supplier, delivery_note_number, received_at, lines]
+      properties:
+        site: { $ref: '#/components/schemas/UUID' }
+        supplier: { $ref: '#/components/schemas/UUID' }
+        delivery_note_number: { type: string }
+        received_at: { type: string, format: date-time }
+        metadata: { type: object, additionalProperties: true }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/GoodsReceiptLineInput' }
+    PosImportDailyInput:
+      type: object
+      required: [site_id, pos_source_id, sales_date, lines]
+      properties:
+        site_id: { $ref: '#/components/schemas/UUID' }
+        pos_source_id: { $ref: '#/components/schemas/UUID' }
+        sales_date: { type: string, format: date }
+        lines:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        payload:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      required: [code, detail, field_errors]
+      properties:
+        code: { type: string }
+        detail: { type: string }
+        field_errors:
+          type: object
+          additionalProperties: true
+
+security:
+  - ApiKeyAuth: []
+
 paths:
   /health:
     get:
       summary: Healthcheck
+      security: []
       responses:
-        '200': { description: OK }
-  /suppliers:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  service: { type: string }
+                  version: { type: string }
+
+  /suppliers/:
     get:
       summary: List suppliers
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Supplier' }
     post:
-      summary: Upsert supplier
+      summary: Create supplier
       requestBody:
         required: true
         content:
@@ -46,26 +139,37 @@ paths:
               properties:
                 name: { type: string }
                 vat_number: { type: string }
-                metadata: { type: object }
+                metadata: { type: object, additionalProperties: true }
       responses:
-        '200': { description: OK }
-  /suppliers/{supplierId}/products:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Supplier' }
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /suppliers/{supplier_id}/products/:
+    parameters:
+      - in: path
+        name: supplier_id
+        required: true
+        schema: { $ref: '#/components/schemas/UUID' }
     get:
       summary: List supplier products
-      parameters:
-        - in: path
-          name: supplierId
-          required: true
-          schema: { $ref: '#/components/schemas/UUID' }
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SupplierProduct' }
     post:
-      summary: Upsert supplier product
-      parameters:
-        - in: path
-          name: supplierId
-          required: true
-          schema: { $ref: '#/components/schemas/UUID' }
+      summary: Create supplier product
       requestBody:
         required: true
         content:
@@ -78,103 +182,59 @@ paths:
                 supplier_sku: { type: string }
                 ean: { type: string }
                 uom: { type: string, enum: [kg, g, l, ml, cl, pc] }
-                pack_qty: { type: number }
+                pack_qty: { type: string }
                 active: { type: boolean }
                 traceability_flag: { type: boolean }
-                allergens: { type: array, items: { type: string } }
-      responses:
-        '200': { description: OK }
-  /goods-receipts:
-    post:
-      summary: Create goods receipt (BL)
-      parameters:
-        - in: header
-          name: Idempotency-Key
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [site_id, supplier_id, delivery_note_number, received_at, lines]
-              properties:
-                site_id: { $ref: '#/components/schemas/UUID' }
-                supplier_id: { $ref: '#/components/schemas/UUID' }
-                delivery_note_number: { type: string }
-                received_at: { type: string, format: date-time }
-                lines:
+                allergens:
                   type: array
-                  items:
-                    type: object
-                    required: [qty]
-                    properties:
-                      supplier_product_id: { $ref: '#/components/schemas/UUID' }
-                      raw_product_name: { type: string }
-                      supplier_lot_code: { type: string }
-                      dlc_date: { type: string, format: date }
-                      qty: { $ref: '#/components/schemas/Qty' }
-                      unit_price: { type: number }
+                  items: { type: string }
+                metadata: { type: object, additionalProperties: true }
       responses:
-        '200': { description: OK }
-  /lots:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierProduct' }
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /goods-receipts/:
     post:
-      summary: Create lot (from Traccia)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [site_id, source_type, internal_lot_code, qty]
-              properties:
-                site_id: { $ref: '#/components/schemas/UUID' }
-                source_type: { type: string, enum: [supplier_product, recipe] }
-                supplier_product_id: { $ref: '#/components/schemas/UUID' }
-                fiche_product_id: { $ref: '#/components/schemas/UUID' }
-                recipe_snapshot_hash: { type: string }
-                supplier_lot_code: { type: string }
-                internal_lot_code: { type: string }
-                received_at: { type: string, format: date-time }
-                production_date: { type: string, format: date }
-                dlc_date: { type: string, format: date }
-                qty: { $ref: '#/components/schemas/Qty' }
-                storage_location: { type: string }
-      responses:
-        '200': { description: OK }
-  /pos/import/daily:
-    post:
-      summary: Import daily POS sales (aggregated)
+      summary: Create goods receipt (idempotent)
       parameters:
-        - in: header
-          name: Idempotency-Key
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [site_id, pos_source_id, sales_date, lines]
-              properties:
-                site_id: { $ref: '#/components/schemas/UUID' }
-                pos_source_id: { $ref: '#/components/schemas/UUID' }
-                sales_date: { type: string, format: date }
-                lines:
-                  type: array
-                  items:
-                    type: object
-                    required: [pos_name, qty]
-                    properties:
-                      pos_item_external_id: { type: string }
-                      pos_name: { type: string }
-                      qty: { type: number }
-                      gross: { type: number }
-                      net: { type: number }
-                      vat_rate: { type: number }
+            schema: { $ref: '#/components/schemas/GoodsReceiptInput' }
       responses:
-        '200': { description: OK }
+        '201':
+          description: Created
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /pos/import/daily/:
+    post:
+      summary: Import daily POS sales (idempotent)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PosImportDailyInput' }
+      responses:
+        '201':
+          description: Created
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
