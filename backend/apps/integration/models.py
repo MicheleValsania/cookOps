@@ -3,6 +3,7 @@
 from django.db import models
 
 from apps.catalog.models import SupplierProduct
+from apps.core.models import Site
 
 
 class QtyUnit(models.TextChoices):
@@ -86,3 +87,71 @@ class RecipeIngredientLink(models.Model):
 
     def __str__(self) -> str:
         return f"{self.fiche_product_id} - {self.qty_value} {self.qty_unit}"
+
+
+class DocumentType(models.TextChoices):
+    GOODS_RECEIPT = "goods_receipt", "goods_receipt"
+    INVOICE = "invoice", "invoice"
+
+
+class DocumentSource(models.TextChoices):
+    UPLOAD = "upload", "upload"
+    EMAIL = "email", "email"
+    API = "api", "api"
+
+
+class DocumentStatus(models.TextChoices):
+    UPLOADED = "uploaded", "uploaded"
+    PROCESSING = "processing", "processing"
+    EXTRACTED = "extracted", "extracted"
+    FAILED = "failed", "failed"
+
+
+class IntegrationDocument(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(Site, on_delete=models.PROTECT, related_name="integration_documents")
+    document_type = models.CharField(max_length=32, choices=DocumentType.choices)
+    source = models.CharField(max_length=16, choices=DocumentSource.choices, default=DocumentSource.UPLOAD)
+    filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=128, blank=True, null=True)
+    file_size = models.BigIntegerField(blank=True, null=True)
+    file = models.FileField(upload_to="integration/documents/%Y/%m/%d", blank=True, null=True)
+    storage_path = models.CharField(max_length=500, blank=True, null=True)
+    status = models.CharField(max_length=16, choices=DocumentStatus.choices, default=DocumentStatus.UPLOADED)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "integration_document"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.document_type}:{self.filename}"
+
+
+class ExtractionStatus(models.TextChoices):
+    PENDING = "pending", "pending"
+    SUCCEEDED = "succeeded", "succeeded"
+    FAILED = "failed", "failed"
+
+
+class DocumentExtraction(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(IntegrationDocument, on_delete=models.CASCADE, related_name="extractions")
+    extractor_name = models.CharField(max_length=64)
+    extractor_version = models.CharField(max_length=32, blank=True, null=True)
+    status = models.CharField(max_length=16, choices=ExtractionStatus.choices, default=ExtractionStatus.PENDING)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    normalized_payload = models.JSONField(default=dict, blank=True)
+    confidence = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+    error_message = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "integration_document_extraction"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.document_id}:{self.extractor_name}:{self.status}"
