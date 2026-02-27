@@ -509,6 +509,29 @@ button:disabled {
   font-size: 0.95rem;
 }
 
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+th,
+td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  font-size: 0.92rem;
+}
+
+th {
+  background: var(--accent-soft);
+  color: #1e2f4c;
+}
+
 hr {
   border: 0;
   border-top: 1px solid var(--line-soft);

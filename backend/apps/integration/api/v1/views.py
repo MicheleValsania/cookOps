@@ -99,4 +99,4 @@ class FicheRecipeTitleListView(APIView):
             limit = 30
 
         titles = fetch_recipe_titles(query=query, limit=limit)
-        return Response({"results": [{"title": title} for title in titles]})
+        return Response({"results": titles})

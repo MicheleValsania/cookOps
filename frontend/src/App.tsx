@@ -47,6 +47,8 @@ type MenuEntry = {
   title: string;
   item_kind: "recipe" | "product";
   section: string;
+  fiche_product_id?: string | null;
+  expected_qty?: string;
   valid_from: string;
   valid_to: string;
 };
@@ -92,6 +94,17 @@ const SUPPLIER_PRODUCT_SUGGESTIONS = [
   "IPA Artigianale",
   "Acqua Frizzante 75cl",
 ];
+
+type RecipeTitleSuggestion = {
+  fiche_product_id: string;
+  title: string;
+};
+
+type MenuSuggestion = {
+  key: string;
+  value: string;
+  fiche_product_id: string | null;
+};
 
 const DEFAULT_MENU_SPACES: MenuSpace[] = [
   {
@@ -174,14 +187,22 @@ function App() {
   const [editingSpaceId, setEditingSpaceId] = useState(DEFAULT_MENU_SPACES[0].id);
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
   const [entryTitle, setEntryTitle] = useState("");
+  const [entryFicheProductId, setEntryFicheProductId] = useState<string | null>(null);
   const [entryKind, setEntryKind] = useState<"recipe" | "product">("recipe");
+  const [entryExpectedQty, setEntryExpectedQty] = useState("1");
   const [entrySection, setEntrySection] = useState("");
   const [entryValidFrom, setEntryValidFrom] = useState("");
   const [entryValidTo, setEntryValidTo] = useState("");
   const [newSpaceLabel, setNewSpaceLabel] = useState("");
   const [newSpaceType, setNewSpaceType] = useState<MenuSpaceType>("recipes");
   const [newSectionName, setNewSectionName] = useState("");
-  const [recipeTitleSuggestions, setRecipeTitleSuggestions] = useState<string[]>(FICHE_RECIPE_SUGGESTIONS);
+  const [recipeTitleSuggestions, setRecipeTitleSuggestions] = useState<RecipeTitleSuggestion[]>(
+    FICHE_RECIPE_SUGGESTIONS.map((title) => ({ fiche_product_id: "", title }))
+  );
+  const [ingredientsView, setIngredientsView] = useState<"supplier" | "recipe">("supplier");
+  const [ingredientsRows, setIngredientsRows] = useState<Array<Record<string, unknown>>>([]);
+  const [ingredientWarnings, setIngredientWarnings] = useState<string[]>([]);
+  const [isChecklistLoading, setIsChecklistLoading] = useState(false);
 
   const canUpload = useMemo(() => siteId.trim().length > 0 && uploadFile !== null, [siteId, uploadFile]);
 
@@ -233,6 +254,25 @@ function App() {
     void loadRecipeTitleSuggestions(search);
   }, [isMenuEditorOpen, entryKind, entryTitle]);
 
+  useEffect(() => {
+    if (!isMenuEditorOpen || entryKind !== "recipe") return;
+    const normalized = entryTitle.trim().toLowerCase();
+    if (!normalized) {
+      setEntryFicheProductId(null);
+      return;
+    }
+    const match = recipeTitleSuggestions.find((item) => item.title.trim().toLowerCase() === normalized);
+    if (match) {
+      setEntryFicheProductId(match.fiche_product_id || null);
+    }
+  }, [isMenuEditorOpen, entryKind, entryTitle, recipeTitleSuggestions]);
+
+  useEffect(() => {
+    if (entryKind === "product") {
+      setEntryFicheProductId(null);
+    }
+  }, [entryKind]);
+
   function buildSiteCode(raw: string) {
     return raw
       .normalize("NFD")
@@ -258,11 +298,21 @@ function App() {
     [menuSpaces, editingSpaceId, activeMenuSpace]
   );
 
-  const menuSuggestions = useMemo(() => {
-    if (!editingSpace) return FICHE_RECIPE_SUGGESTIONS;
-    if (editingSpace.type === "recipes") return recipeTitleSuggestions;
-    if (editingSpace.type === "supplier_products") return SUPPLIER_PRODUCT_SUGGESTIONS;
-    return [...recipeTitleSuggestions, ...SUPPLIER_PRODUCT_SUGGESTIONS];
+  const menuSuggestions = useMemo<MenuSuggestion[]>(() => {
+    const recipeSuggestions: MenuSuggestion[] = recipeTitleSuggestions.map((item) => ({
+      key: `${item.fiche_product_id || "snap"}:${item.title}`,
+      value: item.title,
+      fiche_product_id: item.fiche_product_id || null,
+    }));
+    const productSuggestions: MenuSuggestion[] = SUPPLIER_PRODUCT_SUGGESTIONS.map((title) => ({
+      key: `product:${title}`,
+      value: title,
+      fiche_product_id: null,
+    }));
+    if (!editingSpace) return recipeSuggestions;
+    if (editingSpace.type === "recipes") return recipeSuggestions;
+    if (editingSpace.type === "supplier_products") return productSuggestions;
+    return [...recipeSuggestions, ...productSuggestions];
   }, [editingSpace, recipeTitleSuggestions]);
 
   async function loadRecipeTitleSuggestions(search = "") {
@@ -271,13 +321,20 @@ function App() {
       const res = await apiFetch(`/integration/fiches/recipe-titles/${query}`);
       const body = await res.json();
       if (!res.ok) {
-        setRecipeTitleSuggestions(FICHE_RECIPE_SUGGESTIONS);
+        setRecipeTitleSuggestions(FICHE_RECIPE_SUGGESTIONS.map((title) => ({ fiche_product_id: "", title })));
         return;
       }
-      const titles = ((body.results ?? []) as Array<{ title: string }>).map((item) => item.title).filter(Boolean);
-      setRecipeTitleSuggestions(titles.length > 0 ? titles : FICHE_RECIPE_SUGGESTIONS);
+      const titles = ((body.results ?? []) as Array<RecipeTitleSuggestion>)
+        .map((item) => ({
+          fiche_product_id: item.fiche_product_id ?? "",
+          title: item.title?.trim() ?? "",
+        }))
+        .filter((item) => item.title.length > 0);
+      setRecipeTitleSuggestions(
+        titles.length > 0 ? titles : FICHE_RECIPE_SUGGESTIONS.map((title) => ({ fiche_product_id: "", title }))
+      );
     } catch {
-      setRecipeTitleSuggestions(FICHE_RECIPE_SUGGESTIONS);
+      setRecipeTitleSuggestions(FICHE_RECIPE_SUGGESTIONS.map((title) => ({ fiche_product_id: "", title })));
     }
   }
 
@@ -298,7 +355,9 @@ function App() {
     if (!space) return;
     setEditingSpaceId(space.id);
     setEntryTitle(entry?.title ?? "");
+    setEntryFicheProductId(entry?.fiche_product_id ?? null);
     setEntryKind(entry?.item_kind ?? (space.type === "supplier_products" ? "product" : "recipe"));
+    setEntryExpectedQty(entry?.expected_qty ?? "1");
     setEntrySection(entry?.section ?? space.sections[0] ?? "");
     setEntryValidFrom(entry?.valid_from ?? "");
     setEntryValidTo(entry?.valid_to ?? "");
@@ -689,14 +748,21 @@ function App() {
   function onSubmitMenuEntry(e: FormEvent) {
     e.preventDefault();
     const title = entryTitle.trim();
+    const qtyValue = Number.parseFloat(entryExpectedQty);
     if (!editingSpace || !title) {
       setNotice("Inserisci almeno il titolo.");
+      return;
+    }
+    if (!Number.isFinite(qtyValue) || qtyValue <= 0) {
+      setNotice("La quantita prevista deve essere maggiore di 0.");
       return;
     }
     const nextEntry: MenuEntry = {
       id: editingEntryId ?? crypto.randomUUID(),
       title,
       item_kind: entryKind,
+      fiche_product_id: entryKind === "recipe" ? entryFicheProductId ?? null : null,
+      expected_qty: qtyValue.toFixed(3),
       section: entrySection.trim(),
       valid_from: entryValidFrom,
       valid_to: entryValidTo,
@@ -716,10 +782,87 @@ function App() {
     setIsMenuEditorOpen(false);
     setEditingEntryId(null);
     setEntryTitle("");
+    setEntryFicheProductId(null);
+    setEntryExpectedQty("1");
     setEntrySection("");
     setEntryValidFrom("");
     setEntryValidTo("");
     setNotice(editingEntryId ? "Elemento aggiornato." : "Elemento aggiunto.");
+  }
+
+  async function syncServiceMenuEntries() {
+    if (!siteId) {
+      setNotice("Seleziona un punto vendita prima di generare la checklist.");
+      return false;
+    }
+    const entries = menuSpaces
+      .filter((space) => space.enabled)
+      .sort((a, b) => a.order - b.order)
+      .flatMap((space) =>
+        space.entries.map((entry, index) => ({
+          space_key: space.id,
+          section: entry.section || "",
+          title: entry.title,
+          fiche_product_id: entry.item_kind === "recipe" ? entry.fiche_product_id ?? null : null,
+          expected_qty: entry.expected_qty || "1",
+          sort_order: index,
+          is_active: true,
+          metadata: {
+            item_kind: entry.item_kind,
+            valid_from: entry.valid_from || null,
+            valid_to: entry.valid_to || null,
+            source: "frontend",
+          },
+        }))
+      );
+
+    const res = await apiFetch("/servizio/menu-entries/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        site_id: siteId,
+        service_date: serviceDate,
+        entries,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(`Sync carta KO: ${body.detail ?? JSON.stringify(body)}`);
+      return false;
+    }
+    return true;
+  }
+
+  async function loadIngredientsChecklist(view: "supplier" | "recipe") {
+    if (!siteId) {
+      setNotice("Seleziona un punto vendita.");
+      return;
+    }
+    setIsChecklistLoading(true);
+    try {
+      const res = await apiFetch(
+        `/servizio/ingredients?site=${encodeURIComponent(siteId)}&date=${encodeURIComponent(serviceDate)}&view=${view}`
+      );
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(`Checklist KO: ${body.detail ?? JSON.stringify(body)}`);
+        setIngredientsRows([]);
+        setIngredientWarnings([]);
+        return;
+      }
+      setIngredientsRows(Array.isArray(body.rows) ? body.rows : []);
+      setIngredientWarnings(Array.isArray(body.warnings) ? body.warnings : []);
+      setNotice("Checklist ingredienti aggiornata.");
+    } catch {
+      setNotice("Errore di connessione durante il caricamento checklist.");
+    } finally {
+      setIsChecklistLoading(false);
+    }
+  }
+
+  async function onGenerateChecklist() {
+    const synced = await syncServiceMenuEntries();
+    if (!synced) return;
+    await loadIngredientsChecklist(ingredientsView);
   }
 
   function addServiceRow() {
@@ -872,6 +1015,7 @@ function App() {
                             <strong>{entry.title}</strong>
                             <small>
                               {entry.section || "Senza sezione"} | {entry.item_kind}
+                              {entry.item_kind === "recipe" ? ` | Qta prevista ${entry.expected_qty ?? "1"}` : ""}
                               {entry.valid_from || entry.valid_to ? ` | ${entry.valid_from || "-"} -> ${entry.valid_to || "-"}` : ""}
                             </small>
                           </div>
@@ -890,6 +1034,103 @@ function App() {
                   </div>
                 ) : (
                   <p className="muted">Nessuno spazio attivo. Attivalo nei Parametri avanzati.</p>
+                )}
+              </section>
+              <section className="panel">
+                <h3>Checklist ingredienti servizio</h3>
+                <div className="grid grid-2">
+                  <div>
+                    <label>Data servizio</label>
+                    <input type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label>Vista</label>
+                    <select
+                      value={ingredientsView}
+                      onChange={(e) => {
+                        const nextView = e.target.value as "supplier" | "recipe";
+                        setIngredientsView(nextView);
+                        if (ingredientsRows.length > 0) {
+                          void loadIngredientsChecklist(nextView);
+                        }
+                      }}
+                    >
+                      <option value="supplier">Aggregata per fornitore</option>
+                      <option value="recipe">Dettaglio per ricetta</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="entry-actions">
+                  <button type="button" onClick={onGenerateChecklist} disabled={isChecklistLoading}>
+                    {isChecklistLoading ? "Caricamento..." : "Genera checklist"}
+                  </button>
+                  <button type="button" onClick={() => window.print()} disabled={ingredientsRows.length === 0}>
+                    Stampa checklist
+                  </button>
+                </div>
+                {ingredientWarnings.length > 0 ? (
+                  <ul className="clean-list">
+                    {ingredientWarnings.map((warning) => (
+                      <li key={warning} className="muted">
+                        {warning}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {ingredientsRows.length === 0 ? (
+                  <p className="muted">Nessun risultato ancora. Premi "Genera checklist".</p>
+                ) : ingredientsView === "supplier" ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Fornitore</th>
+                        <th>Ingrediente</th>
+                        <th>Qta totale</th>
+                        <th>UM</th>
+                        <th>Rimanenza</th>
+                        <th>Da ordinare</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ingredientsRows.map((row, idx) => (
+                        <tr key={`${String(row.supplier)}-${String(row.ingredient)}-${idx}`}>
+                          <td>{String(row.supplier ?? "-")}</td>
+                          <td>{String(row.ingredient ?? "-")}</td>
+                          <td>{String(row.qty_total ?? "-")}</td>
+                          <td>{String(row.unit ?? "-")}</td>
+                          <td>_____</td>
+                          <td>_____</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="menu-entry-list">
+                    {ingredientsRows.map((row, idx) => (
+                      <article key={`${String(row.title)}-${idx}`} className="menu-entry-item">
+                        <div>
+                          <strong>{String(row.title ?? "-")}</strong>
+                          <small>
+                            {String(row.space ?? "-")} | {String(row.section ?? "Senza sezione")} | Qta prevista{" "}
+                            {String(row.expected_qty ?? "1")}
+                          </small>
+                          <ul className="clean-list">
+                            {Array.isArray(row.ingredients)
+                              ? row.ingredients.map((ing, ingIdx) => {
+                                  const item = ing as Record<string, unknown>;
+                                  return (
+                                    <li key={`${String(item.ingredient)}-${ingIdx}`}>
+                                      {String(item.ingredient ?? "-")} - {String(item.qty_total ?? "-")}{" "}
+                                      {String(item.unit ?? "-")} ({String(item.supplier ?? "Senza fornitore")})
+                                    </li>
+                                  );
+                                })
+                              : null}
+                          </ul>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
                 )}
               </section>
             </div>
@@ -1170,7 +1411,7 @@ function App() {
               <input list="menu-entry-suggestions" value={entryTitle} onChange={(e) => setEntryTitle(e.target.value)} placeholder="Cerca ricetta/prodotto" />
               <datalist id="menu-entry-suggestions">
                 {menuSuggestions.map((suggestion) => (
-                  <option key={suggestion} value={suggestion} />
+                  <option key={suggestion.key} value={suggestion.value} />
                 ))}
               </datalist>
               <label>Tipo voce</label>
@@ -1178,6 +1419,17 @@ function App() {
                 <option value="recipe">Ricetta</option>
                 <option value="product">Prodotto</option>
               </select>
+              {entryKind === "recipe" ? (
+                <p className="muted">Ricetta collegata: {entryFicheProductId ?? "non mappata (titolo non trovato)"}</p>
+              ) : null}
+              <label>Quantita prevista</label>
+              <input
+                type="number"
+                min="0.001"
+                step="0.001"
+                value={entryExpectedQty}
+                onChange={(e) => setEntryExpectedQty(e.target.value)}
+              />
               <label>Sezione</label>
               <select value={entrySection} onChange={(e) => setEntrySection(e.target.value)}>
                 <option value="">Senza sezione</option>
