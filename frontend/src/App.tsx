@@ -131,9 +131,10 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [siteId, setSiteId] = useState("");
   const [sites, setSites] = useState<SiteItem[]>([]);
-  const [includeInactiveSites, setIncludeInactiveSites] = useState(false);
   const [newSiteName, setNewSiteName] = useState("");
   const [newSiteCode, setNewSiteCode] = useState("");
+  const [siteToDelete, setSiteToDelete] = useState<SiteItem | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [notice, setNotice] = useState("Pronto.");
 
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -188,8 +189,8 @@ function App() {
   }, [apiKey]);
 
   useEffect(() => {
-    void loadSites(includeInactiveSites);
-  }, [includeInactiveSites]);
+    void loadSites();
+  }, []);
 
   useEffect(() => {
     const storedSpaces = localStorage.getItem(MENU_SPACES_STORAGE_KEY);
@@ -367,10 +368,9 @@ function App() {
     setNewSectionName("");
   }
 
-  async function loadSites(includeInactive = false) {
+  async function loadSites() {
     try {
-      const suffix = includeInactive ? "?include_inactive=1" : "";
-      const res = await apiFetch(`/sites/${suffix}`);
+      const res = await apiFetch("/sites/?include_inactive=1");
       const body = await res.json();
       if (!res.ok) {
         setNotice(`Errore punti vendita: ${body.detail ?? JSON.stringify(body)}`);
@@ -411,22 +411,29 @@ function App() {
       });
       const body = await res.json();
       if (!res.ok) {
-        setNotice(`Creazione punto vendita KO: ${body.detail ?? JSON.stringify(body)}`);
+        const fieldError = body.code?.[0] ?? body.name?.[0];
+        setNotice(`Creazione punto vendita KO: ${body.detail ?? fieldError ?? JSON.stringify(body)}`);
         return;
       }
       setNewSiteName("");
       setNewSiteCode("");
       setNotice(`Punto vendita creato: ${body.name}`);
-      await loadSites(includeInactiveSites);
+      await loadSites();
     } catch {
       setNotice("Creazione punto vendita fallita per errore di connessione/API.");
     }
   }
 
   async function onDisableSite(targetSiteId: string) {
-    const res = await apiFetch(`/sites/${targetSiteId}/`, { method: "DELETE" });
+    if (!window.confirm("Disattivare questo punto vendita? Potrai riattivarlo in seguito.")) {
+      return;
+    }
+    const res = await apiFetch(`/sites/${targetSiteId}/`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: false }),
+    });
+    const body = await res.json();
     if (!res.ok) {
-      const body = await res.json();
       setNotice(`Disattivazione KO: ${body.detail ?? JSON.stringify(body)}`);
       return;
     }
@@ -434,7 +441,32 @@ function App() {
       setSiteId("");
     }
     setNotice("Punto vendita disattivato.");
-    await loadSites(includeInactiveSites);
+    await loadSites();
+  }
+
+  async function onHardDeleteSite() {
+    if (!siteToDelete) return;
+    const res = await apiFetch(`/sites/${siteToDelete.id}/`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm_text: deleteConfirmText }),
+    });
+    if (!res.ok) {
+      const body = await res.json();
+      setNotice(`Eliminazione KO: ${body.detail ?? JSON.stringify(body)}`);
+      return;
+    }
+    if (siteId === siteToDelete.id) {
+      setSiteId("");
+    }
+    setNotice(`Punto vendita eliminato definitivamente: ${siteToDelete.name}`);
+    setSiteToDelete(null);
+    setDeleteConfirmText("");
+    await loadSites();
+  }
+
+  function closeDeleteSiteDialog() {
+    setSiteToDelete(null);
+    setDeleteConfirmText("");
   }
 
   async function onReactivateSite(targetSiteId: string) {
@@ -451,7 +483,7 @@ function App() {
     if (!siteId) {
       setSiteId(body.id);
     }
-    await loadSites(includeInactiveSites);
+    await loadSites();
   }
 
   async function loadSuppliers() {
@@ -981,13 +1013,10 @@ function App() {
               Chiudi
             </button>
             <h2>Parametri</h2>
+            <p className="params-note">{notice}</p>
             <label>Chiave API (X-API-Key)</label>
             <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
-            <label className="checkline">
-              <input type="checkbox" checked={includeInactiveSites} onChange={(e) => setIncludeInactiveSites(e.target.checked)} />
-              Mostra anche i punti vendita disattivati
-            </label>
-            <button type="button" onClick={() => loadSites(includeInactiveSites)}>Aggiorna punti vendita</button>
+            <button type="button" onClick={loadSites}>Aggiorna punti vendita</button>
             <div className="site-admin-grid">
               <form onSubmit={onCreateSite}>
                 <h3>Nuovo punto vendita</h3>
@@ -999,20 +1028,30 @@ function App() {
               </form>
               <section>
                 <h3>Punti vendita disponibili</h3>
-                <ul className="clean-list">
+                <ul className="site-list">
                   {sites.map((site) => (
-                    <li key={site.id}>
-                      {site.name} ({site.code})
-                      {!site.is_active ? " - disattivato" : ""}
-                      {site.is_active ? (
-                        <button type="button" className="danger-btn" onClick={() => onDisableSite(site.id)}>
-                          Disattiva
+                    <li key={site.id} className="site-row">
+                      <div className="site-main">
+                        <strong>{site.name}</strong>
+                        <small>{site.code}</small>
+                        <span className={`site-status ${site.is_active ? "site-status--active" : "site-status--inactive"}`}>
+                          {site.is_active ? "attivo" : "disattivato"}
+                        </span>
+                      </div>
+                      <div className="site-actions">
+                        {site.is_active ? (
+                          <button type="button" className="warning-btn" onClick={() => onDisableSite(site.id)}>
+                            Disattiva
+                          </button>
+                        ) : (
+                          <button type="button" className="success-btn" onClick={() => onReactivateSite(site.id)}>
+                            Riattiva
+                          </button>
+                        )}
+                        <button type="button" className="danger-btn" onClick={() => setSiteToDelete(site)}>
+                          Elimina
                         </button>
-                      ) : (
-                        <button type="button" className="success-btn" onClick={() => onReactivateSite(site.id)}>
-                          Riattiva
-                        </button>
-                      )}
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -1134,6 +1173,34 @@ function App() {
               </div>
               <button type="submit">{editingEntryId ? "Salva sostituzione" : "Aggiungi voce"}</button>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {siteToDelete ? (
+        <div className="modal-backdrop" onClick={closeDeleteSiteDialog}>
+          <div className="modal-card modal-card--narrow" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="modal-close-btn" onClick={closeDeleteSiteDialog}>
+              Chiudi
+            </button>
+            <h2>Elimina punto vendita</h2>
+            <p className="muted">
+              Questa azione elimina definitivamente <strong>{siteToDelete.name}</strong>.
+            </p>
+            <p className="muted">Per confermare digita: <strong>ELIMINA DEFINITIVAMENTE</strong></p>
+            <input
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder="ELIMINA DEFINITIVAMENTE"
+            />
+            <button
+              type="button"
+              className="danger-btn"
+              onClick={onHardDeleteSite}
+              disabled={deleteConfirmText !== "ELIMINA DEFINITIVAMENTE"}
+            >
+              Elimina definitivamente
+            </button>
           </div>
         </div>
       ) : null}

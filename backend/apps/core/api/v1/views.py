@@ -39,6 +39,11 @@ class SiteDetailView(APIView):
 
     def delete(self, request, site_id):
         site = get_object_or_404(Site, id=site_id)
-        site.is_active = False
-        site.save(update_fields=["is_active", "updated_at"])
+        confirmation = (request.data or {}).get("confirm_text", "")
+        if confirmation != "ELIMINA DEFINITIVAMENTE":
+            return Response(
+                {"detail": "Conferma non valida. Digita ELIMINA DEFINITIVAMENTE per eliminare il punto vendita."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        site.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
