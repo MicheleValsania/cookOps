@@ -1,6 +1,6 @@
 ﻿from rest_framework import serializers
 
-from apps.integration.models import DocumentExtraction, IntegrationDocument
+from apps.integration.models import DocumentExtraction, ExtractionStatus, IntegrationDocument
 
 
 class IntegrationDocumentSerializer(serializers.ModelSerializer):
@@ -67,3 +67,42 @@ class DocumentExtractionSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("id", "document", "created_at", "updated_at")
+
+
+class ExtractionIngestSerializer(serializers.Serializer):
+    extraction_id = serializers.UUIDField()
+    idempotency_key = serializers.CharField(max_length=255)
+    target = serializers.ChoiceField(
+        choices=("goods_receipt", "invoice"),
+        required=False,
+    )
+
+    def validate(self, attrs):
+        document = self.context["document"]
+        extraction_id = attrs["extraction_id"]
+        target = attrs.get("target") or document.document_type
+
+        if target != document.document_type:
+            raise serializers.ValidationError(
+                {"target": "target must match document.document_type."}
+            )
+
+        try:
+            extraction = document.extractions.get(pk=extraction_id)
+        except DocumentExtraction.DoesNotExist as exc:
+            raise serializers.ValidationError(
+                {"extraction_id": "extraction_id does not belong to this document."}
+            ) from exc
+
+        if extraction.status != ExtractionStatus.SUCCEEDED:
+            raise serializers.ValidationError(
+                {"extraction_id": "Only succeeded extractions can be ingested."}
+            )
+        if not isinstance(extraction.normalized_payload, dict) or not extraction.normalized_payload:
+            raise serializers.ValidationError(
+                {"extraction_id": "normalized_payload must be a non-empty object."}
+            )
+
+        attrs["target"] = target
+        attrs["extraction"] = extraction
+        return attrs

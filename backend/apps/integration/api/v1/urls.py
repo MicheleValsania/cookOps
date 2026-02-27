@@ -1,7 +1,11 @@
 ﻿from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from apps.integration.api.v1.views import DocumentExtractionViewSet, IntegrationDocumentViewSet
+from apps.integration.api.v1.views import (
+    DocumentExtractionViewSet,
+    DocumentIngestViewSet,
+    IntegrationDocumentViewSet,
+)
 
 
 router = DefaultRouter()
@@ -12,6 +16,11 @@ urlpatterns = [
         "integration/documents/<uuid:document_id>/extractions/",
         DocumentExtractionViewSet.as_view({"post": "create"}),
         name="integration-document-extraction-create",
+    ),
+    path(
+        "integration/documents/<uuid:document_id>/ingest/",
+        DocumentIngestViewSet.as_view({"post": "create"}),
+        name="integration-document-ingest-create",
     ),
 ]
 
