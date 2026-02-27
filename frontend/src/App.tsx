@@ -40,6 +40,27 @@ type ServicePlanRow = {
   fornitore: string;
 };
 
+type MenuSpaceType = "recipes" | "supplier_products" | "mixed";
+
+type MenuEntry = {
+  id: string;
+  title: string;
+  item_kind: "recipe" | "product";
+  section: string;
+  valid_from: string;
+  valid_to: string;
+};
+
+type MenuSpace = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  order: number;
+  type: MenuSpaceType;
+  sections: string[];
+  entries: MenuEntry[];
+};
+
 const NAV_ITEMS: Array<{ key: NavKey; label: string; help: string }> = [
   { key: "dashboard", label: "Dashboard", help: "KPI e urgenze" },
   { key: "inventario", label: "Inventario", help: "Giacenze, lotti, alert" },
@@ -50,8 +71,62 @@ const NAV_ITEMS: Array<{ key: NavKey; label: string; help: string }> = [
   { key: "report", label: "Report", help: "Vendite POS e scostamenti" },
 ];
 
+const MENU_SPACES_STORAGE_KEY = "cookops_menu_spaces_v1";
+const MENU_ADVANCED_STORAGE_KEY = "cookops_menu_advanced_v1";
+
+const FICHE_RECIPE_SUGGESTIONS = [
+  "Focaccia Bresaola",
+  "Burger Classic",
+  "Pizza Margherita",
+  "Insalata Caesar",
+  "Tagliere Salumi",
+  "Pasta Arrabbiata",
+  "Tiramisu",
+];
+
+const SUPPLIER_PRODUCT_SUGGESTIONS = [
+  "Spritz Signature",
+  "Negroni Classico",
+  "Prosecco Extra Dry",
+  "Pinot Grigio DOC",
+  "IPA Artigianale",
+  "Acqua Frizzante 75cl",
+];
+
+const DEFAULT_MENU_SPACES: MenuSpace[] = [
+  {
+    id: "carta-principale",
+    label: "Carta principale",
+    enabled: true,
+    order: 1,
+    type: "recipes",
+    sections: ["Antipasti", "Pizze", "Burger"],
+    entries: [],
+  },
+  {
+    id: "menu-giorno",
+    label: "Menu del giorno",
+    enabled: true,
+    order: 2,
+    type: "mixed",
+    sections: ["Speciali", "Fuori menu"],
+    entries: [],
+  },
+  {
+    id: "suggestioni",
+    label: "Suggestioni",
+    enabled: true,
+    order: 3,
+    type: "mixed",
+    sections: ["Suggeriti oggi"],
+    entries: [],
+  },
+];
+
 function App() {
   const [nav, setNav] = useState<NavKey>("dashboard");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarOpenMobile, setIsSidebarOpenMobile] = useState(false);
   const [apiKey, setApiKey] = useState(getDefaultApiKey());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [siteId, setSiteId] = useState("");
@@ -91,6 +166,20 @@ function App() {
       fornitore: "AEM",
     },
   ]);
+  const [menuSpaces, setMenuSpaces] = useState<MenuSpace[]>(DEFAULT_MENU_SPACES);
+  const [activeMenuSpaceId, setActiveMenuSpaceId] = useState(DEFAULT_MENU_SPACES[0].id);
+  const [isMenuEditorOpen, setIsMenuEditorOpen] = useState(false);
+  const [isMenuAdvancedMode, setIsMenuAdvancedMode] = useState(false);
+  const [editingSpaceId, setEditingSpaceId] = useState(DEFAULT_MENU_SPACES[0].id);
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [entryTitle, setEntryTitle] = useState("");
+  const [entryKind, setEntryKind] = useState<"recipe" | "product">("recipe");
+  const [entrySection, setEntrySection] = useState("");
+  const [entryValidFrom, setEntryValidFrom] = useState("");
+  const [entryValidTo, setEntryValidTo] = useState("");
+  const [newSpaceLabel, setNewSpaceLabel] = useState("");
+  const [newSpaceType, setNewSpaceType] = useState<MenuSpaceType>("recipes");
+  const [newSectionName, setNewSectionName] = useState("");
 
   const canUpload = useMemo(() => siteId.trim().length > 0 && uploadFile !== null, [siteId, uploadFile]);
 
@@ -102,6 +191,39 @@ function App() {
     void loadSites(includeInactiveSites);
   }, [includeInactiveSites]);
 
+  useEffect(() => {
+    const storedSpaces = localStorage.getItem(MENU_SPACES_STORAGE_KEY);
+    if (storedSpaces) {
+      try {
+        const parsed = JSON.parse(storedSpaces) as MenuSpace[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMenuSpaces(parsed);
+          const firstEnabled = parsed
+            .filter((space) => space.enabled)
+            .sort((a, b) => a.order - b.order)[0];
+          if (firstEnabled) {
+            setActiveMenuSpaceId(firstEnabled.id);
+            setEditingSpaceId(firstEnabled.id);
+          }
+        }
+      } catch {
+        setMenuSpaces(DEFAULT_MENU_SPACES);
+      }
+    }
+    const storedAdvanced = localStorage.getItem(MENU_ADVANCED_STORAGE_KEY);
+    if (storedAdvanced === "1") {
+      setIsMenuAdvancedMode(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(MENU_SPACES_STORAGE_KEY, JSON.stringify(menuSpaces));
+  }, [menuSpaces]);
+
+  useEffect(() => {
+    localStorage.setItem(MENU_ADVANCED_STORAGE_KEY, isMenuAdvancedMode ? "1" : "0");
+  }, [isMenuAdvancedMode]);
+
   function buildSiteCode(raw: string) {
     return raw
       .normalize("NFD")
@@ -110,6 +232,139 @@ function App() {
       .toUpperCase()
       .replace(/[^A-Z0-9]+/g, "_")
       .replace(/^_+|_+$/g, "");
+  }
+
+  const sortedEnabledSpaces = useMemo(
+    () => menuSpaces.filter((space) => space.enabled).sort((a, b) => a.order - b.order),
+    [menuSpaces]
+  );
+
+  const activeMenuSpace = useMemo(
+    () => menuSpaces.find((space) => space.id === activeMenuSpaceId) ?? sortedEnabledSpaces[0] ?? null,
+    [menuSpaces, activeMenuSpaceId, sortedEnabledSpaces]
+  );
+
+  const editingSpace = useMemo(
+    () => menuSpaces.find((space) => space.id === editingSpaceId) ?? activeMenuSpace,
+    [menuSpaces, editingSpaceId, activeMenuSpace]
+  );
+
+  const menuSuggestions = useMemo(() => {
+    if (!editingSpace) return FICHE_RECIPE_SUGGESTIONS;
+    if (editingSpace.type === "recipes") return FICHE_RECIPE_SUGGESTIONS;
+    if (editingSpace.type === "supplier_products") return SUPPLIER_PRODUCT_SUGGESTIONS;
+    return [...FICHE_RECIPE_SUGGESTIONS, ...SUPPLIER_PRODUCT_SUGGESTIONS];
+  }, [editingSpace]);
+
+  function ensureActiveSpaceStillValid(nextSpaces: MenuSpace[]) {
+    const nextEnabled = nextSpaces.filter((space) => space.enabled).sort((a, b) => a.order - b.order);
+    if (nextEnabled.length === 0) {
+      setActiveMenuSpaceId("");
+      return;
+    }
+    const stillExists = nextEnabled.some((space) => space.id === activeMenuSpaceId);
+    if (!stillExists) {
+      setActiveMenuSpaceId(nextEnabled[0].id);
+    }
+  }
+
+  function openMenuEditor(spaceId: string, entry?: MenuEntry) {
+    const space = menuSpaces.find((item) => item.id === spaceId);
+    if (!space) return;
+    setEditingSpaceId(space.id);
+    setEntryTitle(entry?.title ?? "");
+    setEntryKind(entry?.item_kind ?? (space.type === "supplier_products" ? "product" : "recipe"));
+    setEntrySection(entry?.section ?? space.sections[0] ?? "");
+    setEntryValidFrom(entry?.valid_from ?? "");
+    setEntryValidTo(entry?.valid_to ?? "");
+    setEditingEntryId(entry?.id ?? null);
+    setIsMenuEditorOpen(true);
+  }
+
+  function moveMenuEntry(spaceId: string, entryId: string, direction: "up" | "down") {
+    setMenuSpaces((prev) =>
+      prev.map((space) => {
+        if (space.id !== spaceId) return space;
+        const index = space.entries.findIndex((entry) => entry.id === entryId);
+        if (index < 0) return space;
+        const targetIndex = direction === "up" ? index - 1 : index + 1;
+        if (targetIndex < 0 || targetIndex >= space.entries.length) return space;
+        const nextEntries = [...space.entries];
+        const [current] = nextEntries.splice(index, 1);
+        nextEntries.splice(targetIndex, 0, current);
+        return { ...space, entries: nextEntries };
+      })
+    );
+  }
+
+  function deleteMenuEntry(spaceId: string, entryId: string) {
+    setMenuSpaces((prev) =>
+      prev.map((space) =>
+        space.id === spaceId ? { ...space, entries: space.entries.filter((entry) => entry.id !== entryId) } : space
+      )
+    );
+  }
+
+  function addMenuSpace() {
+    const label = newSpaceLabel.trim();
+    if (!label) {
+      setNotice("Inserisci il nome del nuovo spazio.");
+      return;
+    }
+    const id = buildSiteCode(label).toLowerCase();
+    if (!id) {
+      setNotice("Nome spazio non valido.");
+      return;
+    }
+    if (menuSpaces.some((space) => space.id === id)) {
+      setNotice("Esiste già uno spazio con questo nome.");
+      return;
+    }
+    const nextSpace: MenuSpace = {
+      id,
+      label,
+      enabled: true,
+      order: menuSpaces.length + 1,
+      type: newSpaceType,
+      sections: [],
+      entries: [],
+    };
+    const nextSpaces = [...menuSpaces, nextSpace];
+    setMenuSpaces(nextSpaces);
+    setNewSpaceLabel("");
+    setNewSpaceType("recipes");
+    setActiveMenuSpaceId(nextSpace.id);
+    setEditingSpaceId(nextSpace.id);
+    setNotice(`Spazio creato: ${label}`);
+  }
+
+  function updateMenuSpace(spaceId: string, patch: Partial<MenuSpace>) {
+    const nextSpaces = menuSpaces.map((space) => (space.id === spaceId ? { ...space, ...patch } : space));
+    setMenuSpaces(nextSpaces);
+    ensureActiveSpaceStillValid(nextSpaces);
+  }
+
+  function removeMenuSpace(spaceId: string) {
+    const nextSpaces = menuSpaces.filter((space) => space.id !== spaceId);
+    if (nextSpaces.length === 0) {
+      setNotice("Deve restare almeno uno spazio.");
+      return;
+    }
+    setMenuSpaces(nextSpaces);
+    ensureActiveSpaceStillValid(nextSpaces);
+  }
+
+  function addMenuSection() {
+    const section = newSectionName.trim();
+    if (!section || !editingSpace) return;
+    if (editingSpace.sections.includes(section)) {
+      setNotice("Questa sezione esiste già.");
+      return;
+    }
+    setMenuSpaces((prev) =>
+      prev.map((space) => (space.id === editingSpace.id ? { ...space, sections: [...space.sections, section] } : space))
+    );
+    setNewSectionName("");
   }
 
   async function loadSites(includeInactive = false) {
@@ -375,6 +630,42 @@ function App() {
     setNotice(`Vendite importate: ${body.id}`);
   }
 
+  function onSubmitMenuEntry(e: FormEvent) {
+    e.preventDefault();
+    const title = entryTitle.trim();
+    if (!editingSpace || !title) {
+      setNotice("Inserisci almeno il titolo.");
+      return;
+    }
+    const nextEntry: MenuEntry = {
+      id: editingEntryId ?? crypto.randomUUID(),
+      title,
+      item_kind: entryKind,
+      section: entrySection.trim(),
+      valid_from: entryValidFrom,
+      valid_to: entryValidTo,
+    };
+    setMenuSpaces((prev) =>
+      prev.map((space) => {
+        if (space.id !== editingSpace.id) return space;
+        if (editingEntryId) {
+          return {
+            ...space,
+            entries: space.entries.map((entry) => (entry.id === editingEntryId ? nextEntry : entry)),
+          };
+        }
+        return { ...space, entries: [...space.entries, nextEntry] };
+      })
+    );
+    setIsMenuEditorOpen(false);
+    setEditingEntryId(null);
+    setEntryTitle("");
+    setEntrySection("");
+    setEntryValidFrom("");
+    setEntryValidTo("");
+    setNotice(editingEntryId ? "Elemento aggiornato." : "Elemento aggiunto.");
+  }
+
   function addServiceRow() {
     setServiceRows((prev) => [
       ...prev,
@@ -422,6 +713,14 @@ function App() {
     <div className="shell">
       <header className="topbar">
         <div className="brand">
+          <button
+            type="button"
+            className="nav-menu-btn"
+            onClick={() => setIsSidebarOpenMobile((prev) => !prev)}
+            aria-label="Apri o chiudi menu"
+          >
+            ☰
+          </button>
           <img className="brand-logo-image" src="/chefside-logo.svg" alt="Chef Side" />
           <p className="brand-sub">CookOps - Operativita quotidiana ristorante</p>
         </div>
@@ -440,15 +739,26 @@ function App() {
         </div>
       </header>
 
-      <div className="app-layout">
-        <aside className="sidebar">
+      <div className={`app-layout ${isSidebarCollapsed ? "app-layout--collapsed" : ""}`}>
+        <aside className={`sidebar ${isSidebarCollapsed ? "sidebar--collapsed" : ""} ${isSidebarOpenMobile ? "sidebar--open-mobile" : ""}`}>
           <div className="sidebar-title">Menu operativo</div>
+          <button
+            type="button"
+            className="sidebar-collapse-btn"
+            onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+            aria-label="Comprimi o espandi menu laterale"
+          >
+            {isSidebarCollapsed ? "»" : "«"}
+          </button>
           {NAV_ITEMS.map((item) => (
             <button
               key={item.key}
               type="button"
               className={`side-btn ${nav === item.key ? "side-btn--active" : ""}`}
-              onClick={() => setNav(item.key)}
+              onClick={() => {
+                setNav(item.key);
+                setIsSidebarOpenMobile(false);
+              }}
             >
               <span>{item.label}</span>
               <small>{item.help}</small>
@@ -477,31 +787,74 @@ function App() {
 
           {nav === "ricette" && (
             <div className="grid">
-              <section className="panel">
-                <h2>Pianificazione carta e menu del giorno</h2>
-                <label>Data servizio</label>
-                <input value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} type="date" />
-                {serviceRows.map((row) => (
-                  <div className="row-grid" key={row.id}>
-                    <input placeholder="Ricetta (nome fiches-recettes)" value={row.ricetta} onChange={(e) => updateServiceRow(row.id, { ricetta: e.target.value })} />
-                    <input placeholder="Punto vendita" value={row.puntoVendita} onChange={(e) => updateServiceRow(row.id, { puntoVendita: e.target.value })} />
-                    <input placeholder="Settore" value={row.settore} onChange={(e) => updateServiceRow(row.id, { settore: e.target.value })} />
-                    <input type="number" placeholder="Coperti" value={row.coperti} onChange={(e) => updateServiceRow(row.id, { coperti: Number(e.target.value) })} />
-                    <input placeholder="Fornitore" value={row.fornitore} onChange={(e) => updateServiceRow(row.id, { fornitore: e.target.value })} />
+              <section className="panel menu-space-panel">
+                <h2>Spazi carta</h2>
+                <div className="space-tabs">
+                  {sortedEnabledSpaces.map((space) => (
+                    <button
+                      key={space.id}
+                      type="button"
+                      className={`space-tab-btn ${activeMenuSpace?.id === space.id ? "space-tab-btn--active" : ""}`}
+                      onClick={() => setActiveMenuSpaceId(space.id)}
+                    >
+                      {space.label}
+                    </button>
+                  ))}
+                </div>
+                {activeMenuSpace ? (
+                  <div>
+                    <div className="menu-space-header-row">
+                      <div>
+                        <h3>{activeMenuSpace.label}</h3>
+                        <p className="muted">Tipo carta: {activeMenuSpace.type.replace("_", " ")}</p>
+                      </div>
+                      <button type="button" onClick={() => openMenuEditor(activeMenuSpace.id)}>Modifica</button>
+                    </div>
+                    {activeMenuSpace.sections.length > 0 ? (
+                      <div className="section-tags">
+                        {activeMenuSpace.sections.map((section) => (
+                          <span key={section} className="section-tag">{section}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <ul className="menu-entry-list">
+                      {activeMenuSpace.entries.map((entry, idx) => (
+                        <li key={entry.id} className="menu-entry-item">
+                          <div>
+                            <strong>{entry.title}</strong>
+                            <small>
+                              {entry.section || "Senza sezione"} | {entry.item_kind}
+                              {entry.valid_from || entry.valid_to ? ` | ${entry.valid_from || "-"} -> ${entry.valid_to || "-"}` : ""}
+                            </small>
+                          </div>
+                          <div className="entry-actions">
+                            <button type="button" onClick={() => moveMenuEntry(activeMenuSpace.id, entry.id, "up")} disabled={idx === 0}>↑</button>
+                            <button type="button" onClick={() => moveMenuEntry(activeMenuSpace.id, entry.id, "down")} disabled={idx === activeMenuSpace.entries.length - 1}>↓</button>
+                            <button type="button" onClick={() => openMenuEditor(activeMenuSpace.id, entry)}>Sostituisci</button>
+                            <button type="button" className="danger-btn" onClick={() => deleteMenuEntry(activeMenuSpace.id, entry.id)}>✕</button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                    {activeMenuSpace.entries.length === 0 ? (
+                      <p className="muted">Nessun elemento. Premi Modifica per aggiungere piatti, cocktail o prodotti.</p>
+                    ) : null}
                   </div>
-                ))}
-                <button type="button" onClick={addServiceRow}>Aggiungi ricetta</button>
+                ) : (
+                  <p className="muted">Nessuno spazio attivo. Attivalo nei Parametri avanzati.</p>
+                )}
               </section>
 
               <section className="panel">
-                <h2>Liste comande</h2>
-                <h3>Per fornitore</h3>
+                <h2>Pianificazione servizio</h2>
+                <label>Data servizio</label>
+                <input value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} type="date" />
+                <h3>Comande aggregate</h3>
                 <ul className="clean-list">
                   {ordiniPerFornitore.map((r) => (
                     <li key={r.fornitore}>{r.fornitore}: {r.coperti} coperti previsti</li>
                   ))}
                 </ul>
-                <h3>Per settore</h3>
                 <ul className="clean-list">
                   {ordiniPerSettore.map((r) => (
                     <li key={r.settore}>{r.settore}: {r.coperti} coperti previsti</li>
@@ -644,6 +997,7 @@ function App() {
           )}
         </main>
       </div>
+      {isSidebarOpenMobile ? <button type="button" className="sidebar-mobile-backdrop" onClick={() => setIsSidebarOpenMobile(false)} /> : null}
 
       {isSettingsOpen ? (
         <div className="modal-backdrop" onClick={() => setIsSettingsOpen(false)}>
@@ -689,6 +1043,122 @@ function App() {
                 </ul>
               </section>
             </div>
+            <hr />
+            <h3>Parametri pagina Ricette e carte</h3>
+            <label className="checkline">
+              <input type="checkbox" checked={isMenuAdvancedMode} onChange={(e) => setIsMenuAdvancedMode(e.target.checked)} />
+              Modalita avanzata spazi carta
+            </label>
+            {isMenuAdvancedMode ? (
+              <div className="menu-advanced-grid">
+                <section>
+                  <h3>Spazi</h3>
+                  {menuSpaces
+                    .sort((a, b) => a.order - b.order)
+                    .map((space) => (
+                      <div key={space.id} className="space-row">
+                        <input value={space.label} onChange={(e) => updateMenuSpace(space.id, { label: e.target.value })} />
+                        <select value={space.type} onChange={(e) => updateMenuSpace(space.id, { type: e.target.value as MenuSpaceType })}>
+                          <option value="recipes">Ricette</option>
+                          <option value="supplier_products">Prodotti fornitore</option>
+                          <option value="mixed">Misto</option>
+                        </select>
+                        <label className="checkline">
+                          <input type="checkbox" checked={space.enabled} onChange={(e) => updateMenuSpace(space.id, { enabled: e.target.checked })} />
+                          Attivo
+                        </label>
+                        <button type="button" className="danger-btn" onClick={() => removeMenuSpace(space.id)}>Rimuovi</button>
+                      </div>
+                    ))}
+                  <label>Nuovo spazio</label>
+                  <input value={newSpaceLabel} onChange={(e) => setNewSpaceLabel(e.target.value)} placeholder="Es. Carta vini" />
+                  <label>Tipo spazio</label>
+                  <select value={newSpaceType} onChange={(e) => setNewSpaceType(e.target.value as MenuSpaceType)}>
+                    <option value="recipes">Ricette</option>
+                    <option value="supplier_products">Prodotti fornitore</option>
+                    <option value="mixed">Misto</option>
+                  </select>
+                  <button type="button" onClick={addMenuSpace}>Aggiungi spazio</button>
+                </section>
+                <section>
+                  <h3>Sezioni per spazio</h3>
+                  <label>Spazio</label>
+                  <select value={editingSpaceId} onChange={(e) => setEditingSpaceId(e.target.value)}>
+                    {menuSpaces.map((space) => (
+                      <option key={space.id} value={space.id}>{space.label}</option>
+                    ))}
+                  </select>
+                  <ul className="clean-list">
+                    {editingSpace?.sections.map((section) => (
+                      <li key={section}>
+                        {section}
+                        <button
+                          type="button"
+                          className="danger-btn"
+                          onClick={() =>
+                            setMenuSpaces((prev) =>
+                              prev.map((space) =>
+                                space.id === editingSpace.id
+                                  ? { ...space, sections: space.sections.filter((current) => current !== section) }
+                                  : space
+                              )
+                            )
+                          }
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <label>Nuova sezione</label>
+                  <input value={newSectionName} onChange={(e) => setNewSectionName(e.target.value)} placeholder="Es. Antipasti" />
+                  <button type="button" onClick={addMenuSection}>Aggiungi sezione</button>
+                </section>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {isMenuEditorOpen && editingSpace ? (
+        <div className="modal-backdrop" onClick={() => setIsMenuEditorOpen(false)}>
+          <div className="modal-card modal-card--narrow" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="modal-close-btn" onClick={() => setIsMenuEditorOpen(false)}>
+              Chiudi
+            </button>
+            <h2>Modifica spazio: {editingSpace.label}</h2>
+            <form onSubmit={onSubmitMenuEntry}>
+              <label>Titolo</label>
+              <input list="menu-entry-suggestions" value={entryTitle} onChange={(e) => setEntryTitle(e.target.value)} placeholder="Cerca ricetta/prodotto" />
+              <datalist id="menu-entry-suggestions">
+                {menuSuggestions.map((suggestion) => (
+                  <option key={suggestion} value={suggestion} />
+                ))}
+              </datalist>
+              <label>Tipo voce</label>
+              <select value={entryKind} onChange={(e) => setEntryKind(e.target.value as "recipe" | "product")}>
+                <option value="recipe">Ricetta</option>
+                <option value="product">Prodotto</option>
+              </select>
+              <label>Sezione</label>
+              <select value={entrySection} onChange={(e) => setEntrySection(e.target.value)}>
+                <option value="">Senza sezione</option>
+                {editingSpace.sections.map((section) => (
+                  <option key={section} value={section}>{section}</option>
+                ))}
+              </select>
+              <div className="grid grid-2">
+                <div>
+                  <label>Valida dal</label>
+                  <input type="date" value={entryValidFrom} onChange={(e) => setEntryValidFrom(e.target.value)} />
+                </div>
+                <div>
+                  <label>Valida al</label>
+                  <input type="date" value={entryValidTo} onChange={(e) => setEntryValidTo(e.target.value)} />
+                </div>
+              </div>
+              <button type="submit">{editingEntryId ? "Salva sostituzione" : "Aggiungi voce"}</button>
+            </form>
           </div>
         </div>
       ) : null}

@@ -50,6 +50,18 @@ body {
   gap: 10px;
 }
 
+.nav-menu-btn {
+  width: 40px;
+  height: 40px;
+  margin-top: 0;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--text);
+  font-size: 18px;
+  cursor: pointer;
+}
+
 .brand-logo-image {
   width: 170px;
   height: auto;
@@ -94,13 +106,30 @@ body {
   padding: 14px 20px 20px;
 }
 
+.app-layout--collapsed {
+  grid-template-columns: 92px 1fr;
+}
+
 .sidebar {
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--line-soft);
   border-radius: 16px;
   padding: 12px;
   height: fit-content;
   box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+}
+
+.sidebar-collapse-btn {
+  width: 34px;
+  height: 34px;
+  margin-top: 0;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--muted);
+  cursor: pointer;
 }
 
 .sidebar-title {
@@ -137,6 +166,20 @@ body {
   background: linear-gradient(120deg, rgba(15, 118, 110, 0.1), rgba(29, 78, 216, 0.06));
 }
 
+.sidebar--collapsed .sidebar-title,
+.sidebar--collapsed .side-btn small {
+  display: none;
+}
+
+.sidebar--collapsed .side-btn {
+  padding: 10px 8px;
+}
+
+.sidebar--collapsed .side-btn span {
+  font-size: 11px;
+  text-align: center;
+}
+
 .content {
   display: grid;
   gap: 14px;
@@ -169,6 +212,10 @@ body {
 
 .grid-3 {
   grid-template-columns: repeat(3, minmax(200px, 1fr));
+}
+
+.grid-2 {
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
 }
 
 .metric-card strong {
@@ -246,6 +293,84 @@ button:disabled {
   padding-left: 18px;
 }
 
+.space-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.space-tab-btn {
+  width: auto;
+  margin-top: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--text);
+  padding: 8px 14px;
+}
+
+.space-tab-btn--active {
+  border-color: rgba(15, 118, 110, 0.35);
+  background: linear-gradient(120deg, rgba(15, 118, 110, 0.15), rgba(29, 78, 216, 0.08));
+}
+
+.menu-space-header-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.section-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 8px;
+}
+
+.section-tag {
+  display: inline-flex;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: #f8fafc;
+  font-size: 12px;
+}
+
+.menu-entry-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.menu-entry-item {
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.menu-entry-item small {
+  display: block;
+  color: var(--muted);
+}
+
+.entry-actions {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.entry-actions button {
+  width: auto;
+  margin-top: 0;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -267,6 +392,19 @@ button:disabled {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.menu-advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.space-row {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 8px;
+  margin-bottom: 8px;
 }
 
 .danger-btn,
@@ -306,6 +444,10 @@ button:disabled {
   padding: 16px;
 }
 
+.modal-card--narrow {
+  width: min(640px, 100%);
+}
+
 .modal-close-btn {
   background: #475569;
   float: right;
@@ -320,15 +462,36 @@ button:disabled {
   font-size: 14px;
 }
 
+hr {
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  margin: 14px 0;
+}
+
+.sidebar-mobile-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  margin-top: 0;
+  background: rgba(15, 23, 42, 0.35);
+  border: 0;
+}
+
 @media (max-width: 1200px) {
   .app-layout {
     grid-template-columns: 1fr;
   }
 
+  .app-layout--collapsed {
+    grid-template-columns: 1fr;
+  }
+
   .grid,
   .grid-3,
+  .grid-2,
   .row-grid,
-  .site-admin-grid {
+  .site-admin-grid,
+  .menu-advanced-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -340,8 +503,8 @@ button:disabled {
   }
 
   .brand {
-    justify-content: center;
-    flex-direction: column;
+    justify-content: space-between;
+    flex-direction: row;
   }
 
   .header-actions {
@@ -350,5 +513,21 @@ button:disabled {
 
   .nav-site-select {
     width: 100%;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 40;
+    width: min(320px, 86vw);
+    height: 100vh;
+    border-radius: 0 16px 16px 0;
+    transform: translateX(-110%);
+    transition: transform 0.2s ease;
+  }
+
+  .sidebar.sidebar--open-mobile {
+    transform: translateX(0);
   }
 }
