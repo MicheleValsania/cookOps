@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -13,6 +14,25 @@ def _to_decimal(value: Any) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return Decimal("0")
+
+
+QTY_WITH_UNIT_PATTERN = re.compile(r"^\s*([0-9]+(?:[.,][0-9]+)?)\s*([A-Za-z]+)?\s*$")
+
+
+def _parse_qty_and_unit(raw_qty: Any) -> tuple[Decimal, str | None]:
+    if raw_qty is None:
+        return Decimal("0"), None
+    if isinstance(raw_qty, (int, float, Decimal)):
+        return _to_decimal(raw_qty), None
+    text = str(raw_qty).strip()
+    if not text:
+        return Decimal("0"), None
+    match = QTY_WITH_UNIT_PATTERN.match(text)
+    if match:
+        qty = _to_decimal(match.group(1).replace(",", "."))
+        unit = (match.group(2) or "").strip() or None
+        return qty, unit
+    return _to_decimal(text), None
 
 
 def extract_ingredients(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -44,15 +64,15 @@ def extract_ingredients(payload: dict[str, Any]) -> list[dict[str, Any]]:
             or item.get("value")
             or 0
         )
-        unit = item.get("unit") or item.get("uom") or item.get("qty_unit") or "pc"
+        parsed_qty, parsed_unit = _parse_qty_and_unit(qty)
+        unit = item.get("unit") or item.get("uom") or item.get("qty_unit") or parsed_unit or "pc"
         supplier = item.get("supplier") or item.get("supplier_name") or item.get("vendor") or ""
         result.append(
             {
                 "name": str(name).strip(),
-                "qty": _to_decimal(qty),
+                "qty": parsed_qty,
                 "unit": str(unit).strip(),
                 "supplier": str(supplier).strip(),
             }
         )
     return result
-

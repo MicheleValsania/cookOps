@@ -61,6 +61,17 @@ class SiteDetailView(APIView):
 
 
 class ServiceMenuEntrySyncView(APIView):
+    def get(self, request):
+        site_id = request.query_params.get("site")
+        service_date = request.query_params.get("date")
+        if not site_id or not service_date:
+            return Response({"detail": "Query params 'site' and 'date' are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = ServiceMenuEntry.objects.filter(site_id=site_id, service_date=service_date).order_by(
+            "space_key", "sort_order", "title"
+        )
+        return Response({"count": queryset.count(), "entries": ServiceMenuEntrySerializer(queryset, many=True).data})
+
     @transaction.atomic
     def post(self, request):
         serializer = ServiceMenuEntrySyncSerializer(data=request.data)
@@ -103,6 +114,25 @@ class ServiceMenuEntrySyncView(APIView):
 
 
 class ServiceIngredientsView(APIView):
+    @staticmethod
+    def _resolve_snapshot_for_entry(entry: ServiceMenuEntry):
+        if entry.fiche_product_id:
+            snapshot = (
+                RecipeSnapshot.objects.filter(fiche_product_id=entry.fiche_product_id)
+                .order_by("-source_updated_at", "-created_at")
+                .first()
+            )
+            if snapshot:
+                return snapshot
+
+        title = (entry.title or "").strip()
+        if not title:
+            return None
+        snapshot = RecipeSnapshot.objects.filter(title__iexact=title).order_by("-source_updated_at", "-created_at").first()
+        if snapshot:
+            return snapshot
+        return RecipeSnapshot.objects.filter(title__icontains=title).order_by("-source_updated_at", "-created_at").first()
+
     def get(self, request):
         site_id = request.query_params.get("site")
         service_date = request.query_params.get("date")
@@ -117,32 +147,15 @@ class ServiceIngredientsView(APIView):
         if not entries.exists():
             return Response({"rows": [], "warnings": ["Nessuna voce menu attiva per data/sede selezionata."]})
 
-        fiche_ids = [entry.fiche_product_id for entry in entries if entry.fiche_product_id]
         warnings: list[str] = []
-
-        snapshots = {}
-        for entry in entries:
-            if not entry.fiche_product_id:
-                continue
-            snapshot = (
-                RecipeSnapshot.objects.filter(fiche_product_id=entry.fiche_product_id)
-                .order_by("-source_updated_at", "-created_at")
-                .first()
-            )
-            if snapshot:
-                snapshots[entry.fiche_product_id] = snapshot
 
         supplier_agg: dict[tuple[str, str, str], Decimal] = defaultdict(lambda: Decimal("0"))
         recipe_rows: list[dict] = []
 
         for entry in entries:
-            if not entry.fiche_product_id:
-                warnings.append(f"'{entry.title}': fiche_product_id mancante.")
-                continue
-
-            snapshot = snapshots.get(entry.fiche_product_id)
+            snapshot = self._resolve_snapshot_for_entry(entry)
             if not snapshot:
-                warnings.append(f"'{entry.title}': nessuna fiche importata trovata per {entry.fiche_product_id}.")
+                warnings.append(f"'{entry.title}': nessuna fiche importata trovata (uuid/titolo).")
                 continue
 
             ingredients = extract_ingredients(snapshot.payload or {})

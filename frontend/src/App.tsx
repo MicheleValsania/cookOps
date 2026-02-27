@@ -86,15 +86,6 @@ const FICHE_RECIPE_SUGGESTIONS = [
   "Tiramisu",
 ];
 
-const SUPPLIER_PRODUCT_SUGGESTIONS = [
-  "Spritz Signature",
-  "Negroni Classico",
-  "Prosecco Extra Dry",
-  "Pinot Grigio DOC",
-  "IPA Artigianale",
-  "Acqua Frizzante 75cl",
-];
-
 type RecipeTitleSuggestion = {
   fiche_product_id: string;
   title: string;
@@ -199,6 +190,7 @@ function App() {
   const [recipeTitleSuggestions, setRecipeTitleSuggestions] = useState<RecipeTitleSuggestion[]>(
     FICHE_RECIPE_SUGGESTIONS.map((title) => ({ fiche_product_id: "", title }))
   );
+  const [supplierProductSuggestions, setSupplierProductSuggestions] = useState<string[]>([]);
   const [ingredientsView, setIngredientsView] = useState<"supplier" | "recipe">("supplier");
   const [ingredientsRows, setIngredientsRows] = useState<Array<Record<string, unknown>>>([]);
   const [ingredientWarnings, setIngredientWarnings] = useState<string[]>([]);
@@ -255,6 +247,17 @@ function App() {
   }, [isMenuEditorOpen, entryKind, entryTitle]);
 
   useEffect(() => {
+    if (!isMenuEditorOpen) return;
+    const currentEditingSpace =
+      menuSpaces.find((space) => space.id === editingSpaceId) ??
+      menuSpaces.find((space) => space.id === activeMenuSpaceId) ??
+      null;
+    if (entryKind !== "product" && currentEditingSpace?.type === "recipes") return;
+    const search = entryTitle.trim();
+    void loadSupplierProductSuggestions(search);
+  }, [isMenuEditorOpen, entryKind, entryTitle, menuSpaces, editingSpaceId, activeMenuSpaceId]);
+
+  useEffect(() => {
     if (!isMenuEditorOpen || entryKind !== "recipe") return;
     const normalized = entryTitle.trim().toLowerCase();
     if (!normalized) {
@@ -272,6 +275,11 @@ function App() {
       setEntryFicheProductId(null);
     }
   }, [entryKind]);
+
+  useEffect(() => {
+    if (nav !== "ricette" || !siteId || !serviceDate) return;
+    void loadServiceMenuEntries(siteId, serviceDate);
+  }, [nav, siteId, serviceDate]);
 
   function buildSiteCode(raw: string) {
     return raw
@@ -304,7 +312,7 @@ function App() {
       value: item.title,
       fiche_product_id: item.fiche_product_id || null,
     }));
-    const productSuggestions: MenuSuggestion[] = SUPPLIER_PRODUCT_SUGGESTIONS.map((title) => ({
+    const productSuggestions: MenuSuggestion[] = supplierProductSuggestions.map((title) => ({
       key: `product:${title}`,
       value: title,
       fiche_product_id: null,
@@ -313,7 +321,7 @@ function App() {
     if (editingSpace.type === "recipes") return recipeSuggestions;
     if (editingSpace.type === "supplier_products") return productSuggestions;
     return [...recipeSuggestions, ...productSuggestions];
-  }, [editingSpace, recipeTitleSuggestions]);
+  }, [editingSpace, recipeTitleSuggestions, supplierProductSuggestions]);
 
   async function loadRecipeTitleSuggestions(search = "") {
     try {
@@ -335,6 +343,84 @@ function App() {
       );
     } catch {
       setRecipeTitleSuggestions(FICHE_RECIPE_SUGGESTIONS.map((title) => ({ fiche_product_id: "", title })));
+    }
+  }
+
+  async function loadSupplierProductSuggestions(search = "") {
+    try {
+      const query = search ? `?active=1&q=${encodeURIComponent(search)}` : "?active=1";
+      const res = await apiFetch(`/supplier-products/${query}`);
+      const body = await res.json();
+      if (!res.ok) {
+        setSupplierProductSuggestions([]);
+        return;
+      }
+      const names = ((body ?? []) as Array<{ name?: string }>).map((item) => item.name?.trim() ?? "").filter(Boolean);
+      setSupplierProductSuggestions([...new Set(names)]);
+    } catch {
+      setSupplierProductSuggestions([]);
+    }
+  }
+
+  async function loadServiceMenuEntries(targetSiteId: string, targetServiceDate: string) {
+    try {
+      const res = await apiFetch(
+        `/servizio/menu-entries/sync?site=${encodeURIComponent(targetSiteId)}&date=${encodeURIComponent(targetServiceDate)}`
+      );
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(`Caricamento carta KO: ${body.detail ?? JSON.stringify(body)}`);
+        return;
+      }
+      const baseSpaces = (menuSpaces.length > 0 ? menuSpaces : DEFAULT_MENU_SPACES).map((space) => ({ ...space, entries: [] }));
+      const spaceMap = new Map<string, MenuSpace>(baseSpaces.map((space) => [space.id, space]));
+      const entries = (body.entries ?? []) as Array<{
+        id: string;
+        space_key: string;
+        section?: string | null;
+        title: string;
+        fiche_product_id?: string | null;
+        expected_qty?: string;
+        sort_order?: number;
+        metadata?: Record<string, unknown>;
+      }>;
+      entries
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+        .forEach((item) => {
+          const key = item.space_key;
+          if (!spaceMap.has(key)) {
+            const generated: MenuSpace = {
+              id: key,
+              label: key.replace(/[-_]/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()),
+              enabled: true,
+              order: spaceMap.size + 1,
+              type: "mixed",
+              sections: [],
+              entries: [],
+            };
+            spaceMap.set(key, generated);
+          }
+          const space = spaceMap.get(key)!;
+          const meta = item.metadata ?? {};
+          const itemKind = meta.item_kind === "product" ? "product" : "recipe";
+          const validFrom = typeof meta.valid_from === "string" ? meta.valid_from : "";
+          const validTo = typeof meta.valid_to === "string" ? meta.valid_to : "";
+          space.entries.push({
+            id: item.id,
+            title: item.title,
+            item_kind: itemKind,
+            section: item.section ?? "",
+            fiche_product_id: item.fiche_product_id ?? null,
+            expected_qty: item.expected_qty ?? "1",
+            valid_from: validFrom,
+            valid_to: validTo,
+          });
+        });
+      const nextSpaces = Array.from(spaceMap.values()).sort((a, b) => a.order - b.order);
+      setMenuSpaces(nextSpaces);
+      ensureActiveSpaceStillValid(nextSpaces);
+    } catch {
+      setNotice("Errore caricamento carta da backend.");
     }
   }
 
@@ -367,25 +453,33 @@ function App() {
 
   function moveMenuEntry(spaceId: string, entryId: string, direction: "up" | "down") {
     setMenuSpaces((prev) =>
-      prev.map((space) => {
-        if (space.id !== spaceId) return space;
-        const index = space.entries.findIndex((entry) => entry.id === entryId);
-        if (index < 0) return space;
-        const targetIndex = direction === "up" ? index - 1 : index + 1;
-        if (targetIndex < 0 || targetIndex >= space.entries.length) return space;
-        const nextEntries = [...space.entries];
-        const [current] = nextEntries.splice(index, 1);
-        nextEntries.splice(targetIndex, 0, current);
-        return { ...space, entries: nextEntries };
-      })
+      {
+        const next = prev.map((space) => {
+          if (space.id !== spaceId) return space;
+          const index = space.entries.findIndex((entry) => entry.id === entryId);
+          if (index < 0) return space;
+          const targetIndex = direction === "up" ? index - 1 : index + 1;
+          if (targetIndex < 0 || targetIndex >= space.entries.length) return space;
+          const nextEntries = [...space.entries];
+          const [current] = nextEntries.splice(index, 1);
+          nextEntries.splice(targetIndex, 0, current);
+          return { ...space, entries: nextEntries };
+        });
+        void syncServiceMenuEntries(next, false);
+        return next;
+      }
     );
   }
 
   function deleteMenuEntry(spaceId: string, entryId: string) {
     setMenuSpaces((prev) =>
-      prev.map((space) =>
-        space.id === spaceId ? { ...space, entries: space.entries.filter((entry) => entry.id !== entryId) } : space
-      )
+      {
+        const next = prev.map((space) =>
+          space.id === spaceId ? { ...space, entries: space.entries.filter((entry) => entry.id !== entryId) } : space
+        );
+        void syncServiceMenuEntries(next, false);
+        return next;
+      }
     );
   }
 
@@ -415,6 +509,7 @@ function App() {
     };
     const nextSpaces = [...menuSpaces, nextSpace];
     setMenuSpaces(nextSpaces);
+    void syncServiceMenuEntries(nextSpaces, false);
     setNewSpaceLabel("");
     setNewSpaceType("recipes");
     setActiveMenuSpaceId(nextSpace.id);
@@ -426,6 +521,7 @@ function App() {
     const nextSpaces = menuSpaces.map((space) => (space.id === spaceId ? { ...space, ...patch } : space));
     setMenuSpaces(nextSpaces);
     ensureActiveSpaceStillValid(nextSpaces);
+    void syncServiceMenuEntries(nextSpaces, false);
   }
 
   function removeMenuSpace(spaceId: string) {
@@ -436,6 +532,7 @@ function App() {
     }
     setMenuSpaces(nextSpaces);
     ensureActiveSpaceStillValid(nextSpaces);
+    void syncServiceMenuEntries(nextSpaces, false);
   }
 
   function addMenuSection() {
@@ -446,7 +543,13 @@ function App() {
       return;
     }
     setMenuSpaces((prev) =>
-      prev.map((space) => (space.id === editingSpace.id ? { ...space, sections: [...space.sections, section] } : space))
+      {
+        const next = prev.map((space) =>
+          space.id === editingSpace.id ? { ...space, sections: [...space.sections, section] } : space
+        );
+        void syncServiceMenuEntries(next, false);
+        return next;
+      }
     );
     setNewSectionName("");
   }
@@ -767,8 +870,8 @@ function App() {
       valid_from: entryValidFrom,
       valid_to: entryValidTo,
     };
-    setMenuSpaces((prev) =>
-      prev.map((space) => {
+    setMenuSpaces((prev) => {
+      const next = prev.map((space) => {
         if (space.id !== editingSpace.id) return space;
         if (editingEntryId) {
           return {
@@ -777,8 +880,10 @@ function App() {
           };
         }
         return { ...space, entries: [...space.entries, nextEntry] };
-      })
-    );
+      });
+      void syncServiceMenuEntries(next, false);
+      return next;
+    });
     setIsMenuEditorOpen(false);
     setEditingEntryId(null);
     setEntryTitle("");
@@ -790,12 +895,14 @@ function App() {
     setNotice(editingEntryId ? "Elemento aggiornato." : "Elemento aggiunto.");
   }
 
-  async function syncServiceMenuEntries() {
+  async function syncServiceMenuEntries(spacesToSync: MenuSpace[] = menuSpaces, withNotice = true) {
     if (!siteId) {
-      setNotice("Seleziona un punto vendita prima di generare la checklist.");
+      if (withNotice) {
+        setNotice("Seleziona un punto vendita prima di generare la checklist.");
+      }
       return false;
     }
-    const entries = menuSpaces
+    const entries = spacesToSync
       .filter((space) => space.enabled)
       .sort((a, b) => a.order - b.order)
       .flatMap((space) =>
@@ -826,8 +933,13 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Sync carta KO: ${body.detail ?? JSON.stringify(body)}`);
+      if (withNotice) {
+        setNotice(`Sync carta KO: ${body.detail ?? JSON.stringify(body)}`);
+      }
       return false;
+    }
+    if (withNotice) {
+      setNotice("Carta salvata.");
     }
     return true;
   }
@@ -1333,6 +1445,7 @@ function App() {
                 <section>
                   <h3>Spazi</h3>
                   {menuSpaces
+                    .slice()
                     .sort((a, b) => a.order - b.order)
                     .map((space) => (
                       <div key={space.id} className="space-row">
@@ -1376,11 +1489,15 @@ function App() {
                           className="danger-btn"
                           onClick={() =>
                             setMenuSpaces((prev) =>
-                              prev.map((space) =>
-                                space.id === editingSpace.id
-                                  ? { ...space, sections: space.sections.filter((current) => current !== section) }
-                                  : space
-                              )
+                              {
+                                const next = prev.map((space) =>
+                                  space.id === editingSpace.id
+                                    ? { ...space, sections: space.sections.filter((current) => current !== section) }
+                                    : space
+                                );
+                                void syncServiceMenuEntries(next, false);
+                                return next;
+                              }
                             )
                           }
                         >

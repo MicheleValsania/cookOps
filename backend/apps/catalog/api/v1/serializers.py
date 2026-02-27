@@ -11,11 +11,14 @@ class SupplierSerializer(serializers.ModelSerializer):
 
 
 class SupplierProductSerializer(serializers.ModelSerializer):
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True)
+
     class Meta:
         model = SupplierProduct
         fields = (
             "id",
             "supplier",
+            "supplier_name",
             "name",
             "supplier_sku",
             "ean",

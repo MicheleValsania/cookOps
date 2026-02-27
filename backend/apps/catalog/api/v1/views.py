@@ -25,3 +25,17 @@ class SupplierProductViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, vie
 
     def perform_create(self, serializer):
         serializer.save(supplier=self.get_supplier())
+
+
+class SupplierProductCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    serializer_class = SupplierProductSerializer
+
+    def get_queryset(self):
+        queryset = SupplierProduct.objects.select_related("supplier").order_by("name")
+        active_only = self.request.query_params.get("active")
+        if active_only in {"1", "true", "True"}:
+            queryset = queryset.filter(active=True)
+        query = (self.request.query_params.get("q") or "").strip()
+        if query:
+            queryset = queryset.filter(name__icontains=query)
+        return queryset

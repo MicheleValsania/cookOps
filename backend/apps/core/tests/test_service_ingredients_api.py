@@ -66,3 +66,82 @@ class ServiceIngredientsApiTests(TestCase):
         self.assertIn("ingredient", row)
         self.assertIn("qty_total", row)
         self.assertIn("unit", row)
+
+    def test_qty_string_is_parsed_from_fiche_payload(self):
+        fiche_id = uuid.uuid4()
+        RecipeSnapshot.objects.create(
+            fiche_product_id=fiche_id,
+            title="Insalata Caesar",
+            snapshot_hash="hash-caesar",
+            payload={
+                "ingredients": [
+                    {"name": "Pollo", "qty": "130 g", "supplier": "AEM"},
+                ]
+            },
+        )
+        self.client.post(
+            "/api/v1/servizio/menu-entries/sync",
+            {
+                "site_id": str(self.site.id),
+                "service_date": "2026-02-27",
+                "entries": [
+                    {
+                        "space_key": "menu-giorno",
+                        "title": "Insalata Caesar",
+                        "fiche_product_id": str(fiche_id),
+                        "expected_qty": "2.000",
+                    }
+                ],
+            },
+            format="json",
+        )
+        response = self.client.get(
+            f"/api/v1/servizio/ingredients?site={self.site.id}&date=2026-02-27&view=supplier"
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()["rows"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ingredient"], "Pollo")
+        self.assertEqual(rows[0]["unit"], "g")
+        self.assertEqual(rows[0]["qty_total"], "260.000")
+
+    def test_ingredients_fallback_to_title_when_uuid_not_found(self):
+        RecipeSnapshot.objects.create(
+            fiche_product_id=uuid.uuid4(),
+            title="Gazpacho Andaluz",
+            snapshot_hash="hash-gazpacho",
+            payload={
+                "ingredients": [
+                    {"name": "Pomodoro", "qty": "2.000", "unit": "kg", "supplier": "Orto"},
+                ]
+            },
+        )
+
+        sync_response = self.client.post(
+            "/api/v1/servizio/menu-entries/sync",
+            {
+                "site_id": str(self.site.id),
+                "service_date": "2026-02-27",
+                "entries": [
+                    {
+                        "space_key": "menu-giorno",
+                        "section": "Speciali",
+                        "title": "Gazpacho Andaluz",
+                        "fiche_product_id": str(uuid.uuid4()),
+                        "expected_qty": "1.000",
+                        "sort_order": 0,
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(sync_response.status_code, 201)
+
+        response = self.client.get(
+            f"/api/v1/servizio/ingredients?site={self.site.id}&date=2026-02-27&view=supplier"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["view"], "supplier")
+        self.assertEqual(len(body["rows"]), 1)
+        self.assertEqual(body["rows"][0]["ingredient"], "Pomodoro")

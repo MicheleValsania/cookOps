@@ -8,8 +8,12 @@ from rest_framework.views import APIView
 from apps.integration.api.v1.serializers import (
     DocumentExtractionSerializer,
     ExtractionIngestSerializer,
+    FicheCatalogImportSerializer,
+    FicheSnapshotImportSerializer,
     IntegrationDocumentSerializer,
 )
+from apps.integration.fiches_catalog import import_supplier_catalog_from_fiches
+from apps.integration.fiches_snapshots import import_recipe_snapshots
 from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
 from apps.integration.models import DocumentExtraction, IntegrationDocument
@@ -100,3 +104,72 @@ class FicheRecipeTitleListView(APIView):
 
         titles = fetch_recipe_titles(query=query, limit=limit)
         return Response({"results": titles})
+
+
+class FicheSnapshotImportView(APIView):
+    def post(self, request):
+        serializer = FicheSnapshotImportSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+
+        query = serializer.validated_data.get("query", "")
+        limit = serializer.validated_data.get("limit", 500)
+        idempotency_key = (
+            serializer.validated_data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key", "")
+            or f"fiches-snapshots:{query}:{limit}"
+        )
+
+        existing = find_completed_batch("fiches", "recipe_snapshot", idempotency_key)
+        if existing:
+            result = existing.result or {}
+            return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
+
+        batch = start_batch(
+            "fiches",
+            "recipe_snapshot",
+            idempotency_key,
+            {"query": query, "limit": limit},
+        )
+        try:
+            result = import_recipe_snapshots(query=query, limit=limit)
+            if not result.get("ok"):
+                fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
+                return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)
+            complete_batch(batch, status.HTTP_201_CREATED, result)
+            return Response(result, status=status.HTTP_201_CREATED)
+        except Exception as exc:
+            fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
+            raise
+
+
+class FicheCatalogImportView(APIView):
+    def post(self, request):
+        serializer = FicheCatalogImportSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+
+        idempotency_key = (
+            serializer.validated_data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key", "")
+            or "fiches-catalog"
+        )
+        existing = find_completed_batch("fiches", "supplier_catalog", idempotency_key)
+        if existing:
+            result = existing.result or {}
+            return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
+
+        batch = start_batch(
+            "fiches",
+            "supplier_catalog",
+            idempotency_key,
+            {},
+        )
+        try:
+            result = import_supplier_catalog_from_fiches()
+            if not result.get("ok"):
+                fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
+                return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)
+            complete_batch(batch, status.HTTP_201_CREATED, result)
+            return Response(result, status=status.HTTP_201_CREATED)
+        except Exception as exc:
+            fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
+            raise

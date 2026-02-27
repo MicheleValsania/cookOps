@@ -106,3 +106,13 @@ class ExtractionIngestSerializer(serializers.Serializer):
         attrs["target"] = target
         attrs["extraction"] = extraction
         return attrs
+
+
+class FicheSnapshotImportSerializer(serializers.Serializer):
+    query = serializers.CharField(required=False, allow_blank=True, default="")
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=5000, default=500)
+    idempotency_key = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class FicheCatalogImportSerializer(serializers.Serializer):
+    idempotency_key = serializers.CharField(required=False, allow_blank=True, default="")
