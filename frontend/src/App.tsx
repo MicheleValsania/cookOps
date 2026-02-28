@@ -7,6 +7,7 @@ type NavKey =
   | "acquisti"
   | "fornitori"
   | "ricette"
+  | "comande"
   | "riconciliazioni"
   | "report";
 
@@ -29,15 +30,6 @@ type SiteItem = {
   name: string;
   code: string;
   is_active: boolean;
-};
-
-type ServicePlanRow = {
-  id: string;
-  ricetta: string;
-  puntoVendita: string;
-  settore: string;
-  coperti: number;
-  fornitore: string;
 };
 
 type MenuSpaceType = "recipes" | "supplier_products" | "mixed";
@@ -69,6 +61,7 @@ const NAV_ITEMS: Array<{ key: NavKey; label: string; help: string }> = [
   { key: "acquisti", label: "Acquisti", help: "Bolle, fatture, ingest" },
   { key: "fornitori", label: "Fornitori e listini", help: "Anagrafica fornitori" },
   { key: "ricette", label: "Ricette e carte", help: "Carta fissa e menu giorno" },
+  { key: "comande", label: "Comande", help: "Liste ingredienti e ordini" },
   { key: "riconciliazioni", label: "Riconciliazioni", help: "Bolle e fatture" },
   { key: "report", label: "Report", help: "Vendite POS e scostamenti" },
 ];
@@ -161,16 +154,6 @@ function App() {
   const [salesLines, setSalesLines] = useState('[{"pos_name":"Pizza Margherita","qty":12}]');
 
   const [serviceDate, setServiceDate] = useState("2026-02-27");
-  const [serviceRows, setServiceRows] = useState<ServicePlanRow[]>([
-    {
-      id: crypto.randomUUID(),
-      ricetta: "Focaccia Bresaola",
-      puntoVendita: "Sala principale",
-      settore: "Panini",
-      coperti: 30,
-      fornitore: "AEM",
-    },
-  ]);
   const [menuSpaces, setMenuSpaces] = useState<MenuSpace[]>(DEFAULT_MENU_SPACES);
   const [activeMenuSpaceId, setActiveMenuSpaceId] = useState(DEFAULT_MENU_SPACES[0].id);
   const [isMenuEditorOpen, setIsMenuEditorOpen] = useState(false);
@@ -280,6 +263,13 @@ function App() {
     if (nav !== "ricette" || !siteId || !serviceDate) return;
     void loadServiceMenuEntries(siteId, serviceDate);
   }, [nav, siteId, serviceDate]);
+
+  useEffect(() => {
+    setIngredientsRows([]);
+    setIngredientWarnings([]);
+    if (!siteId) return;
+    setMenuSpaces((prev) => prev.map((space) => ({ ...space, entries: [] })));
+  }, [siteId]);
 
   function buildSiteCode(raw: string) {
     return raw
@@ -977,48 +967,26 @@ function App() {
     await loadIngredientsChecklist(ingredientsView);
   }
 
-  function addServiceRow() {
-    setServiceRows((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        ricetta: "",
-        puntoVendita: "",
-        settore: "",
-        coperti: 0,
-        fornitore: "",
-      },
-    ]);
-  }
-
-  function updateServiceRow(id: string, patch: Partial<ServicePlanRow>) {
-    setServiceRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  }
-
-  const ordiniPerFornitore = useMemo(() => {
-    const map = new Map<string, number>();
-    serviceRows.forEach((r) => {
-      if (!r.fornitore) return;
-      map.set(r.fornitore, (map.get(r.fornitore) ?? 0) + r.coperti);
-    });
-    return Array.from(map.entries()).map(([fornitore, coperti]) => ({ fornitore, coperti }));
-  }, [serviceRows]);
-
-  const ordiniPerSettore = useMemo(() => {
-    const map = new Map<string, number>();
-    serviceRows.forEach((r) => {
-      if (!r.settore) return;
-      map.set(r.settore, (map.get(r.settore) ?? 0) + r.coperti);
-    });
-    return Array.from(map.entries()).map(([settore, coperti]) => ({ settore, coperti }));
-  }, [serviceRows]);
-
-  const totaleCoperti = useMemo(
-    () => serviceRows.reduce((sum, row) => sum + (Number.isFinite(row.coperti) ? row.coperti : 0), 0),
-    [serviceRows]
+  const vociCartaTotali = useMemo(
+    () => menuSpaces.reduce((acc, space) => acc + space.entries.length, 0),
+    [menuSpaces]
   );
 
   const activeSite = sites.find((site) => site.id === siteId);
+  const supplierOrderGroups = useMemo(() => {
+    if (ingredientsView !== "supplier") return [];
+    const grouped = new Map<string, Array<Record<string, unknown>>>();
+    ingredientsRows.forEach((row) => {
+      const supplier = String(row.supplier ?? "Senza fornitore");
+      if (!grouped.has(supplier)) {
+        grouped.set(supplier, []);
+      }
+      grouped.get(supplier)!.push(row);
+    });
+    return Array.from(grouped.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([supplier, rows]) => ({ supplier, rows }));
+  }, [ingredientsRows, ingredientsView]);
 
   return (
     <div className="shell">
@@ -1091,7 +1059,7 @@ function App() {
             <section className="grid grid-3">
               <article className="panel metric-card"><strong>{sites.filter((s) => s.is_active).length}</strong><span>Punti vendita attivi</span></article>
               <article className="panel metric-card"><strong>{documents.length}</strong><span>Documenti importati</span></article>
-              <article className="panel metric-card"><strong>{totaleCoperti}</strong><span>Coperti pianificati</span></article>
+              <article className="panel metric-card"><strong>{vociCartaTotali}</strong><span>Voci carta attive</span></article>
               <article className="panel"><h3>Urgenze</h3><ul className="clean-list"><li>Controlla documenti in attesa ingest</li><li>Verifica lotti con DLC ravvicinata</li><li>Conferma import POS giornaliero</li></ul></article>
               <article className="panel"><h3>Food cost</h3><p className="muted">Confronto teorico vs consuntivo disponibile nel modulo Report.</p></article>
               <article className="panel"><h3>Stato riconciliazioni</h3><p className="muted">Usa la sezione Riconciliazioni per abbinare bolle e fatture.</p></article>
@@ -1148,8 +1116,16 @@ function App() {
                   <p className="muted">Nessuno spazio attivo. Attivalo nei Parametri avanzati.</p>
                 )}
               </section>
+            </div>
+          )}
+
+          {nav === "comande" && (
+            <div className="grid grid-single">
               <section className="panel">
-                <h3>Checklist ingredienti servizio</h3>
+                <h2>Liste comande</h2>
+                <p className="muted">
+                  Genera il listino ingredienti per il punto vendita selezionato e il menu in corso.
+                </p>
                 <div className="grid grid-2">
                   <div>
                     <label>Data servizio</label>
@@ -1179,6 +1155,9 @@ function App() {
                   <button type="button" onClick={() => window.print()} disabled={ingredientsRows.length === 0}>
                     Stampa checklist
                   </button>
+                  <button type="button" onClick={() => window.print()} disabled={ingredientsRows.length === 0}>
+                    Genera PDF
+                  </button>
                 </div>
                 {ingredientWarnings.length > 0 ? (
                   <ul className="clean-list">
@@ -1192,30 +1171,32 @@ function App() {
                 {ingredientsRows.length === 0 ? (
                   <p className="muted">Nessun risultato ancora. Premi "Genera checklist".</p>
                 ) : ingredientsView === "supplier" ? (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Fornitore</th>
-                        <th>Ingrediente</th>
-                        <th>Qta totale</th>
-                        <th>UM</th>
-                        <th>Rimanenza</th>
-                        <th>Da ordinare</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ingredientsRows.map((row, idx) => (
-                        <tr key={`${String(row.supplier)}-${String(row.ingredient)}-${idx}`}>
-                          <td>{String(row.supplier ?? "-")}</td>
-                          <td>{String(row.ingredient ?? "-")}</td>
-                          <td>{String(row.qty_total ?? "-")}</td>
-                          <td>{String(row.unit ?? "-")}</td>
-                          <td>_____</td>
-                          <td>_____</td>
+                  <div className="comande-sections">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Fornitore</th>
+                          <th>Ingrediente</th>
+                          <th>Qta totale</th>
+                          <th>UM</th>
+                          <th>Rimanenza</th>
+                          <th>Da ordinare</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {ingredientsRows.map((row, idx) => (
+                          <tr key={`${String(row.supplier)}-${String(row.ingredient)}-${idx}`}>
+                            <td>{String(row.supplier ?? "-")}</td>
+                            <td>{String(row.ingredient ?? "-")}</td>
+                            <td>{String(row.qty_total ?? "-")}</td>
+                            <td>{String(row.unit ?? "-")}</td>
+                            <td>_____</td>
+                            <td>_____</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 ) : (
                   <div className="menu-entry-list">
                     {ingredientsRows.map((row, idx) => (
@@ -1244,6 +1225,42 @@ function App() {
                     ))}
                   </div>
                 )}
+                <section>
+                  <h3>Ordini per fornitore</h3>
+                  {ingredientsRows.length === 0 ? (
+                    <p className="muted">Genera prima la checklist per visualizzare gli ordini.</p>
+                  ) : ingredientsView !== "supplier" ? (
+                    <div className="entry-actions">
+                      <p className="muted">Questa vista richiede "Aggregata per fornitore".</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIngredientsView("supplier");
+                          void loadIngredientsChecklist("supplier");
+                        }}
+                      >
+                        Passa a vista fornitore
+                      </button>
+                    </div>
+                  ) : supplierOrderGroups.length === 0 ? (
+                    <p className="muted">Nessun ordine per fornitore disponibile.</p>
+                  ) : (
+                    <div className="supplier-order-grid">
+                      {supplierOrderGroups.map((group) => (
+                        <article key={group.supplier} className="panel supplier-order-card">
+                          <h4>{group.supplier}</h4>
+                          <ul className="clean-list">
+                            {group.rows.map((row, idx) => (
+                              <li key={`${group.supplier}-${idx}`}>
+                                {String(row.ingredient ?? "-")} - {String(row.qty_total ?? "-")} {String(row.unit ?? "-")}
+                              </li>
+                            ))}
+                          </ul>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
               </section>
             </div>
           )}
