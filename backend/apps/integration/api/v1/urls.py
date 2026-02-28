@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from apps.integration.api.v1.views import (
     FicheCatalogImportView,
     DocumentExtractionViewSet,
+    FicheSnapshotEnvelopeImportView,
     FicheSnapshotImportView,
     FicheRecipeTitleListView,
     DocumentIngestViewSet,
@@ -24,6 +25,11 @@ urlpatterns = [
         "integration/fiches/snapshots/import/",
         FicheSnapshotImportView.as_view(),
         name="integration-fiches-snapshot-import",
+    ),
+    path(
+        "integration/fiches/snapshots/import-envelope/",
+        FicheSnapshotEnvelopeImportView.as_view(),
+        name="integration-fiches-snapshot-envelope-import",
     ),
     path(
         "integration/fiches/recipe-titles/",

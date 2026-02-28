@@ -6,6 +6,12 @@ CookOps pousse dans Fiches des IDs stables `supplierId` / `supplierProductId` po
 Règles:
 - Ne jamais recycler un `supplier_product_id`.
 - Renommage = même ID, nouveau `name`.
+- Export fiches vers CookOps: envelope JSON `export_version: "1.1"` (source_app `fiches-recettes`).
+- Import snapshots CookOps:
+  - endpoint: `POST /api/v1/integration/fiches/snapshots/import-envelope/`
+  - règle: hash SHA-256 calculé par fiche (payload canonique)
+  - si hash inchangé: snapshot ignoré
+  - si hash changé: nouveau snapshot créé (historique conservé)
 
 ## 2) Traccia ⇄ CookOps
 Enveloppe JSON versionnée (`schema_version`) et quantités canoniques `{value, unit}`.

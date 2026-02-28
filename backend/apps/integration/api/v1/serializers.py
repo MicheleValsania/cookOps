@@ -116,3 +116,8 @@ class FicheSnapshotImportSerializer(serializers.Serializer):
 
 class FicheCatalogImportSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class FicheSnapshotEnvelopeImportSerializer(serializers.Serializer):
+    idempotency_key = serializers.CharField(required=False, allow_blank=True, default="")
+    envelope = serializers.JSONField(required=False)

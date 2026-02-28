@@ -1,7 +1,9 @@
 ﻿from django.shortcuts import get_object_or_404
 from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import ValidationError
-from rest_framework.parsers import FormParser, MultiPartParser
+import json
+
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -9,11 +11,12 @@ from apps.integration.api.v1.serializers import (
     DocumentExtractionSerializer,
     ExtractionIngestSerializer,
     FicheCatalogImportSerializer,
+    FicheSnapshotEnvelopeImportSerializer,
     FicheSnapshotImportSerializer,
     IntegrationDocumentSerializer,
 )
 from apps.integration.fiches_catalog import import_supplier_catalog_from_fiches
-from apps.integration.fiches_snapshots import import_recipe_snapshots
+from apps.integration.fiches_snapshots import import_recipe_snapshots, import_recipe_snapshots_from_v11_envelope
 from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
 from apps.integration.models import DocumentExtraction, IntegrationDocument
@@ -132,6 +135,55 @@ class FicheSnapshotImportView(APIView):
         )
         try:
             result = import_recipe_snapshots(query=query, limit=limit)
+            if not result.get("ok"):
+                fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
+                return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)
+            complete_batch(batch, status.HTTP_201_CREATED, result)
+            return Response(result, status=status.HTTP_201_CREATED)
+        except Exception as exc:
+            fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
+            raise
+
+
+class FicheSnapshotEnvelopeImportView(APIView):
+    parser_classes = (JSONParser, MultiPartParser, FormParser)
+
+    def post(self, request):
+        serializer = FicheSnapshotEnvelopeImportSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+
+        envelope = serializer.validated_data.get("envelope")
+        upload_file = request.FILES.get("file")
+        if envelope is None and upload_file is not None:
+            try:
+                envelope = json.loads(upload_file.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return Response({"detail": "Invalid JSON file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not isinstance(envelope, dict):
+            return Response({"detail": "Provide 'envelope' JSON or upload 'file'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        exported_at = str(envelope.get("exported_at") or "").strip()
+        fiches_count = len(envelope.get("fiches") or []) if isinstance(envelope.get("fiches"), list) else 0
+        idempotency_key = (
+            serializer.validated_data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key", "")
+            or f"fiches-snapshots-envelope:{exported_at}:{fiches_count}"
+        )
+
+        existing = find_completed_batch("fiches", "recipe_snapshot_envelope", idempotency_key)
+        if existing:
+            result = existing.result or {}
+            return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
+
+        batch = start_batch(
+            "fiches",
+            "recipe_snapshot_envelope",
+            idempotency_key,
+            {"exported_at": exported_at, "fiches_count": fiches_count},
+        )
+        try:
+            result = import_recipe_snapshots_from_v11_envelope(envelope)
             if not result.get("ok"):
                 fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
                 return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)

@@ -45,6 +45,88 @@ def _snapshot_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _normalize_fiche_payload_from_v11(fiche: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": fiche.get("title") or "",
+        "category": fiche.get("category"),
+        "portions": fiche.get("portions"),
+        "language": fiche.get("language"),
+        "allergens": fiche.get("allergens") or [],
+        "ingredients": fiche.get("ingredients") or [],
+        "procedure_steps": fiche.get("procedure_steps") or [],
+        "haccp_profiles": fiche.get("haccp_profiles") or [],
+        "storage_profiles": fiche.get("storage_profiles") or [],
+        "label_hints": fiche.get("label_hints"),
+        "warnings": fiche.get("warnings") or [],
+    }
+
+
+def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    export_version = str(envelope.get("export_version") or "").strip()
+    if export_version != "1.1":
+        return {"ok": False, "detail": "Unsupported export_version. Expected '1.1'."}
+
+    source_app = str(envelope.get("source_app") or "").strip()
+    if source_app and source_app != "fiches-recettes":
+        return {"ok": False, "detail": "Unsupported source_app. Expected 'fiches-recettes'."}
+
+    fiches = envelope.get("fiches")
+    if not isinstance(fiches, list):
+        return {"ok": False, "detail": "Invalid envelope: 'fiches' must be an array."}
+
+    created = 0
+    skipped_existing = 0
+    invalid_ids = 0
+    invalid_payloads = 0
+    examples: list[str] = []
+
+    for fiche in fiches:
+        if not isinstance(fiche, dict):
+            invalid_payloads += 1
+            continue
+
+        fiche_id_raw = fiche.get("fiche_id")
+        try:
+            fiche_id = uuid.UUID(str(fiche_id_raw))
+        except (ValueError, TypeError):
+            invalid_ids += 1
+            continue
+
+        payload = _normalize_fiche_payload_from_v11(fiche)
+        snapshot_hash = _snapshot_hash(payload)
+        title = str(fiche.get("title") or "").strip()
+        source_updated_at = parse_datetime(str(fiche.get("updated_at") or "")) if fiche.get("updated_at") else None
+        portions = _to_decimal(fiche.get("portions"))
+
+        _, was_created = RecipeSnapshot.objects.get_or_create(
+            fiche_product_id=fiche_id,
+            snapshot_hash=snapshot_hash,
+            defaults={
+                "title": title,
+                "category": fiche.get("category"),
+                "portions": portions,
+                "source_updated_at": source_updated_at,
+                "payload": payload,
+            },
+        )
+        if was_created:
+            created += 1
+            if len(examples) < 5:
+                examples.append(title or str(fiche_id))
+        else:
+            skipped_existing += 1
+
+    return {
+        "ok": True,
+        "total_read": len(fiches),
+        "created": created,
+        "skipped_existing": skipped_existing,
+        "invalid_ids": invalid_ids,
+        "invalid_payloads": invalid_payloads,
+        "examples": examples,
+    }
+
+
 def import_recipe_snapshots(query: str = "", limit: int = 500) -> dict[str, Any]:
     if "fiches" not in connections.databases:
         return {"ok": False, "detail": "FICHES DB non configurato."}

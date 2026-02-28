@@ -157,6 +157,9 @@ function App() {
 
   const [suppliers, setSuppliers] = useState<SupplierItem[]>([]);
   const [newSupplierName, setNewSupplierName] = useState("");
+  const [isFichesSyncing, setIsFichesSyncing] = useState(false);
+  const [isFichesJsonImporting, setIsFichesJsonImporting] = useState(false);
+  const [fichesJsonFile, setFichesJsonFile] = useState<File | null>(null);
 
   const [salesDate, setSalesDate] = useState(getTodayIsoDate());
   const [posSourceId, setPosSourceId] = useState("");
@@ -712,6 +715,70 @@ function App() {
     setNewSupplierName("");
     setNotice(`Fornitore creato: ${body.name}`);
     await loadSuppliers();
+  }
+
+  async function onSyncFichesSnapshots() {
+    if (isFichesSyncing) return;
+    setIsFichesSyncing(true);
+    try {
+      const idempotencyKey = `fiches-auto-${new Date().toISOString()}`;
+      const res = await apiFetch("/integration/fiches/snapshots/import/", {
+        method: "POST",
+        body: JSON.stringify({ query: "", limit: 5000, idempotency_key: idempotencyKey }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(`Aggiorna fiches KO: ${body.detail ?? JSON.stringify(body)}`);
+        return;
+      }
+      setNotice(
+        `Fiches aggiornate. Letti: ${body.total_read ?? 0}, nuovi snapshot: ${body.created ?? 0}, invariati: ${body.skipped_existing ?? 0}.`
+      );
+      await loadRecipeTitleSuggestions("");
+    } catch {
+      setNotice("Errore di connessione durante aggiornamento fiches.");
+    } finally {
+      setIsFichesSyncing(false);
+    }
+  }
+
+  async function onImportFichesJsonEnvelope() {
+    if (isFichesJsonImporting) return;
+    if (!fichesJsonFile) {
+      setNotice("Seleziona prima un file JSON export v1.1.");
+      return;
+    }
+    setIsFichesJsonImporting(true);
+    try {
+      const text = await fichesJsonFile.text();
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(text);
+      } catch {
+        setNotice("File JSON non valido.");
+        return;
+      }
+
+      const idempotencyKey = `fiches-envelope-${new Date().toISOString()}`;
+      const res = await apiFetch("/integration/fiches/snapshots/import-envelope/", {
+        method: "POST",
+        body: JSON.stringify({ envelope, idempotency_key: idempotencyKey }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(`Import JSON fiches KO: ${body.detail ?? JSON.stringify(body)}`);
+        return;
+      }
+      setNotice(
+        `Import JSON fiches completato. Letti: ${body.total_read ?? 0}, nuovi snapshot: ${body.created ?? 0}, invariati: ${body.skipped_existing ?? 0}.`
+      );
+      setFichesJsonFile(null);
+      await loadRecipeTitleSuggestions("");
+    } catch {
+      setNotice("Errore di connessione durante import JSON fiches.");
+    } finally {
+      setIsFichesJsonImporting(false);
+    }
   }
 
   async function loadDocuments() {
@@ -1323,6 +1390,21 @@ function App() {
                   <button type="submit">Aggiungi fornitore</button>
                 </form>
                 <button type="button" onClick={loadSuppliers}>Aggiorna elenco</button>
+                <hr />
+                <h3>Fiches-recettes</h3>
+                <p className="muted">Sincronizza automaticamente tutte le fiches in CookOps (delta per hash + storico).</p>
+                <button type="button" onClick={onSyncFichesSnapshots} disabled={isFichesSyncing}>
+                  {isFichesSyncing ? "Aggiornamento fiches..." : "Aggiorna fiches"}
+                </button>
+                <p className="muted">Fallback manuale: importa export JSON v1.1 da file.</p>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(e) => setFichesJsonFile(e.target.files?.[0] ?? null)}
+                />
+                <button type="button" onClick={onImportFichesJsonEnvelope} disabled={isFichesJsonImporting || !fichesJsonFile}>
+                  {isFichesJsonImporting ? "Import JSON fiches..." : "Importa JSON fiches v1.1"}
+                </button>
               </section>
               <section className="panel">
                 <h2>Elenco fornitori</h2>
