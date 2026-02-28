@@ -35,6 +35,24 @@ def _parse_qty_and_unit(raw_qty: Any) -> tuple[Decimal, str | None]:
     return _to_decimal(text), None
 
 
+def normalize_qty_unit(qty: Decimal, unit: str | None) -> tuple[Decimal, str]:
+    normalized_unit = (unit or "pc").strip().lower()
+    piece_aliases = {"pc", "pz", "piece", "pieces", "unit", "unite", "unites"}
+    if normalized_unit in {"kg"}:
+        return qty, "kg"
+    if normalized_unit in {"g"}:
+        return qty / Decimal("1000"), "kg"
+    if normalized_unit in {"l"}:
+        return qty, "l"
+    if normalized_unit in {"ml"}:
+        return qty / Decimal("1000"), "l"
+    if normalized_unit in {"cl"}:
+        return qty / Decimal("100"), "l"
+    if normalized_unit in piece_aliases:
+        return qty, "pc"
+    return qty, normalized_unit
+
+
 def extract_ingredients(payload: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[Any] = []
     if isinstance(payload.get("ingredients"), list):

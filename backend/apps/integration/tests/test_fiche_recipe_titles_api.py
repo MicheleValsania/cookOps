@@ -33,3 +33,4 @@ class FicheRecipeTitlesApiTests(TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["title"], "Pizza Margherita")
         self.assertEqual(results[0]["fiche_product_id"], str(first_id))
+        self.assertIn("portions", results[0])

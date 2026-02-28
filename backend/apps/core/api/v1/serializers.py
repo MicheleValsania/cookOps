@@ -45,7 +45,7 @@ class ServiceMenuEntrySyncItemSerializer(serializers.Serializer):
     section = serializers.CharField(max_length=128, required=False, allow_blank=True)
     title = serializers.CharField(max_length=255)
     fiche_product_id = serializers.UUIDField(required=False, allow_null=True)
-    expected_qty = serializers.DecimalField(max_digits=12, decimal_places=3, required=False, default="1")
+    expected_qty = serializers.DecimalField(max_digits=12, decimal_places=3, required=False, default="0")
     sort_order = serializers.IntegerField(required=False, default=0)
     is_active = serializers.BooleanField(required=False, default=True)
     metadata = serializers.JSONField(required=False, default=dict)

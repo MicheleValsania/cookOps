@@ -82,6 +82,7 @@ const FICHE_RECIPE_SUGGESTIONS = [
 type RecipeTitleSuggestion = {
   fiche_product_id: string;
   title: string;
+  portions?: string | number | null;
 };
 
 type MenuSuggestion = {
@@ -120,6 +121,14 @@ const DEFAULT_MENU_SPACES: MenuSpace[] = [
   },
 ];
 
+function getTodayIsoDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function App() {
   const [nav, setNav] = useState<NavKey>("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -149,11 +158,11 @@ function App() {
   const [suppliers, setSuppliers] = useState<SupplierItem[]>([]);
   const [newSupplierName, setNewSupplierName] = useState("");
 
-  const [salesDate, setSalesDate] = useState("2026-02-27");
+  const [salesDate, setSalesDate] = useState(getTodayIsoDate());
   const [posSourceId, setPosSourceId] = useState("");
   const [salesLines, setSalesLines] = useState('[{"pos_name":"Pizza Margherita","qty":12}]');
 
-  const [serviceDate, setServiceDate] = useState("2026-02-27");
+  const [serviceDate, setServiceDate] = useState(getTodayIsoDate());
   const [menuSpaces, setMenuSpaces] = useState<MenuSpace[]>(DEFAULT_MENU_SPACES);
   const [activeMenuSpaceId, setActiveMenuSpaceId] = useState(DEFAULT_MENU_SPACES[0].id);
   const [isMenuEditorOpen, setIsMenuEditorOpen] = useState(false);
@@ -163,7 +172,7 @@ function App() {
   const [entryTitle, setEntryTitle] = useState("");
   const [entryFicheProductId, setEntryFicheProductId] = useState<string | null>(null);
   const [entryKind, setEntryKind] = useState<"recipe" | "product">("recipe");
-  const [entryExpectedQty, setEntryExpectedQty] = useState("1");
+  const [entryExpectedQty, setEntryExpectedQty] = useState("0");
   const [entrySection, setEntrySection] = useState("");
   const [entryValidFrom, setEntryValidFrom] = useState("");
   const [entryValidTo, setEntryValidTo] = useState("");
@@ -195,8 +204,9 @@ function App() {
       try {
         const parsed = JSON.parse(storedSpaces) as MenuSpace[];
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setMenuSpaces(parsed);
-          const firstEnabled = parsed
+          const structureOnly = parsed.map((space) => ({ ...space, entries: [] }));
+          setMenuSpaces(structureOnly);
+          const firstEnabled = structureOnly
             .filter((space) => space.enabled)
             .sort((a, b) => a.order - b.order)[0];
           if (firstEnabled) {
@@ -215,7 +225,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(MENU_SPACES_STORAGE_KEY, JSON.stringify(menuSpaces));
+    const structureOnly = menuSpaces.map((space) => ({ ...space, entries: [] }));
+    localStorage.setItem(MENU_SPACES_STORAGE_KEY, JSON.stringify(structureOnly));
   }, [menuSpaces]);
 
   useEffect(() => {
@@ -250,8 +261,15 @@ function App() {
     const match = recipeTitleSuggestions.find((item) => item.title.trim().toLowerCase() === normalized);
     if (match) {
       setEntryFicheProductId(match.fiche_product_id || null);
+      if (!editingEntryId) {
+        const portions = Number.parseFloat(String(match.portions ?? ""));
+        const current = Number.parseFloat(entryExpectedQty);
+        if (Number.isFinite(portions) && portions > 0 && (!Number.isFinite(current) || current <= 0)) {
+          setEntryExpectedQty(portions.toString());
+        }
+      }
     }
-  }, [isMenuEditorOpen, entryKind, entryTitle, recipeTitleSuggestions]);
+  }, [isMenuEditorOpen, entryKind, entryTitle, recipeTitleSuggestions, editingEntryId, entryExpectedQty]);
 
   useEffect(() => {
     if (entryKind === "product") {
@@ -260,15 +278,13 @@ function App() {
   }, [entryKind]);
 
   useEffect(() => {
-    if (nav !== "ricette" || !siteId || !serviceDate) return;
+    if (!siteId || !serviceDate) return;
     void loadServiceMenuEntries(siteId, serviceDate);
-  }, [nav, siteId, serviceDate]);
+  }, [siteId, serviceDate]);
 
   useEffect(() => {
     setIngredientsRows([]);
     setIngredientWarnings([]);
-    if (!siteId) return;
-    setMenuSpaces((prev) => prev.map((space) => ({ ...space, entries: [] })));
   }, [siteId]);
 
   function buildSiteCode(raw: string) {
@@ -326,6 +342,7 @@ function App() {
         .map((item) => ({
           fiche_product_id: item.fiche_product_id ?? "",
           title: item.title?.trim() ?? "",
+          portions: item.portions ?? null,
         }))
         .filter((item) => item.title.length > 0);
       setRecipeTitleSuggestions(
@@ -352,15 +369,17 @@ function App() {
     }
   }
 
-  async function loadServiceMenuEntries(targetSiteId: string, targetServiceDate: string) {
+  async function loadServiceMenuEntries(targetSiteId: string, targetServiceDate: string, withNotice = false) {
     try {
       const res = await apiFetch(
         `/servizio/menu-entries/sync?site=${encodeURIComponent(targetSiteId)}&date=${encodeURIComponent(targetServiceDate)}`
       );
       const body = await res.json();
       if (!res.ok) {
-        setNotice(`Caricamento carta KO: ${body.detail ?? JSON.stringify(body)}`);
-        return;
+        if (withNotice) {
+          setNotice(`Caricamento carta KO: ${body.detail ?? JSON.stringify(body)}`);
+        }
+        return false;
       }
       const baseSpaces = (menuSpaces.length > 0 ? menuSpaces : DEFAULT_MENU_SPACES).map((space) => ({ ...space, entries: [] }));
       const spaceMap = new Map<string, MenuSpace>(baseSpaces.map((space) => [space.id, space]));
@@ -401,7 +420,7 @@ function App() {
             item_kind: itemKind,
             section: item.section ?? "",
             fiche_product_id: item.fiche_product_id ?? null,
-            expected_qty: item.expected_qty ?? "1",
+            expected_qty: item.expected_qty ?? "0",
             valid_from: validFrom,
             valid_to: validTo,
           });
@@ -409,8 +428,12 @@ function App() {
       const nextSpaces = Array.from(spaceMap.values()).sort((a, b) => a.order - b.order);
       setMenuSpaces(nextSpaces);
       ensureActiveSpaceStillValid(nextSpaces);
+      return true;
     } catch {
-      setNotice("Errore caricamento carta da backend.");
+      if (withNotice) {
+        setNotice("Errore caricamento carta da backend.");
+      }
+      return false;
     }
   }
 
@@ -433,7 +456,7 @@ function App() {
     setEntryTitle(entry?.title ?? "");
     setEntryFicheProductId(entry?.fiche_product_id ?? null);
     setEntryKind(entry?.item_kind ?? (space.type === "supplier_products" ? "product" : "recipe"));
-    setEntryExpectedQty(entry?.expected_qty ?? "1");
+    setEntryExpectedQty(entry?.expected_qty ?? "0");
     setEntrySection(entry?.section ?? space.sections[0] ?? "");
     setEntryValidFrom(entry?.valid_from ?? "");
     setEntryValidTo(entry?.valid_to ?? "");
@@ -847,7 +870,7 @@ function App() {
       return;
     }
     if (!Number.isFinite(qtyValue) || qtyValue <= 0) {
-      setNotice("La quantita prevista deve essere maggiore di 0.");
+      setNotice("Le porzioni target devono essere maggiori di 0.");
       return;
     }
     const nextEntry: MenuEntry = {
@@ -878,7 +901,7 @@ function App() {
     setEditingEntryId(null);
     setEntryTitle("");
     setEntryFicheProductId(null);
-    setEntryExpectedQty("1");
+    setEntryExpectedQty("0");
     setEntrySection("");
     setEntryValidFrom("");
     setEntryValidTo("");
@@ -901,7 +924,7 @@ function App() {
           section: entry.section || "",
           title: entry.title,
           fiche_product_id: entry.item_kind === "recipe" ? entry.fiche_product_id ?? null : null,
-          expected_qty: entry.expected_qty || "1",
+          expected_qty: entry.expected_qty || "0",
           sort_order: index,
           is_active: true,
           metadata: {
@@ -962,8 +985,11 @@ function App() {
   }
 
   async function onGenerateChecklist() {
-    const synced = await syncServiceMenuEntries();
-    if (!synced) return;
+    const loaded = await loadServiceMenuEntries(siteId, serviceDate);
+    if (!loaded) {
+      setNotice("Impossibile ricaricare la carta dal backend prima della checklist.");
+      return;
+    }
     await loadIngredientsChecklist(ingredientsView);
   }
 
@@ -987,6 +1013,17 @@ function App() {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([supplier, rows]) => ({ supplier, rows }));
   }, [ingredientsRows, ingredientsView]);
+
+  function renderSourceBadge(row: Record<string, unknown>) {
+    const sourceType = String(row.source_type ?? "direct");
+    const sourceRecipeTitle = String(row.source_recipe_title ?? "").trim();
+    if (sourceType !== "derived_recipe") return null;
+    return (
+      <span className="origin-badge" title="Derivato da preparazione interna">
+        PR: {sourceRecipeTitle || "preparazione interna"}
+      </span>
+    );
+  }
 
   return (
     <div className="shell">
@@ -1070,6 +1107,12 @@ function App() {
             <div className="grid grid-single">
               <section className="panel menu-space-panel">
                 <h2>Spazi carta</h2>
+                <div className="grid grid-2">
+                  <div>
+                    <label>Data servizio</label>
+                    <input type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
+                  </div>
+                </div>
                 <div className="space-tabs">
                   {sortedEnabledSpaces.map((space) => (
                     <button
@@ -1095,7 +1138,7 @@ function App() {
                             <strong>{entry.title}</strong>
                             <small>
                               {entry.section || "Senza sezione"} | {entry.item_kind}
-                              {entry.item_kind === "recipe" ? ` | Qta prevista ${entry.expected_qty ?? "1"}` : ""}
+                              {entry.item_kind === "recipe" ? ` | Porzioni target ${entry.expected_qty ?? "0"}` : ""}
                               {entry.valid_from || entry.valid_to ? ` | ${entry.valid_from || "-"} -> ${entry.valid_to || "-"}` : ""}
                             </small>
                           </div>
@@ -1177,6 +1220,7 @@ function App() {
                         <tr>
                           <th>Fornitore</th>
                           <th>Ingrediente</th>
+                          <th>Origine</th>
                           <th>Qta totale</th>
                           <th>UM</th>
                           <th>Rimanenza</th>
@@ -1188,6 +1232,7 @@ function App() {
                           <tr key={`${String(row.supplier)}-${String(row.ingredient)}-${idx}`}>
                             <td>{String(row.supplier ?? "-")}</td>
                             <td>{String(row.ingredient ?? "-")}</td>
+                            <td>{renderSourceBadge(row)}</td>
                             <td>{String(row.qty_total ?? "-")}</td>
                             <td>{String(row.unit ?? "-")}</td>
                             <td>_____</td>
@@ -1204,8 +1249,8 @@ function App() {
                         <div>
                           <strong>{String(row.title ?? "-")}</strong>
                           <small>
-                            {String(row.space ?? "-")} | {String(row.section ?? "Senza sezione")} | Qta prevista{" "}
-                            {String(row.expected_qty ?? "1")}
+                            {String(row.space ?? "-")} | {String(row.section ?? "Senza sezione")} | Porzioni target{" "}
+                            {String(row.expected_qty ?? "0")}
                           </small>
                           <ul className="clean-list">
                             {Array.isArray(row.ingredients)
@@ -1214,7 +1259,8 @@ function App() {
                                   return (
                                     <li key={`${String(item.ingredient)}-${ingIdx}`}>
                                       {String(item.ingredient ?? "-")} - {String(item.qty_total ?? "-")}{" "}
-                                      {String(item.unit ?? "-")} ({String(item.supplier ?? "Senza fornitore")})
+                                      {String(item.unit ?? "-")} ({String(item.supplier ?? "Senza fornitore")}){" "}
+                                      {renderSourceBadge(item)}
                                     </li>
                                   );
                                 })
@@ -1253,6 +1299,8 @@ function App() {
                             {group.rows.map((row, idx) => (
                               <li key={`${group.supplier}-${idx}`}>
                                 {String(row.ingredient ?? "-")} - {String(row.qty_total ?? "-")} {String(row.unit ?? "-")}
+                                {" "}
+                                {renderSourceBadge(row)}
                               </li>
                             ))}
                           </ul>
@@ -1554,12 +1602,21 @@ function App() {
                 <option value="product">Prodotto</option>
               </select>
               {entryKind === "recipe" ? (
-                <p className="muted">Ricetta collegata: {entryFicheProductId ?? "non mappata (titolo non trovato)"}</p>
+                <p className="muted">
+                  Ricetta collegata: {entryFicheProductId ?? "non mappata (titolo non trovato)"}
+                  {" | "}
+                  Porzioni fiche:{" "}
+                  {(
+                    recipeTitleSuggestions.find(
+                      (item) => item.title.trim().toLowerCase() === entryTitle.trim().toLowerCase()
+                    )?.portions ?? "-"
+                  ).toString()}
+                </p>
               ) : null}
-              <label>Quantita prevista</label>
+              <label>Porzioni target</label>
               <input
                 type="number"
-                min="0.001"
+                min="0"
                 step="0.001"
                 value={entryExpectedQty}
                 onChange={(e) => setEntryExpectedQty(e.target.value)}

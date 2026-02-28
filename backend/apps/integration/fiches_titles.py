@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import connections
@@ -42,7 +43,16 @@ def _normalize_title(value: object) -> str:
     return text
 
 
-def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, str]]:
+def _to_decimal_or_none(value: object):
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, object]]:
     limit = max(1, min(limit, 100))
     query = query.strip()
 
@@ -50,8 +60,14 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, str]
         table_name = _safe_identifier(getattr(settings, "FICHES_RECIPE_TABLE", "public.recipes"), "public.recipes")
         id_col = _safe_identifier(getattr(settings, "FICHES_RECIPE_ID_COLUMN", "id"), "id")
         title_col = _safe_identifier(getattr(settings, "FICHES_RECIPE_TITLE_COLUMN", "title"), "title")
+        data_col = _safe_identifier(getattr(settings, "FICHES_RECIPE_DATA_COLUMN", "data"), "data")
         active_col = _safe_optional_identifier(getattr(settings, "FICHES_RECIPE_ACTIVE_COLUMN", ""))
-        sql = f"SELECT DISTINCT {id_col}::text, {title_col} FROM {table_name} WHERE {title_col} IS NOT NULL"
+        sql = (
+            f"SELECT DISTINCT {id_col}::text, {title_col}, "
+            f"CASE WHEN ({data_col}->>'portions') ~ '^[0-9]+([.,][0-9]+)?$' "
+            f"THEN REPLACE({data_col}->>'portions', ',', '.')::numeric ELSE NULL END "
+            f"FROM {table_name} WHERE {title_col} IS NOT NULL"
+        )
         params: list[object] = []
 
         if active_col:
@@ -67,7 +83,7 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, str]
             with connections["fiches"].cursor() as cursor:
                 cursor.execute(sql, params)
                 return [
-                    {"fiche_product_id": row[0], "title": _normalize_title(row[1])}
+                    {"fiche_product_id": row[0], "title": _normalize_title(row[1]), "portions": _to_decimal_or_none(row[2])}
                     for row in cursor.fetchall()
                     if row[1]
                 ]
@@ -75,12 +91,16 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, str]
             # Fallback to local snapshots when fiches DB is unavailable in current env/test.
             pass
 
-    queryset = RecipeSnapshot.objects.values("fiche_product_id", "title")
+    queryset = RecipeSnapshot.objects.values("fiche_product_id", "title", "portions")
     if query:
         queryset = queryset.filter(title__icontains=query)
     titles = queryset.order_by("title").distinct()[:limit]
     return [
-        {"fiche_product_id": str(item["fiche_product_id"]), "title": _normalize_title(item["title"])}
+        {
+            "fiche_product_id": str(item["fiche_product_id"]),
+            "title": _normalize_title(item["title"]),
+            "portions": item.get("portions"),
+        }
         for item in titles
         if item.get("title")
     ]

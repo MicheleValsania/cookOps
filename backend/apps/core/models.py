@@ -27,7 +27,7 @@ class ServiceMenuEntry(models.Model):
     section = models.CharField(max_length=128, blank=True, null=True)
     title = models.CharField(max_length=255)
     fiche_product_id = models.UUIDField(blank=True, null=True)
-    expected_qty = models.DecimalField(max_digits=12, decimal_places=3, default=1)
+    expected_qty = models.DecimalField(max_digits=12, decimal_places=3, default=0)
     sort_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     metadata = models.JSONField(default=dict, blank=True)

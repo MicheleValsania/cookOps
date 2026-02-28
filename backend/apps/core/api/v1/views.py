@@ -1,4 +1,5 @@
 ﻿from collections import defaultdict
+from datetime import date
 from decimal import Decimal
 
 from django.db import transaction
@@ -14,7 +15,7 @@ from apps.core.api.v1.serializers import (
     SiteWriteSerializer,
 )
 from apps.core.models import ServiceMenuEntry, Site
-from apps.core.services.service_ingredients import extract_ingredients
+from apps.core.services.service_ingredients import extract_ingredients, normalize_qty_unit
 from apps.integration.models import RecipeSnapshot
 
 
@@ -91,7 +92,7 @@ class ServiceMenuEntrySyncView(APIView):
                 section=item.get("section") or None,
                 title=item["title"],
                 fiche_product_id=item.get("fiche_product_id"),
-                expected_qty=item.get("expected_qty") or Decimal("1"),
+                expected_qty=item.get("expected_qty") or Decimal("0"),
                 sort_order=item.get("sort_order", 0),
                 is_active=item.get("is_active", True),
                 metadata=item.get("metadata") or {},
@@ -133,6 +134,98 @@ class ServiceIngredientsView(APIView):
             return snapshot
         return RecipeSnapshot.objects.filter(title__icontains=title).order_by("-source_updated_at", "-created_at").first()
 
+    @staticmethod
+    def _resolve_snapshot_for_ingredient_title(title: str):
+        cleaned = (title or "").strip()
+        if not cleaned:
+            return None
+        return RecipeSnapshot.objects.filter(title__iexact=cleaned).order_by("-source_updated_at", "-created_at").first()
+
+    @staticmethod
+    def _parse_iso_date(raw_value):
+        if not raw_value:
+            return None
+        if isinstance(raw_value, date):
+            return raw_value
+        try:
+            return date.fromisoformat(str(raw_value))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _is_entry_valid_for_service_date(cls, entry: ServiceMenuEntry, service_date: date):
+        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+        valid_from = cls._parse_iso_date(metadata.get("valid_from"))
+        valid_to = cls._parse_iso_date(metadata.get("valid_to"))
+        if valid_from and service_date < valid_from:
+            return False
+        if valid_to and service_date > valid_to:
+            return False
+        return True
+
+    def _expand_snapshot_ingredients(
+        self,
+        snapshot,
+        multiplier: Decimal,
+        warnings: list[str],
+        visited: set[str],
+        depth: int = 0,
+        derived_from_recipe: str | None = None,
+    ):
+        ingredients = extract_ingredients(snapshot.payload or {})
+        if not ingredients:
+            return []
+
+        max_depth = 6
+        if depth > max_depth:
+            warnings.append(f"Espansione ingredienti interrotta: profondita massima superata per '{snapshot.title}'.")
+            return []
+
+        expanded: list[dict] = []
+        for ing in ingredients:
+            ingredient_name = (ing.get("name") or "").strip()
+            qty_total = (ing.get("qty") or Decimal("0")) * multiplier
+            supplier = ing.get("supplier") or "Senza fornitore"
+
+            nested_snapshot = self._resolve_snapshot_for_ingredient_title(ingredient_name)
+            nested_key = ""
+            if nested_snapshot:
+                nested_key = str(nested_snapshot.fiche_product_id).lower()
+                if nested_key and nested_key in visited:
+                    warnings.append(f"Ciclo rilevato su preparazione interna '{ingredient_name}'. Espansione saltata.")
+                    nested_snapshot = None
+
+            if nested_snapshot and qty_total > 0:
+                nested_portions = nested_snapshot.portions if nested_snapshot.portions and nested_snapshot.portions > 0 else None
+                nested_multiplier = qty_total / nested_portions if nested_portions else qty_total
+                nested_visited = set(visited)
+                if nested_key:
+                    nested_visited.add(nested_key)
+                nested_items = self._expand_snapshot_ingredients(
+                    nested_snapshot,
+                    nested_multiplier,
+                    warnings,
+                    nested_visited,
+                    depth + 1,
+                    derived_from_recipe or nested_snapshot.title,
+                )
+                if nested_items:
+                    expanded.extend(nested_items)
+                    continue
+
+            qty_normalized, unit_normalized = normalize_qty_unit(qty_total, ing.get("unit"))
+            expanded.append(
+                {
+                    "ingredient": ingredient_name,
+                    "supplier": supplier,
+                    "qty_total": qty_normalized,
+                    "unit": unit_normalized,
+                    "source_type": "derived_recipe" if derived_from_recipe else "direct",
+                    "source_recipe_title": derived_from_recipe,
+                }
+            )
+        return expanded
+
     def get(self, request):
         site_id = request.query_params.get("site")
         service_date = request.query_params.get("date")
@@ -140,6 +233,10 @@ class ServiceIngredientsView(APIView):
 
         if not site_id or not service_date:
             return Response({"detail": "Query params 'site' and 'date' are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        parsed_service_date = self._parse_iso_date(service_date)
+        if not parsed_service_date:
+            return Response({"detail": "Query param 'date' must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
 
         entries = ServiceMenuEntry.objects.filter(site_id=site_id, service_date=service_date, is_active=True).order_by(
             "space_key", "sort_order", "title"
@@ -149,33 +246,46 @@ class ServiceIngredientsView(APIView):
 
         warnings: list[str] = []
 
-        supplier_agg: dict[tuple[str, str, str], Decimal] = defaultdict(lambda: Decimal("0"))
+        supplier_agg: dict[tuple[str, str, str, str, str], Decimal] = defaultdict(lambda: Decimal("0"))
         recipe_rows: list[dict] = []
 
         for entry in entries:
+            if not self._is_entry_valid_for_service_date(entry, parsed_service_date):
+                continue
             snapshot = self._resolve_snapshot_for_entry(entry)
             if not snapshot:
                 warnings.append(f"'{entry.title}': nessuna fiche importata trovata (uuid/titolo).")
                 continue
 
-            ingredients = extract_ingredients(snapshot.payload or {})
-            if not ingredients:
+            planned_portions = entry.expected_qty or Decimal("0")
+            if planned_portions <= 0:
+                warnings.append(f"'{entry.title}': porzioni target non valorizzate (> 0).")
+                continue
+
+            recipe_portions = snapshot.portions if snapshot.portions and snapshot.portions > 0 else None
+            multiplier = planned_portions / recipe_portions if recipe_portions else planned_portions
+            root_key = str(snapshot.fiche_product_id).lower() if snapshot.fiche_product_id else ""
+            visited = {root_key} if root_key else set()
+            expanded_ingredients = self._expand_snapshot_ingredients(snapshot, multiplier, warnings, visited, 0)
+            if not expanded_ingredients:
                 warnings.append(f"'{entry.title}': nessun ingrediente nel payload fiche.")
                 continue
 
-            multiplier = entry.expected_qty or Decimal("1")
             recipe_ingredients: list[dict] = []
-            for ing in ingredients:
-                qty_total = (ing["qty"] or Decimal("0")) * multiplier
+            for ing in expanded_ingredients:
+                qty_total = ing["qty_total"]
                 supplier = ing["supplier"] or "Senza fornitore"
-                unit = ing["unit"] or "pc"
-                supplier_agg[(supplier, ing["name"], unit)] += qty_total
+                source_type = ing.get("source_type") or "direct"
+                source_recipe_title = ing.get("source_recipe_title") or ""
+                supplier_agg[(supplier, ing["ingredient"], ing["unit"], source_type, source_recipe_title)] += qty_total
                 recipe_ingredients.append(
                     {
-                        "ingredient": ing["name"],
+                        "ingredient": ing["ingredient"],
                         "supplier": supplier,
                         "qty_total": str(qty_total),
-                        "unit": unit,
+                        "unit": ing["unit"],
+                        "source_type": source_type,
+                        "source_recipe_title": source_recipe_title or None,
                     }
                 )
 
@@ -184,7 +294,8 @@ class ServiceIngredientsView(APIView):
                     "space": entry.space_key,
                     "section": entry.section,
                     "title": entry.title,
-                    "expected_qty": str(multiplier),
+                    "expected_qty": str(planned_portions),
+                    "recipe_portions": str(recipe_portions) if recipe_portions else None,
                     "ingredients": recipe_ingredients,
                 }
             )
@@ -198,7 +309,12 @@ class ServiceIngredientsView(APIView):
                 "ingredient": ingredient,
                 "qty_total": str(total),
                 "unit": unit,
+                "source_type": source_type,
+                "source_recipe_title": source_recipe_title or None,
             }
-            for (supplier, ingredient, unit), total in sorted(supplier_agg.items(), key=lambda item: (item[0][0], item[0][1]))
+            for (supplier, ingredient, unit, source_type, source_recipe_title), total in sorted(
+                supplier_agg.items(),
+                key=lambda item: (item[0][0], item[0][1], item[0][3], item[0][4]),
+            )
         ]
         return Response({"view": "supplier", "rows": supplier_rows, "warnings": warnings})
