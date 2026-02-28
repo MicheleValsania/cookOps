@@ -1,0 +1,385 @@
+Perfetto.
+Adesso facciamo una cosa seria.
+
+Ti scrivo la **documentazione architetturale completa di CookOps** integrando:
+
+* stato reale di `fiches-recettes` 
+* contratto integrazione CookOps ↔ Fiches 
+* envelope CookOps ↔ Traccia 
+* contratto Traccia v1 
+* esempio payload fish burger 
+
+Quello che segue è la **base ufficiale del nuovo progetto CookOps**.
+
+---
+
+# COOKOPS – ARCHITETTURA UFFICIALE v0.1
+
+*(Documento fondativo 2026)*
+
+---
+
+# 1. Visione
+
+CookOps è il **dominio operativo della cucina professionale**.
+
+Non è:
+
+* un editor di ricette (quello è Fiches)
+* un sistema di tracciabilità HACCP (quello è Traccia)
+
+È:
+
+> Il sistema che collega vendite reali, acquisti reali, inventario reale e costi reali.
+
+Obiettivo:
+
+```
+Food Cost Théorique (Fiches)
+        VS
+Food Cost Réel (CookOps)
+        = Controllo gestione reale
+```
+
+---
+
+# 2. Ecosistema completo
+
+## 🔹 FICHES
+
+Responsabilità:
+
+* Ricette
+* Ingredienti
+* Food cost teorico
+* Allergeni ricetta
+* Storage profile logici
+
+API attuale reale documentata 
+Contratto integrazione 
+
+---
+
+## 🔹 TRACCIA
+
+Responsabilità:
+
+* OCR etichette
+* Lotti
+* Lifecycle
+* Alert DLC
+* Trasformazioni
+
+Contratto envelope 
+Contratto integrazione v1 
+
+---
+
+## 🔹 COOKOPS
+
+Responsabilità:
+
+* Catalogo fornitori
+* Listini
+* Ordini
+* BL
+* Fatture
+* Inventario reale
+* Movimenti stock
+* Vendite POS
+* Reporting gestionale
+
+CookOps è il **data hub operativo**.
+
+---
+
+# 3. Principio architetturale fondamentale
+
+⚠️ Nessun database condiviso.
+
+Solo:
+
+* API versionate
+* Envelope versionati
+* ID stabili
+* Snapshot immutabili
+
+---
+
+# 4. Modello Architetturale CookOps
+
+## 4.1 Architettura tecnica consigliata
+
+Backend:
+
+* Node.js + Express (coerenza con Fiches)
+* PostgreSQL (coerenza stack)
+* TypeScript
+
+Struttura:
+
+```
+/src
+  /core
+  /modules
+     catalog
+     purchasing
+     inventory
+     pos
+     accounting
+     integration
+  /connectors
+     pos
+     sage
+     pennylane
+     lightspeed
+  /schemas
+  /contracts
+```
+
+---
+
+# 5. Domini interni CookOps
+
+## 5.1 Catalog Domain
+
+Entità:
+
+* Supplier
+* SupplierProduct
+* PriceList
+* PriceListLine
+
+Master dei codici:
+
+* supplier_id
+* supplier_product_id
+
+Conforme contratto 
+
+---
+
+## 5.2 Purchasing Domain
+
+Entità:
+
+* PurchaseOrder
+* GoodsReceipt (BL)
+* GoodsReceiptLine
+* Invoice
+* InvoiceLine
+
+Collegamento con Traccia:
+
+* ricezione genera evento lotto
+* reconciliations BL ↔ lot
+
+---
+
+## 5.3 Inventory Domain
+
+Entità:
+
+* Lot
+* InventoryMovement
+* StockSnapshot
+* TransformationEvent
+
+Conforme struttura proposta 
+
+---
+
+## 5.4 Recipe Link Domain (ponte con Fiches)
+
+Tabella chiave:
+
+```
+RecipeIngredientLink
+- fiche_product_id
+- supplier_product_id
+- qty_value
+- qty_unit
+- snapshot_hash
+```
+
+Mapping conforme esempio 
+
+Mai salvare testo libero come chiave.
+
+---
+
+## 5.5 POS Domain
+
+Entità:
+
+* PosSource
+* PosItem
+* PosMapping
+* SalesEventDaily
+
+PosMapping:
+
+```
+pos_item_id
+target_type (recipe | product | category)
+target_id
+portion_factor
+loss_factor
+```
+
+---
+
+## 5.6 Accounting Domain
+
+Entità:
+
+* AccountingExportBatch
+* JournalLine
+* VatSummary
+
+MVP: export CSV compatibile Sage / Pennylane.
+
+---
+
+# 6. Flussi di integrazione ufficiali
+
+## 6.1 Fiches → CookOps
+
+Metodo:
+
+* Bulk fetch fiche snapshot
+* Salvare snapshot versionato
+
+Usare JSON v1.1 export 
+
+Mai chiamare DB Fiches.
+
+---
+
+## 6.2 CookOps → Fiches
+
+* Sync supplier
+* Sync supplier_products
+* Upsert fiche payload
+
+Come da contratto 
+
+---
+
+## 6.3 CookOps ↔ Traccia
+
+Envelope conforme schema 
+
+Eventi:
+
+* BL ricevuto
+* Lotto creato
+* Trasformazione
+* Alert
+
+---
+
+# 7. Calcolo Food Cost Reale
+
+Formula gestionale:
+
+```
+COGS réel =
+Stock initial
++ Achats validés
+- Stock final
+```
+
+Confronto:
+
+```
+COGS théorique (Fiches)
+VS
+COGS réel (CookOps)
+```
+
+Delta = perdite / errori / sprechi.
+
+---
+
+# 8. Regole critiche per scalabilità futura
+
+1. Tutti gli ID UUID
+2. Date solo ISO UTC
+3. Quantità sempre strutturate:
+   { value, unit }
+4. Idempotency key obbligatoria su bulk POST
+5. Versionamento API:
+   /api/v1/...
+
+---
+
+# 9. Gap da correggere in Fiches (non urgente ma da pianificare)
+
+Da contratto :
+
+* no auth
+* no versioning
+* no pagination
+* no endpoint demand aggregation
+
+CookOps dovrà compensare inizialmente.
+
+---
+
+# 10. Roadmap reale e pragmatica
+
+### Fase 1 (MVP operativo)
+
+* Catalog + SupplierProduct
+* Sync con Fiches
+* Import vendite POS CSV
+* Report food cost teorico vs vendite
+
+### Fase 2
+
+* BL + GoodsReceipt
+* Lotti base
+* Inventario manuale
+
+### Fase 3
+
+* Integrazione Traccia completa
+* Lifecycle + reconciliation
+
+### Fase 4
+
+* Accounting export
+* KPI dashboard
+
+---
+
+# 11. Governance tecnica
+
+Test obbligatori:
+
+* Golden payload valid 
+* Golden payload warning 
+* Invalid schema rejection
+
+KPI:
+
+* > = 99% import success
+* < 3% reconciliation pending
+
+---
+
+# 12. Decisione Architetturale Finale
+
+CookOps NON deve diventare:
+
+* un clone di ERP
+* un mostro monolitico
+* un sistema invasivo
+
+Deve restare:
+
+> Un motore operativo elegante per cucina professionale.
+
+---
+
