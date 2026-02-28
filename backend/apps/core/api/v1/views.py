@@ -18,6 +18,16 @@ from apps.core.models import ServiceMenuEntry, Site
 from apps.core.services.service_ingredients import extract_ingredients, normalize_qty_unit
 from apps.integration.models import RecipeSnapshot
 
+PERMANENT_SERVICE_DATE = date(1900, 1, 1)
+SCHEDULE_PERMANENT = "permanent"
+SCHEDULE_DATE_SPECIFIC = "date_specific"
+SCHEDULE_RECURRING_WEEKLY = "recurring_weekly"
+SUPPORTED_SCHEDULE_MODES = {
+    SCHEDULE_PERMANENT,
+    SCHEDULE_DATE_SPECIFIC,
+    SCHEDULE_RECURRING_WEEKLY,
+}
+
 
 class HealthView(APIView):
     authentication_classes = []
@@ -62,16 +72,166 @@ class SiteDetailView(APIView):
 
 
 class ServiceMenuEntrySyncView(APIView):
+    @staticmethod
+    def _parse_iso_date(raw_value):
+        if not raw_value:
+            return None
+        if isinstance(raw_value, date):
+            return raw_value
+        try:
+            return date.fromisoformat(str(raw_value))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _normalize_weekdays(raw_value):
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, (int, str)):
+            raw_items = [raw_value]
+        elif isinstance(raw_value, list):
+            raw_items = raw_value
+        else:
+            return []
+
+        aliases = {
+            "mon": 0,
+            "monday": 0,
+            "lun": 0,
+            "lunedì": 0,
+            "lunedi": 0,
+            "tue": 1,
+            "tuesday": 1,
+            "mar": 1,
+            "martedì": 1,
+            "martedi": 1,
+            "wed": 2,
+            "wednesday": 2,
+            "mer": 2,
+            "mercoledì": 2,
+            "mercoledi": 2,
+            "thu": 3,
+            "thursday": 3,
+            "gio": 3,
+            "giovedì": 3,
+            "giovedi": 3,
+            "fri": 4,
+            "friday": 4,
+            "ven": 4,
+            "venerdì": 4,
+            "venerdi": 4,
+            "sat": 5,
+            "saturday": 5,
+            "sab": 5,
+            "sun": 6,
+            "sunday": 6,
+            "dom": 6,
+            "domenica": 6,
+        }
+
+        normalized = set()
+        for item in raw_items:
+            if isinstance(item, int):
+                if 0 <= item <= 6:
+                    normalized.add(item)
+                elif 1 <= item <= 7:
+                    normalized.add(item - 1)
+                continue
+            raw = str(item).strip().lower()
+            if raw.isdigit():
+                value = int(raw)
+                if 0 <= value <= 6:
+                    normalized.add(value)
+                elif 1 <= value <= 7:
+                    normalized.add(value - 1)
+                continue
+            mapped = aliases.get(raw)
+            if mapped is not None:
+                normalized.add(mapped)
+        return sorted(normalized)
+
+    @classmethod
+    def _resolve_schedule_mode(cls, entry: ServiceMenuEntry):
+        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+        schedule_mode = str(metadata.get("schedule_mode") or "").strip().lower()
+        if schedule_mode in SUPPORTED_SCHEDULE_MODES:
+            return schedule_mode
+        if entry.service_date == PERMANENT_SERVICE_DATE:
+            return SCHEDULE_PERMANENT
+        if entry.space_key.startswith("carta"):
+            return SCHEDULE_PERMANENT
+        return SCHEDULE_DATE_SPECIFIC
+
+    @classmethod
+    def _is_entry_applicable_for_date(cls, entry: ServiceMenuEntry, target_date: date):
+        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+        schedule_mode = cls._resolve_schedule_mode(entry)
+        valid_from = cls._parse_iso_date(metadata.get("valid_from"))
+        valid_to = cls._parse_iso_date(metadata.get("valid_to"))
+
+        if valid_from and target_date < valid_from:
+            return False
+        if valid_to and target_date > valid_to:
+            return False
+
+        if schedule_mode == SCHEDULE_RECURRING_WEEKLY:
+            weekdays = cls._normalize_weekdays(metadata.get("weekdays"))
+            if weekdays and target_date.weekday() not in weekdays:
+                return False
+            return True
+        if schedule_mode == SCHEDULE_PERMANENT:
+            return True
+        return entry.service_date == target_date
+
+    @classmethod
+    def _get_effective_entries(cls, site_id, target_date: date):
+        dated_entries = list(
+            ServiceMenuEntry.objects.filter(site_id=site_id, service_date=target_date, is_active=True).order_by(
+                "space_key", "sort_order", "title"
+            )
+        )
+        permanent_entries = list(
+            ServiceMenuEntry.objects.filter(site_id=site_id, service_date=PERMANENT_SERVICE_DATE, is_active=True).order_by(
+                "space_key", "sort_order", "title"
+            )
+        )
+        legacy_card_entries: list[ServiceMenuEntry] = []
+        if not permanent_entries:
+            latest_legacy_date = (
+                ServiceMenuEntry.objects.filter(site_id=site_id, is_active=True, space_key__startswith="carta")
+                .exclude(service_date=PERMANENT_SERVICE_DATE)
+                .order_by("-service_date")
+                .values_list("service_date", flat=True)
+                .first()
+            )
+            if latest_legacy_date:
+                legacy_card_entries = list(
+                    ServiceMenuEntry.objects.filter(
+                        site_id=site_id,
+                        service_date=latest_legacy_date,
+                        is_active=True,
+                        space_key__startswith="carta",
+                    ).order_by("space_key", "sort_order", "title")
+                )
+
+        combined = []
+        for entry in permanent_entries + legacy_card_entries + dated_entries:
+            if cls._is_entry_applicable_for_date(entry, target_date):
+                combined.append(entry)
+        return combined
+
     def get(self, request):
         site_id = request.query_params.get("site")
         service_date = request.query_params.get("date")
         if not site_id or not service_date:
             return Response({"detail": "Query params 'site' and 'date' are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        queryset = ServiceMenuEntry.objects.filter(site_id=site_id, service_date=service_date).order_by(
-            "space_key", "sort_order", "title"
-        )
-        return Response({"count": queryset.count(), "entries": ServiceMenuEntrySerializer(queryset, many=True).data})
+        parsed_service_date = self._parse_iso_date(service_date)
+        if not parsed_service_date:
+            return Response({"detail": "Query param 'date' must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+        effective_entries = self._get_effective_entries(site_id, parsed_service_date)
+        return Response({"count": len(effective_entries), "entries": ServiceMenuEntrySerializer(effective_entries, many=True).data})
 
     @transaction.atomic
     def post(self, request):
@@ -82,9 +242,40 @@ class ServiceMenuEntrySyncView(APIView):
         service_date = serializer.validated_data["service_date"]
         entries = serializer.validated_data["entries"]
 
+        permanent_entries_payload = []
+        dated_entries_payload = []
+        for item in entries:
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            schedule_mode = str(metadata.get("schedule_mode") or "").strip().lower()
+            if schedule_mode not in SUPPORTED_SCHEDULE_MODES:
+                schedule_mode = SCHEDULE_PERMANENT if item.get("space_key", "").startswith("carta") else SCHEDULE_DATE_SPECIFIC
+                metadata = {**metadata, "schedule_mode": schedule_mode}
+                item = {**item, "metadata": metadata}
+
+            if schedule_mode in {SCHEDULE_PERMANENT, SCHEDULE_RECURRING_WEEKLY}:
+                permanent_entries_payload.append(item)
+            else:
+                dated_entries_payload.append(item)
+
+        ServiceMenuEntry.objects.filter(site=site, service_date=PERMANENT_SERVICE_DATE).delete()
         ServiceMenuEntry.objects.filter(site=site, service_date=service_date).delete()
 
-        instances = [
+        permanent_instances = [
+            ServiceMenuEntry(
+                site=site,
+                service_date=PERMANENT_SERVICE_DATE,
+                space_key=item["space_key"],
+                section=item.get("section") or None,
+                title=item["title"],
+                fiche_product_id=item.get("fiche_product_id"),
+                expected_qty=item.get("expected_qty") or Decimal("0"),
+                sort_order=item.get("sort_order", 0),
+                is_active=item.get("is_active", True),
+                metadata=item.get("metadata") or {},
+            )
+            for item in permanent_entries_payload
+        ]
+        dated_instances = [
             ServiceMenuEntry(
                 site=site,
                 service_date=service_date,
@@ -97,18 +288,21 @@ class ServiceMenuEntrySyncView(APIView):
                 is_active=item.get("is_active", True),
                 metadata=item.get("metadata") or {},
             )
-            for item in entries
+            for item in dated_entries_payload
         ]
 
-        ServiceMenuEntry.objects.bulk_create(instances)
+        if permanent_instances:
+            ServiceMenuEntry.objects.bulk_create(permanent_instances)
+        if dated_instances:
+            ServiceMenuEntry.objects.bulk_create(dated_instances)
 
-        created = ServiceMenuEntry.objects.filter(site=site, service_date=service_date).order_by("sort_order", "title")
+        effective_entries = self._get_effective_entries(site.id, service_date)
         return Response(
             {
                 "site": str(site.id),
                 "service_date": service_date,
-                "count": created.count(),
-                "entries": ServiceMenuEntrySerializer(created, many=True).data,
+                "count": len(effective_entries),
+                "entries": ServiceMenuEntrySerializer(effective_entries, many=True).data,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -154,14 +348,7 @@ class ServiceIngredientsView(APIView):
 
     @classmethod
     def _is_entry_valid_for_service_date(cls, entry: ServiceMenuEntry, service_date: date):
-        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-        valid_from = cls._parse_iso_date(metadata.get("valid_from"))
-        valid_to = cls._parse_iso_date(metadata.get("valid_to"))
-        if valid_from and service_date < valid_from:
-            return False
-        if valid_to and service_date > valid_to:
-            return False
-        return True
+        return ServiceMenuEntrySyncView._is_entry_applicable_for_date(entry, service_date)
 
     def _expand_snapshot_ingredients(
         self,
@@ -238,10 +425,8 @@ class ServiceIngredientsView(APIView):
         if not parsed_service_date:
             return Response({"detail": "Query param 'date' must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
 
-        entries = ServiceMenuEntry.objects.filter(site_id=site_id, service_date=service_date, is_active=True).order_by(
-            "space_key", "sort_order", "title"
-        )
-        if not entries.exists():
+        entries = ServiceMenuEntrySyncView._get_effective_entries(site_id, parsed_service_date)
+        if not entries:
             return Response({"rows": [], "warnings": ["Nessuna voce menu attiva per data/sede selezionata."]})
 
         warnings: list[str] = []
