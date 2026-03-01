@@ -1,5 +1,6 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiFetch, getApiBase, getDefaultApiKey, setDefaultApiKey } from "./api/client";
+import { getInitialLang, LANG_STORAGE_KEY, t as translate, type Lang } from "./i18n";
 
 type NavKey =
   | "dashboard"
@@ -41,6 +42,7 @@ type MenuEntry = {
   title: string;
   item_kind: "recipe" | "product";
   section: string;
+  recipe_category?: string;
   fiche_product_id?: string | null;
   expected_qty?: string;
   valid_from: string;
@@ -60,15 +62,15 @@ type MenuSpace = {
   entries: MenuEntry[];
 };
 
-const NAV_ITEMS: Array<{ key: NavKey; label: string; help: string }> = [
-  { key: "dashboard", label: "Dashboard", help: "KPI e urgenze" },
-  { key: "inventario", label: "Inventario", help: "Giacenze, lotti, alert" },
-  { key: "acquisti", label: "Acquisti", help: "Bolle, fatture, ingest" },
-  { key: "fornitori", label: "Fornitori e listini", help: "Anagrafica fornitori" },
-  { key: "ricette", label: "Ricette e carte", help: "Carta fissa e menu giorno" },
-  { key: "comande", label: "Comande", help: "Liste ingredienti e ordini" },
-  { key: "riconciliazioni", label: "Riconciliazioni", help: "Bolle e fatture" },
-  { key: "report", label: "Report", help: "Vendite POS e scostamenti" },
+const NAV_ITEMS: Array<{ key: NavKey; labelKey: string; helpKey: string }> = [
+  { key: "dashboard", labelKey: "nav.dashboard", helpKey: "nav.dashboardHelp" },
+  { key: "inventario", labelKey: "nav.inventory", helpKey: "nav.inventoryHelp" },
+  { key: "acquisti", labelKey: "nav.purchases", helpKey: "nav.purchasesHelp" },
+  { key: "fornitori", labelKey: "nav.suppliers", helpKey: "nav.suppliersHelp" },
+  { key: "ricette", labelKey: "nav.recipes", helpKey: "nav.recipesHelp" },
+  { key: "comande", labelKey: "nav.orders", helpKey: "nav.ordersHelp" },
+  { key: "riconciliazioni", labelKey: "nav.reconciliations", helpKey: "nav.reconciliationsHelp" },
+  { key: "report", labelKey: "nav.reports", helpKey: "nav.reportsHelp" },
 ];
 
 const MENU_SPACES_STORAGE_KEY = "cookops_menu_spaces_v1";
@@ -88,6 +90,7 @@ type RecipeTitleSuggestion = {
   fiche_product_id: string;
   title: string;
   portions?: string | number | null;
+  category?: string | null;
 };
 
 type MenuSuggestion = {
@@ -181,6 +184,7 @@ function getTodayIsoDate() {
 }
 
 function App() {
+  const [lang, setLang] = useState<Lang>(() => getInitialLang());
   const [nav, setNav] = useState<NavKey>("dashboard");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSidebarOpenMobile, setIsSidebarOpenMobile] = useState(false);
@@ -192,7 +196,7 @@ function App() {
   const [newSiteCode, setNewSiteCode] = useState("");
   const [siteToDelete, setSiteToDelete] = useState<SiteItem | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
-  const [notice, setNotice] = useState("Pronto.");
+  const [notice, setNotice] = useState(() => translate(getInitialLang(), "notice.ready"));
 
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedDocId, setSelectedDocId] = useState("");
@@ -247,13 +251,24 @@ function App() {
   const [ingredientWarnings, setIngredientWarnings] = useState<string[]>([]);
   const [selectedComandaSpaces, setSelectedComandaSpaces] = useState<string[]>([]);
   const [selectedComandaSections, setSelectedComandaSections] = useState<string[]>([]);
+  const [recipeDerivedSections, setRecipeDerivedSections] = useState<string[]>([]);
+  const [supplierSearch, setSupplierSearch] = useState("");
+  const [sectorSearch, setSectorSearch] = useState("");
+  const [recipeSearch, setRecipeSearch] = useState("");
   const [isChecklistLoading, setIsChecklistLoading] = useState(false);
 
   const canUpload = useMemo(() => siteId.trim().length > 0 && uploadFile !== null, [siteId, uploadFile]);
+  const t = (key: string, vars?: Record<string, string | number>) => translate(lang, key, vars);
+  const errorWithDetail = (labelKey: string, detail: unknown) =>
+    t("notice.errorWithDetail", { label: t(labelKey), detail: String(detail) });
 
   useEffect(() => {
     setDefaultApiKey(apiKey);
   }, [apiKey]);
+
+  useEffect(() => {
+    localStorage.setItem(LANG_STORAGE_KEY, lang);
+  }, [lang]);
 
   useEffect(() => {
     void loadSites();
@@ -332,9 +347,13 @@ function App() {
         if (Number.isFinite(portions) && portions > 0 && (!Number.isFinite(current) || current <= 0)) {
           setEntryExpectedQty(portions.toString());
         }
+        const category = String(match.category ?? "").trim();
+        if (category && !entrySection.trim()) {
+          setEntrySection(category);
+        }
       }
     }
-  }, [isMenuEditorOpen, entryKind, entryTitle, recipeTitleSuggestions, editingEntryId, entryExpectedQty]);
+  }, [isMenuEditorOpen, entryKind, entryTitle, recipeTitleSuggestions, editingEntryId, entryExpectedQty, entrySection]);
 
   useEffect(() => {
     if (entryKind === "product") {
@@ -350,7 +369,14 @@ function App() {
   useEffect(() => {
     setIngredientsRows([]);
     setIngredientWarnings([]);
+    setRecipeDerivedSections([]);
   }, [siteId]);
+
+  useEffect(() => {
+    if (!siteId) return;
+    if (ingredientsRows.length === 0) return;
+    void loadIngredientsChecklist(ingredientsView);
+  }, [ingredientsView, quantityMode]);
 
   function buildSiteCode(raw: string) {
     return raw
@@ -373,17 +399,19 @@ function App() {
   const availableComandaSections = useMemo(() => {
     const found = new Set<string>();
     menuSpaces.forEach((space) => {
-      space.sections.forEach((section) => {
-        const normalized = section.trim();
-        if (normalized) found.add(normalized);
-      });
       space.entries.forEach((entry) => {
-        const normalized = entry.section.trim();
-        if (normalized) found.add(normalized);
+        const normalized = String(entry.recipe_category || entry.section || "").trim();
+        if (normalized) {
+          found.add(normalized);
+        }
       });
     });
+    recipeDerivedSections.forEach((section) => {
+      const normalized = section.trim();
+      if (normalized) found.add(normalized);
+    });
     return Array.from(found).sort((a, b) => a.localeCompare(b));
-  }, [menuSpaces]);
+  }, [menuSpaces, recipeDerivedSections]);
 
   const activeMenuSpace = useMemo(
     () => menuSpaces.find((space) => space.id === activeMenuSpaceId) ?? sortedEnabledSpaces[0] ?? null,
@@ -456,6 +484,7 @@ function App() {
           fiche_product_id: item.fiche_product_id ?? "",
           title: item.title?.trim() ?? "",
           portions: item.portions ?? null,
+          category: item.category?.toString().trim() ?? "",
         }))
         .filter((item) => item.title.length > 0);
       setRecipeTitleSuggestions(
@@ -490,7 +519,7 @@ function App() {
       const body = await res.json();
       if (!res.ok) {
         if (withNotice) {
-          setNotice(`Caricamento carta KO: ${body.detail ?? JSON.stringify(body)}`);
+          setNotice(errorWithDetail("error.menuLoad", body.detail ?? JSON.stringify(body)));
         }
         return false;
       }
@@ -532,6 +561,7 @@ function App() {
           const itemKind = meta.item_kind === "product" ? "product" : "recipe";
           const validFrom = typeof meta.valid_from === "string" ? meta.valid_from : "";
           const validTo = typeof meta.valid_to === "string" ? meta.valid_to : "";
+          const recipeCategory = typeof meta.recipe_category === "string" ? meta.recipe_category : "";
           const scheduleModeRaw = String(meta.schedule_mode ?? "").trim().toLowerCase();
           const scheduleMode: EntryScheduleMode =
             scheduleModeRaw === "date_specific" || scheduleModeRaw === "recurring_weekly" || scheduleModeRaw === "permanent"
@@ -543,6 +573,7 @@ function App() {
             title: item.title,
             item_kind: itemKind,
             section: item.section ?? "",
+            recipe_category: recipeCategory,
             fiche_product_id: item.fiche_product_id ?? null,
             expected_qty: item.expected_qty ?? "0",
             valid_from: validFrom,
@@ -557,7 +588,7 @@ function App() {
       return true;
     } catch {
       if (withNotice) {
-        setNotice("Errore caricamento carta da backend.");
+        setNotice(t("error.menuLoadBackend"));
       }
       return false;
     }
@@ -583,7 +614,7 @@ function App() {
     setEntryFicheProductId(entry?.fiche_product_id ?? null);
     setEntryKind(entry?.item_kind ?? (space.type === "supplier_products" ? "product" : "recipe"));
     setEntryExpectedQty(entry?.expected_qty ?? "0");
-    setEntrySection(entry?.section ?? space.sections[0] ?? "");
+    setEntrySection(entry?.section ?? entry?.recipe_category ?? "");
     setEntryValidFrom(entry?.valid_from ?? "");
     setEntryValidTo(entry?.valid_to ?? "");
     setEntryScheduleMode(entry?.schedule_mode ?? space.schedule_mode ?? inferScheduleModeFromSpaceId(space.id));
@@ -627,16 +658,16 @@ function App() {
   function addMenuSpace() {
     const label = newSpaceLabel.trim();
     if (!label) {
-      setNotice("Inserisci il nome del nuovo spazio.");
+      setNotice(t("validation.spaceNameRequired"));
       return;
     }
     const id = buildSiteCode(label).toLowerCase();
     if (!id) {
-      setNotice("Nome spazio non valido.");
+      setNotice(t("validation.spaceNameInvalid"));
       return;
     }
     if (menuSpaces.some((space) => space.id === id)) {
-      setNotice("Esiste già uno spazio con questo nome.");
+      setNotice(t("validation.spaceExists"));
       return;
     }
     const nextSpace: MenuSpace = {
@@ -656,7 +687,7 @@ function App() {
     setNewSpaceType("recipes");
     setActiveMenuSpaceId(nextSpace.id);
     setEditingSpaceId(nextSpace.id);
-    setNotice(`Spazio creato: ${label}`);
+    setNotice(t("notice.spaceCreated", { label }));
   }
 
   function updateMenuSpace(spaceId: string, patch: Partial<MenuSpace>) {
@@ -669,7 +700,7 @@ function App() {
   function removeMenuSpace(spaceId: string) {
     const nextSpaces = menuSpaces.filter((space) => space.id !== spaceId);
     if (nextSpaces.length === 0) {
-      setNotice("Deve restare almeno uno spazio.");
+      setNotice(t("validation.keepAtLeastOneSpace"));
       return;
     }
     setMenuSpaces(nextSpaces);
@@ -681,7 +712,7 @@ function App() {
     const section = newSectionName.trim();
     if (!section || !editingSpace) return;
     if (editingSpace.sections.includes(section)) {
-      setNotice("Questa sezione esiste già.");
+      setNotice(t("validation.sectionExists"));
       return;
     }
     setMenuSpaces((prev) =>
@@ -701,7 +732,7 @@ function App() {
       const res = await apiFetch("/sites/?include_inactive=1");
       const body = await res.json();
       if (!res.ok) {
-        setNotice(`Errore punti vendita: ${body.detail ?? JSON.stringify(body)}`);
+        setNotice(errorWithDetail("error.sitesLoad", body.detail ?? JSON.stringify(body)));
         return;
       }
       const data = body as SiteItem[];
@@ -710,12 +741,12 @@ function App() {
         setSiteId(data[0].id);
       }
       if (data.length === 0) {
-        setNotice("Nessun punto vendita attivo trovato. Apri Parametri per crearne uno.");
+        setNotice(t("notice.noActiveSites"));
         return;
       }
-      setNotice(`Punti vendita caricati: ${data.length}`);
+      setNotice(t("notice.sitesLoaded", { count: data.length }));
     } catch {
-      setNotice("Connessione API fallita su /sites. Controlla runserver, CORS e X-API-Key.");
+      setNotice(t("error.apiConnectionSites"));
     }
   }
 
@@ -723,12 +754,12 @@ function App() {
     e.preventDefault();
     const name = newSiteName.trim();
     if (!name) {
-      setNotice("Inserisci il nome del punto vendita.");
+      setNotice(t("validation.siteNameRequired"));
       return;
     }
     const code = buildSiteCode(newSiteCode.trim() || name);
     if (!code) {
-      setNotice("Codice punto vendita non valido.");
+      setNotice(t("validation.siteCodeInvalid"));
       return;
     }
 
@@ -740,20 +771,20 @@ function App() {
       const body = await res.json();
       if (!res.ok) {
         const fieldError = body.code?.[0] ?? body.name?.[0];
-        setNotice(`Creazione punto vendita KO: ${body.detail ?? fieldError ?? JSON.stringify(body)}`);
+        setNotice(errorWithDetail("error.siteCreate", body.detail ?? fieldError ?? JSON.stringify(body)));
         return;
       }
       setNewSiteName("");
       setNewSiteCode("");
-      setNotice(`Punto vendita creato: ${body.name}`);
+      setNotice(t("notice.siteCreated", { name: body.name }));
       await loadSites();
     } catch {
-      setNotice("Creazione punto vendita fallita per errore di connessione/API.");
+      setNotice(t("error.siteCreateConnection"));
     }
   }
 
   async function onDisableSite(targetSiteId: string) {
-    if (!window.confirm("Disattivare questo punto vendita? Potrai riattivarlo in seguito.")) {
+    if (!window.confirm(t("confirm.disableSite"))) {
       return;
     }
     const res = await apiFetch(`/sites/${targetSiteId}/`, {
@@ -762,13 +793,13 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Disattivazione KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.siteDisable", body.detail ?? JSON.stringify(body)));
       return;
     }
     if (siteId === targetSiteId) {
       setSiteId("");
     }
-    setNotice("Punto vendita disattivato.");
+    setNotice(t("notice.siteDisabled"));
     await loadSites();
   }
 
@@ -780,13 +811,13 @@ function App() {
     });
     if (!res.ok) {
       const body = await res.json();
-      setNotice(`Eliminazione KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.siteDelete", body.detail ?? JSON.stringify(body)));
       return;
     }
     if (siteId === siteToDelete.id) {
       setSiteId("");
     }
-    setNotice(`Punto vendita eliminato definitivamente: ${siteToDelete.name}`);
+    setNotice(t("notice.siteDeleted", { name: siteToDelete.name }));
     setSiteToDelete(null);
     setDeleteConfirmText("");
     await loadSites();
@@ -804,10 +835,10 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Riattivazione KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.siteReactivate", body.detail ?? JSON.stringify(body)));
       return;
     }
-    setNotice(`Punto vendita riattivato: ${body.name}`);
+    setNotice(t("notice.siteReactivated", { name: body.name }));
     if (!siteId) {
       setSiteId(body.id);
     }
@@ -818,11 +849,11 @@ function App() {
     const res = await apiFetch("/suppliers/");
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Errore fornitori: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.suppliersLoad", body.detail ?? JSON.stringify(body)));
       return;
     }
     setSuppliers(body as SupplierItem[]);
-    setNotice(`Fornitori aggiornati: ${(body as SupplierItem[]).length}`);
+    setNotice(t("notice.suppliersUpdated", { count: (body as SupplierItem[]).length }));
   }
 
   async function onCreateSupplier(e: FormEvent) {
@@ -835,11 +866,11 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Creazione fornitore KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.supplierCreate", body.detail ?? JSON.stringify(body)));
       return;
     }
     setNewSupplierName("");
-    setNotice(`Fornitore creato: ${body.name}`);
+    setNotice(t("notice.supplierCreated", { name: body.name }));
     await loadSuppliers();
   }
 
@@ -854,15 +885,19 @@ function App() {
       });
       const body = await res.json();
       if (!res.ok) {
-        setNotice(`Aggiorna fiches KO: ${body.detail ?? JSON.stringify(body)}`);
+        setNotice(errorWithDetail("error.fichesSync", body.detail ?? JSON.stringify(body)));
         return;
       }
       setNotice(
-        `Fiches aggiornate. Letti: ${body.total_read ?? 0}, nuovi snapshot: ${body.created ?? 0}, invariati: ${body.skipped_existing ?? 0}.`
+        t("notice.fichesSynced", {
+          read: body.total_read ?? 0,
+          created: body.created ?? 0,
+          unchanged: body.skipped_existing ?? 0,
+        })
       );
       await loadRecipeTitleSuggestions("");
     } catch {
-      setNotice("Errore di connessione durante aggiornamento fiches.");
+      setNotice(t("error.fichesSyncConnection"));
     } finally {
       setIsFichesSyncing(false);
     }
@@ -871,7 +906,7 @@ function App() {
   async function onImportFichesJsonEnvelope() {
     if (isFichesJsonImporting) return;
     if (!fichesJsonFile) {
-      setNotice("Seleziona prima un file JSON export v1.1.");
+      setNotice(t("validation.selectJsonFileFirst"));
       return;
     }
     setIsFichesJsonImporting(true);
@@ -881,7 +916,7 @@ function App() {
       try {
         envelope = JSON.parse(text);
       } catch {
-        setNotice("File JSON non valido.");
+        setNotice(t("validation.invalidJsonFile"));
         return;
       }
 
@@ -892,16 +927,20 @@ function App() {
       });
       const body = await res.json();
       if (!res.ok) {
-        setNotice(`Import JSON fiches KO: ${body.detail ?? JSON.stringify(body)}`);
+        setNotice(errorWithDetail("error.fichesImportJson", body.detail ?? JSON.stringify(body)));
         return;
       }
       setNotice(
-        `Import JSON fiches completato. Letti: ${body.total_read ?? 0}, nuovi snapshot: ${body.created ?? 0}, invariati: ${body.skipped_existing ?? 0}.`
+        t("notice.fichesJsonImported", {
+          read: body.total_read ?? 0,
+          created: body.created ?? 0,
+          unchanged: body.skipped_existing ?? 0,
+        })
       );
       setFichesJsonFile(null);
       await loadRecipeTitleSuggestions("");
     } catch {
-      setNotice("Errore di connessione durante import JSON fiches.");
+      setNotice(t("error.fichesImportJsonConnection"));
     } finally {
       setIsFichesJsonImporting(false);
     }
@@ -911,7 +950,7 @@ function App() {
     const res = await apiFetch("/integration/documents/");
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Errore caricamento documenti: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
       return;
     }
     const data = body as DocumentItem[];
@@ -920,7 +959,7 @@ function App() {
       setSelectedDocId((prev) => prev || data[0].id);
       setSelectedDocType(data[0].document_type);
     }
-    setNotice(`Documenti caricati: ${data.length}`);
+    setNotice(t("notice.documentsLoaded", { count: data.length }));
   }
 
   async function onUploadDocument(e: FormEvent) {
@@ -936,10 +975,10 @@ function App() {
     const res = await apiFetch("/integration/documents/", { method: "POST", body: form }, false);
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Upload KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.documentUpload", body.detail ?? JSON.stringify(body)));
       return;
     }
-    setNotice(`Documento caricato: ${body.filename}`);
+    setNotice(t("notice.documentUploaded", { name: body.filename }));
     setUploadFile(null);
     await loadDocuments();
   }
@@ -952,7 +991,7 @@ function App() {
     try {
       normalized = JSON.parse(normalizedPayload);
     } catch {
-      setNotice("JSON estrazione non valido.");
+      setNotice(t("validation.invalidExtractionJson"));
       return;
     }
 
@@ -971,11 +1010,11 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Estrazione KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.extractionCreate", body.detail ?? JSON.stringify(body)));
       return;
     }
     setSelectedExtractionId(body.id);
-    setNotice(`Estrazione salvata: ${body.id}`);
+    setNotice(t("notice.extractionSaved", { id: body.id }));
   }
 
   async function onIngestExtraction(e: FormEvent) {
@@ -994,10 +1033,10 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Ingest KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
       return;
     }
-    setNotice(`Documento registrato a sistema: ${body.id}`);
+    setNotice(t("notice.documentIngested", { id: body.id }));
   }
 
   async function onCreateReconciliation(e: FormEvent) {
@@ -1018,10 +1057,10 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Riconciliazione KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.reconciliationCreate", body.detail ?? JSON.stringify(body)));
       return;
     }
-    setNotice(`Riconciliazione creata: ${body.id}`);
+    setNotice(t("notice.reconciliationCreated", { id: body.id }));
   }
 
   async function onImportPos(e: FormEvent) {
@@ -1030,7 +1069,7 @@ function App() {
     try {
       lines = JSON.parse(salesLines);
     } catch {
-      setNotice("JSON righe vendita non valido.");
+      setNotice(t("validation.invalidSalesJson"));
       return;
     }
 
@@ -1048,10 +1087,10 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(`Import POS KO: ${body.detail ?? JSON.stringify(body)}`);
+      setNotice(errorWithDetail("error.posImport", body.detail ?? JSON.stringify(body)));
       return;
     }
-    setNotice(`Vendite importate: ${body.id}`);
+    setNotice(t("notice.salesImported", { id: body.id }));
   }
 
   function onSubmitMenuEntry(e: FormEvent) {
@@ -1059,17 +1098,21 @@ function App() {
     const title = entryTitle.trim();
     const qtyValue = Number.parseFloat(entryExpectedQty);
     if (!editingSpace || !title) {
-      setNotice("Inserisci almeno il titolo.");
+      setNotice(t("validation.entryTitleRequired"));
       return;
     }
     if (!Number.isFinite(qtyValue) || qtyValue <= 0) {
-      setNotice("Le porzioni target devono essere maggiori di 0.");
+      setNotice(t("validation.targetPortionsGtZero"));
       return;
     }
     if (entryScheduleMode === "recurring_weekly" && entryWeekdays.length === 0) {
-      setNotice("Se selezioni ricorrenza settimanale, indica almeno un giorno.");
+      setNotice(t("validation.weeklyNeedsDay"));
       return;
     }
+    const matchedRecipe = recipeTitleSuggestions.find(
+      (item) => item.title.trim().toLowerCase() === title.toLowerCase()
+    );
+    const inferredCategory = String(matchedRecipe?.category ?? "").trim();
     const nextEntry: MenuEntry = {
       id: editingEntryId ?? crypto.randomUUID(),
       title,
@@ -1077,6 +1120,7 @@ function App() {
       fiche_product_id: entryKind === "recipe" ? entryFicheProductId ?? null : null,
       expected_qty: qtyValue.toFixed(3),
       section: entrySection.trim(),
+      recipe_category: entryKind === "recipe" ? (inferredCategory || entrySection.trim()) : "",
       valid_from: entryValidFrom,
       valid_to: entryValidTo,
       schedule_mode: entryScheduleMode,
@@ -1106,13 +1150,13 @@ function App() {
     setEntryValidTo("");
     setEntryScheduleMode(editingSpace.schedule_mode ?? inferScheduleModeFromSpaceId(editingSpace.id));
     setEntryWeekdays([]);
-    setNotice(editingEntryId ? "Elemento aggiornato." : "Elemento aggiunto.");
+    setNotice(editingEntryId ? t("notice.entryUpdated") : t("notice.entryAdded"));
   }
 
   async function syncServiceMenuEntries(spacesToSync: MenuSpace[] = menuSpaces, withNotice = true) {
     if (!siteId) {
       if (withNotice) {
-        setNotice("Seleziona un punto vendita prima di generare la checklist.");
+        setNotice(t("validation.selectSiteBeforeChecklist"));
       }
       return false;
     }
@@ -1132,6 +1176,7 @@ function App() {
             item_kind: entry.item_kind,
             valid_from: entry.valid_from || null,
             valid_to: entry.valid_to || null,
+            recipe_category: entry.recipe_category || entry.section || null,
             schedule_mode: entry.schedule_mode ?? space.schedule_mode ?? inferScheduleModeFromSpaceId(space.id),
             weekdays:
               (entry.schedule_mode ?? space.schedule_mode ?? inferScheduleModeFromSpaceId(space.id)) === "recurring_weekly"
@@ -1153,32 +1198,32 @@ function App() {
     const body = await res.json();
     if (!res.ok) {
       if (withNotice) {
-        setNotice(`Sync carta KO: ${body.detail ?? JSON.stringify(body)}`);
+        setNotice(errorWithDetail("error.menuSync", body.detail ?? JSON.stringify(body)));
       }
       return false;
     }
     if (withNotice) {
-      setNotice("Carta salvata.");
+      setNotice(t("notice.menuSaved"));
     }
     return true;
   }
 
   async function loadIngredientsChecklist(view: ChecklistView) {
     if (!siteId) {
-      setNotice("Seleziona un punto vendita.");
+      setNotice(t("validation.selectSite"));
       return;
     }
     if (!comandaDateFrom || !comandaDateTo) {
-      setNotice("Seleziona un intervallo date valido.");
+      setNotice(t("validation.selectValidDateRange"));
       return;
     }
     const dates = listIsoDatesBetween(comandaDateFrom, comandaDateTo);
     if (dates.length === 0) {
-      setNotice("Intervallo date non valido.");
+      setNotice(t("validation.invalidDateRange"));
       return;
     }
     if (dates.length > 62) {
-      setNotice("Intervallo troppo esteso. Usa massimo 62 giorni.");
+      setNotice(t("validation.dateRangeTooWide"));
       return;
     }
     setIsChecklistLoading(true);
@@ -1191,27 +1236,52 @@ function App() {
         );
         const body = await res.json();
         if (!res.ok) {
-          setNotice(`Checklist KO (${day}): ${body.detail ?? JSON.stringify(body)}`);
+          setNotice(errorWithDetail("error.checklistForDay", `${day}: ${body.detail ?? JSON.stringify(body)}`));
           setIngredientsRows([]);
           setIngredientWarnings([]);
           return;
         }
-        const dayWarnings = Array.isArray(body.warnings) ? body.warnings : [];
-        dayWarnings.forEach((warning) => warnings.push(`[${day}] ${String(warning)}`));
+        const dayWarnings: unknown[] = Array.isArray(body.warnings) ? body.warnings : [];
+        dayWarnings.forEach((warning: unknown) => warnings.push(`[${day}] ${String(warning)}`));
         const rows = Array.isArray(body.rows) ? body.rows : [];
-        rows.forEach((row) => {
+        rows.forEach((row: unknown) => {
           const recipeRow = row as Record<string, unknown>;
           recipeRows.push({ ...recipeRow, service_date: day });
         });
       }
 
+      const derivedSections = new Set<string>();
+      recipeRows.forEach((row) => {
+        const baseSection = String(row.section ?? row.recipe_category ?? "").trim();
+        if (baseSection) derivedSections.add(baseSection);
+        const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
+        ingredients.forEach((raw) => {
+          const ing = raw as Record<string, unknown>;
+          const srcCategory = String(ing.source_recipe_category ?? "").trim();
+          if (srcCategory) derivedSections.add(srcCategory);
+        });
+      });
+      setRecipeDerivedSections(Array.from(derivedSections).sort((a, b) => a.localeCompare(b)));
+
       const allowedSpaces = new Set(selectedComandaSpaces);
       const allowedSections = new Set(selectedComandaSections);
       const filteredRecipeRows = recipeRows.filter((row) => {
         const rowSpace = String(row.space ?? "");
-        const rowSection = String(row.section ?? "").trim();
+        const rowSection = String(row.section ?? row.recipe_category ?? "").trim();
+        const ingredientSections = new Set<string>();
+        if (rowSection) ingredientSections.add(rowSection);
+        const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
+        ingredients.forEach((raw) => {
+          const ing = raw as Record<string, unknown>;
+          const srcCategory = String(ing.source_recipe_category ?? "").trim();
+          if (srcCategory) ingredientSections.add(srcCategory);
+        });
         const passSpace = allowedSpaces.size === 0 || allowedSpaces.has(rowSpace);
-        const passSection = allowedSections.size === 0 || allowedSections.has(rowSection);
+        const passSection =
+          allowedSections.size === 0 ||
+          (ingredientSections.size === 0
+            ? allowedSections.has(t("label.noSection"))
+            : Array.from(ingredientSections).some((section) => allowedSections.has(section)));
         return passSpace && passSection;
       });
 
@@ -1225,11 +1295,13 @@ function App() {
             const ing = raw as Record<string, unknown>;
             const ingredient = String(ing.ingredient ?? "").trim();
             const supplier = String(ing.supplier ?? "").trim();
-            const key = `${supplier}|${ingredient}`;
+            const supplierCode = String(ing.supplier_code ?? "").trim();
+            const key = `${supplier}|${supplierCode}|${ingredient}`;
             if (!dedup.has(key)) {
               dedup.set(key, {
                 ingredient,
                 supplier,
+                supplier_code: supplierCode,
                 unit: "",
                 qty_total: "",
                 source_type: ing.source_type ?? "direct",
@@ -1245,18 +1317,20 @@ function App() {
           const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
           ingredients.forEach((raw) => {
             const ing = raw as Record<string, unknown>;
-            const supplier = String(ing.supplier ?? "Senza fornitore");
+            const supplier = String(ing.supplier ?? t("label.noSupplier"));
+            const supplierCode = String(ing.supplier_code ?? "").trim();
             const ingredient = String(ing.ingredient ?? "");
             const unit = String(ing.unit ?? "");
             const sourceType = String(ing.source_type ?? "direct");
             const sourceRecipeTitle = String(ing.source_recipe_title ?? "");
             const key =
               quantityMode === "with_qty"
-                ? `${supplier}|${ingredient}|${unit}|${sourceType}|${sourceRecipeTitle}`
-                : `${supplier}|${ingredient}|${sourceType}|${sourceRecipeTitle}`;
+                ? `${supplier}|${supplierCode}|${ingredient}|${unit}|${sourceType}|${sourceRecipeTitle}`
+                : `${supplier}|${supplierCode}|${ingredient}|${sourceType}|${sourceRecipeTitle}`;
             if (!aggregate.has(key)) {
               aggregate.set(key, {
                 supplier,
+                supplier_code: supplierCode,
                 ingredient,
                 unit: quantityMode === "with_qty" ? unit : "",
                 qty_total: 0,
@@ -1277,19 +1351,26 @@ function App() {
       } else {
         const aggregate = new Map<string, Record<string, unknown>>();
         filteredRecipeRows.forEach((row) => {
-          const section = String(row.section ?? "").trim() || "Senza sezione";
+          const section = String(row.section ?? row.recipe_category ?? "").trim() || t("label.noSection");
           const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
           ingredients.forEach((raw) => {
             const ing = raw as Record<string, unknown>;
             const ingredient = String(ing.ingredient ?? "");
-            const supplier = String(ing.supplier ?? "Senza fornitore");
+            const supplier = String(ing.supplier ?? t("label.noSupplier"));
+            const supplierCode = String(ing.supplier_code ?? "").trim();
+            const nestedCategory = String(ing.source_recipe_category ?? "").trim();
             const unit = String(ing.unit ?? "");
-            const key = quantityMode === "with_qty" ? `${section}|${ingredient}|${supplier}|${unit}` : `${section}|${ingredient}|${supplier}`;
+            const sectorKey = nestedCategory || section;
+            const key =
+              quantityMode === "with_qty"
+                ? `${sectorKey}|${ingredient}|${supplier}|${supplierCode}|${unit}`
+                : `${sectorKey}|${ingredient}|${supplier}|${supplierCode}`;
             if (!aggregate.has(key)) {
               aggregate.set(key, {
-                section,
+                section: sectorKey,
                 ingredient,
                 supplier,
+                supplier_code: supplierCode,
                 unit: quantityMode === "with_qty" ? unit : "",
                 qty_total: 0,
               });
@@ -1310,9 +1391,9 @@ function App() {
 
       setIngredientsRows(nextRows);
       setIngredientWarnings(warnings);
-      setNotice("Checklist ingredienti aggiornata.");
+      setNotice(t("notice.checklistUpdated"));
     } catch {
-      setNotice("Errore di connessione durante il caricamento checklist.");
+      setNotice(t("error.checklistConnection"));
     } finally {
       setIsChecklistLoading(false);
     }
@@ -1321,7 +1402,7 @@ function App() {
   async function onGenerateChecklist() {
     const loaded = await loadServiceMenuEntries(siteId, comandaDateFrom);
     if (!loaded) {
-      setNotice("Impossibile ricaricare la carta dal backend prima della checklist.");
+      setNotice(t("error.menuReloadBeforeChecklist"));
       return;
     }
     await loadIngredientsChecklist(ingredientsView);
@@ -1334,10 +1415,10 @@ function App() {
 
   const activeSite = sites.find((site) => site.id === siteId);
   const supplierOrderGroups = useMemo(() => {
-    if (ingredientsView !== "supplier") return [];
+    if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
     ingredientsRows.forEach((row) => {
-      const supplier = String(row.supplier ?? "Senza fornitore");
+      const supplier = String(row.supplier ?? t("label.noSupplier"));
       if (!grouped.has(supplier)) {
         grouped.set(supplier, []);
       }
@@ -1348,15 +1429,204 @@ function App() {
       .map(([supplier, rows]) => ({ supplier, rows }));
   }, [ingredientsRows, ingredientsView]);
 
+  const sectorChecklistGroups = useMemo(() => {
+    if (ingredientsView !== "sector") return [] as Array<{ section: string; rows: Array<Record<string, unknown>> }>;
+    const grouped = new Map<string, Array<Record<string, unknown>>>();
+    ingredientsRows.forEach((row) => {
+      const section = String(row.section ?? t("label.noSection"));
+      if (!grouped.has(section)) {
+        grouped.set(section, []);
+      }
+      grouped.get(section)!.push(row);
+    });
+    return Array.from(grouped.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([section, rows]) => ({ section, rows }));
+  }, [ingredientsRows, ingredientsView]);
+
+  const recipeChecklistGroups = useMemo(() => {
+    if (ingredientsView !== "recipe") return [] as Array<{ title: string; rows: Array<Record<string, unknown>> }>;
+    const grouped = new Map<string, Array<Record<string, unknown>>>();
+    ingredientsRows.forEach((row) => {
+      const title = String(row.title ?? t("menuEditor.entryTypeRecipe"));
+      if (!grouped.has(title)) {
+        grouped.set(title, []);
+      }
+      grouped.get(title)!.push(row);
+    });
+    return Array.from(grouped.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([title, rows]) => ({ title, rows }));
+  }, [ingredientsRows, ingredientsView]);
+
+  const filteredSupplierGroups = useMemo(() => {
+    const q = supplierSearch.trim().toLowerCase();
+    if (!q) return supplierOrderGroups;
+    return supplierOrderGroups.filter((group) => {
+      if (group.supplier.toLowerCase().includes(q)) return true;
+      return group.rows.some((row) => {
+        const ingredient = String(row.ingredient ?? "").toLowerCase();
+        const code = String(row.supplier_code ?? "").toLowerCase();
+        return ingredient.includes(q) || code.includes(q);
+      });
+    });
+  }, [supplierOrderGroups, supplierSearch]);
+
+  const filteredSectorGroups = useMemo(() => {
+    const q = sectorSearch.trim().toLowerCase();
+    if (!q) return sectorChecklistGroups;
+    return sectorChecklistGroups.filter((group) => {
+      if (group.section.toLowerCase().includes(q)) return true;
+      return group.rows.some((row) => {
+        const ingredient = String(row.ingredient ?? "").toLowerCase();
+        const supplier = String(row.supplier ?? "").toLowerCase();
+        return ingredient.includes(q) || supplier.includes(q);
+      });
+    });
+  }, [sectorChecklistGroups, sectorSearch]);
+
+  const filteredRecipeGroups = useMemo(() => {
+    const q = recipeSearch.trim().toLowerCase();
+    if (!q) return recipeChecklistGroups;
+    return recipeChecklistGroups.filter((group) => {
+      if (group.title.toLowerCase().includes(q)) return true;
+      return group.rows.some((row) => {
+        const category = String(row.recipe_category ?? row.section ?? "").toLowerCase();
+        return category.includes(q);
+      });
+    });
+  }, [recipeChecklistGroups, recipeSearch]);
+
   function renderSourceBadge(row: Record<string, unknown>) {
     const sourceType = String(row.source_type ?? "direct");
     const sourceRecipeTitle = String(row.source_recipe_title ?? "").trim();
     if (sourceType !== "derived_recipe") return null;
     return (
-      <span className="origin-badge" title="Derivato da preparazione interna">
-        PR: {sourceRecipeTitle || "preparazione interna"}
+      <span className="origin-badge" title={t("orders.derivedFromInternalPrep")}>
+        PR: {sourceRecipeTitle || t("orders.internalPrep")}
       </span>
     );
+  }
+
+  function escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function printChecklistTable(title: string, headers: string[], rows: string[][]) {
+    const siteLabel = activeSite?.name ?? t("app.selectSite");
+    const dateLabel = comandaDateFrom === comandaDateTo ? comandaDateFrom : `${comandaDateFrom} -> ${comandaDateTo}`;
+    const headerHtml = headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+    const rowsHtml = rows
+      .map((cells) => `<tr>${cells.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+      .join("");
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 16px; color: #111827; }
+        h1 { font-size: 20px; margin: 0 0 6px; }
+        p { margin: 0 0 10px; color: #475569; font-size: 13px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { border: 1px solid #cbd5e1; padding: 8px; font-size: 12px; text-align: left; }
+        th { background: #eef5df; }
+      </style></head><body>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(siteLabel)} | ${escapeHtml(dateLabel)}</p>
+      <table><thead><tr>${headerHtml}</tr></thead>
+      <tbody>${rowsHtml}</tbody></table></body></html>`;
+
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc || !iframe.contentWindow) {
+      document.body.removeChild(iframe);
+      setNotice(t("error.printOpen"));
+      return;
+    }
+
+    doc.open();
+    doc.write(html);
+    doc.close();
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+    window.setTimeout(() => {
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
+    }, 1000);
+  }
+
+  function printSupplierOrderCard(group: { supplier: string; rows: Array<Record<string, unknown>> }) {
+    const headers = [t("table.ingredient"), t("table.supplierCode")];
+    if (quantityMode === "with_qty") {
+      headers.push(t("table.qty"), t("table.unit"));
+    }
+    headers.push(t("table.remaining"), t("table.toOrder"));
+    const rows = group.rows.map((row) => {
+      const cells = [String(row.ingredient ?? "-"), String(row.supplier_code ?? "-")];
+      if (quantityMode === "with_qty") {
+        cells.push(String(row.qty_total ?? "-"), String(row.unit ?? "-"));
+      }
+      cells.push("_____", "_____");
+      return cells;
+    });
+    printChecklistTable(`${t("orders.supplierOrderCard")}: ${group.supplier}`, headers, rows);
+  }
+
+  function printSectorOrderCard(group: { section: string; rows: Array<Record<string, unknown>> }) {
+    const headers = [t("table.ingredient"), t("table.supplier"), t("table.supplierCode")];
+    if (quantityMode === "with_qty") {
+      headers.push(t("table.qty"), t("table.unit"));
+    }
+    headers.push(t("table.remaining"), t("table.toOrder"));
+    const rows = group.rows.map((row) => {
+      const cells = [String(row.ingredient ?? "-"), String(row.supplier ?? "-"), String(row.supplier_code ?? "-")];
+      if (quantityMode === "with_qty") {
+        cells.push(String(row.qty_total ?? "-"), String(row.unit ?? "-"));
+      }
+      cells.push("_____", "_____");
+      return cells;
+    });
+    printChecklistTable(`${t("orders.sectorOrderCard")}: ${group.section}`, headers, rows);
+  }
+
+  function printRecipeOrderCard(group: { title: string; rows: Array<Record<string, unknown>> }) {
+    const first = group.rows[0] ?? {};
+    const headers = [t("table.ingredient"), t("table.supplier"), t("table.supplierCode")];
+    if (quantityMode === "with_qty") {
+      headers.push(t("table.qty"), t("table.unit"));
+    }
+    headers.push(t("table.remaining"), t("table.toOrder"));
+    const rows: string[][] = [];
+    group.rows.forEach((row) => {
+      const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
+      ingredients.forEach((ing) => {
+        const item = ing as Record<string, unknown>;
+        const cells = [
+          String(item.ingredient ?? "-"),
+          String(item.supplier ?? "-"),
+          String(item.supplier_code ?? "-"),
+        ];
+        if (quantityMode === "with_qty") {
+          cells.push(String(item.qty_total ?? "-"), String(item.unit ?? "-"));
+        }
+        cells.push("_____", "_____");
+        rows.push(cells);
+      });
+    });
+    const label = `${group.title} | ${String(first.recipe_category ?? first.section ?? t("label.noCategory"))}`;
+    printChecklistTable(`${t("orders.recipeChecklist")}: ${label}`, headers, rows);
   }
 
   return (
@@ -1367,38 +1637,43 @@ function App() {
             type="button"
             className="nav-menu-btn"
             onClick={() => setIsSidebarOpenMobile((prev) => !prev)}
-            aria-label="Apri o chiudi menu"
+            aria-label={t("app.menuToggle")}
           >
-            ☰
+            Menu
           </button>
           <img className="brand-logo-image" src="/chefside-logo.svg" alt="Chef Side" />
-          <p className="brand-sub">CookOps - Operativita quotidiana ristorante</p>
+          <p className="brand-sub">{t("app.brandSub")}</p>
         </div>
         <div className="header-actions">
+          <select className="nav-lang-select" value={lang} onChange={(e) => setLang(e.target.value as Lang)} aria-label={t("label.language")}>
+            <option value="it">{t("lang.it")}</option>
+            <option value="fr">{t("lang.fr")}</option>
+            <option value="en">{t("lang.en")}</option>
+          </select>
           <select className="nav-site-select" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-            <option value="">Seleziona punto vendita</option>
+            <option value="">{t("app.selectSite")}</option>
             {sites.filter((site) => site.is_active).map((site) => (
               <option key={site.id} value={site.id}>
                 {site.name}
               </option>
             ))}
           </select>
-          <button type="button" className="nav-gear-btn" onClick={() => setIsSettingsOpen(true)} aria-label="Parametri">
-            ⚙
+          <button type="button" className="nav-gear-btn" onClick={() => setIsSettingsOpen(true)} aria-label={t("app.settings")}>
+            Cfg
           </button>
         </div>
       </header>
 
       <div className={`app-layout ${isSidebarCollapsed ? "app-layout--collapsed" : ""}`}>
         <aside className={`sidebar ${isSidebarCollapsed ? "sidebar--collapsed" : ""} ${isSidebarOpenMobile ? "sidebar--open-mobile" : ""}`}>
-          <div className="sidebar-title">Menu operativo</div>
+          <div className="sidebar-title">{t("app.sidebarTitle")}</div>
           <button
             type="button"
             className="sidebar-collapse-btn"
             onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-            aria-label="Comprimi o espandi menu laterale"
+            aria-label={t("app.sidebarToggle")}
           >
-            {isSidebarCollapsed ? "»" : "«"}
+            {isSidebarCollapsed ? ">>" : "<<"}
           </button>
           {NAV_ITEMS.map((item) => (
             <button
@@ -1410,8 +1685,8 @@ function App() {
                 setIsSidebarOpenMobile(false);
               }}
             >
-              <span>{item.label}</span>
-              <small>{item.help}</small>
+              <span>{t(item.labelKey)}</span>
+              <small>{t(item.helpKey)}</small>
             </button>
           ))}
         </aside>
@@ -1419,31 +1694,29 @@ function App() {
         <main className="content">
           {nav !== "ricette" && nav !== "comande" ? (
             <section className="panel page-head">
-              <h2>{NAV_ITEMS.find((item) => item.key === nav)?.label}</h2>
-              <p>
-                Punto vendita: <strong>{activeSite?.name ?? "non selezionato"}</strong> | API: {getApiBase()}
-              </p>
+              <h2>{t(NAV_ITEMS.find((item) => item.key === nav)?.labelKey ?? "")}</h2>
+              <p>{t("app.pageHead", { site: activeSite?.name ?? t("app.siteNotSelected"), api: getApiBase() })}</p>
             </section>
           ) : null}
 
           {nav === "dashboard" && (
             <section className="grid grid-3">
-              <article className="panel metric-card"><strong>{sites.filter((s) => s.is_active).length}</strong><span>Punti vendita attivi</span></article>
-              <article className="panel metric-card"><strong>{documents.length}</strong><span>Documenti importati</span></article>
-              <article className="panel metric-card"><strong>{vociCartaTotali}</strong><span>Voci carta attive</span></article>
-              <article className="panel"><h3>Urgenze</h3><ul className="clean-list"><li>Controlla documenti in attesa ingest</li><li>Verifica lotti con DLC ravvicinata</li><li>Conferma import POS giornaliero</li></ul></article>
-              <article className="panel"><h3>Food cost</h3><p className="muted">Confronto teorico vs consuntivo disponibile nel modulo Report.</p></article>
-              <article className="panel"><h3>Stato riconciliazioni</h3><p className="muted">Usa la sezione Riconciliazioni per abbinare bolle e fatture.</p></article>
+              <article className="panel metric-card"><strong>{sites.filter((s) => s.is_active).length}</strong><span>{t("dashboard.activeSites")}</span></article>
+              <article className="panel metric-card"><strong>{documents.length}</strong><span>{t("dashboard.importedDocs")}</span></article>
+              <article className="panel metric-card"><strong>{vociCartaTotali}</strong><span>{t("dashboard.activeMenuItems")}</span></article>
+              <article className="panel"><h3>{t("dashboard.urgencies")}</h3><ul className="clean-list"><li>{t("dashboard.urgency.docs")}</li><li>{t("dashboard.urgency.lots")}</li><li>{t("dashboard.urgency.pos")}</li></ul></article>
+              <article className="panel"><h3>{t("dashboard.foodCost")}</h3><p className="muted">{t("dashboard.foodCostDesc")}</p></article>
+              <article className="panel"><h3>{t("dashboard.recoStatus")}</h3><p className="muted">{t("dashboard.recoStatusDesc")}</p></article>
             </section>
           )}
 
           {nav === "ricette" && (
             <div className="grid grid-single">
               <section className="panel menu-space-panel">
-                <h2>Spazi carta</h2>
+                <h2>{t("recipes.menuSpaces")}</h2>
                 <div className="grid grid-2">
                   <div>
-                    <label>Data servizio</label>
+                    <label>{t("recipes.serviceDate")}</label>
                     <input type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
                   </div>
                 </div>
@@ -1462,8 +1735,8 @@ function App() {
                 {activeMenuSpace ? (
                   <div>
                     <div className="menu-space-header-row">
-                      <p className="muted">Tipo carta: {activeMenuSpace.type.replace("_", " ")}</p>
-                      <button type="button" onClick={() => openMenuEditor(activeMenuSpace.id)}>Modifica</button>
+                      <p className="muted">{t("label.typeMenu", { type: activeMenuSpace.type.replace("_", " ") })}</p>
+                      <button type="button" onClick={() => openMenuEditor(activeMenuSpace.id)}>{t("action.edit")}</button>
                     </div>
                     <ul className="menu-entry-list">
                       {activeMenuSpace.entries.map((entry, idx) => (
@@ -1471,26 +1744,26 @@ function App() {
                           <div>
                             <strong>{entry.title}</strong>
                             <small>
-                              {entry.section || "Senza sezione"} | {entry.item_kind}
-                              {entry.item_kind === "recipe" ? ` | Porzioni target ${entry.expected_qty ?? "0"}` : ""}
+                              {(entry.recipe_category || entry.section || t("label.noSection"))} | {entry.item_kind}
+                              {entry.item_kind === "recipe" ? ` | ${t("recipes.targetPortions")} ${entry.expected_qty ?? "0"}` : ""}
                               {entry.valid_from || entry.valid_to ? ` | ${entry.valid_from || "-"} -> ${entry.valid_to || "-"}` : ""}
                             </small>
                           </div>
                           <div className="entry-actions">
-                            <button type="button" onClick={() => moveMenuEntry(activeMenuSpace.id, entry.id, "up")} disabled={idx === 0}>↑</button>
-                            <button type="button" onClick={() => moveMenuEntry(activeMenuSpace.id, entry.id, "down")} disabled={idx === activeMenuSpace.entries.length - 1}>↓</button>
-                            <button type="button" onClick={() => openMenuEditor(activeMenuSpace.id, entry)}>Sostituisci</button>
-                            <button type="button" className="danger-btn" onClick={() => deleteMenuEntry(activeMenuSpace.id, entry.id)}>✕</button>
+                            <button type="button" onClick={() => moveMenuEntry(activeMenuSpace.id, entry.id, "up")} disabled={idx === 0}>{t("action.up")}</button>
+                            <button type="button" onClick={() => moveMenuEntry(activeMenuSpace.id, entry.id, "down")} disabled={idx === activeMenuSpace.entries.length - 1}>{t("action.down")}</button>
+                            <button type="button" onClick={() => openMenuEditor(activeMenuSpace.id, entry)}>{t("action.replace")}</button>
+                            <button type="button" className="danger-btn" onClick={() => deleteMenuEntry(activeMenuSpace.id, entry.id)}>{t("action.delete")}</button>
                           </div>
                         </li>
                       ))}
                     </ul>
                     {activeMenuSpace.entries.length === 0 ? (
-                      <p className="muted">Nessun elemento. Premi Modifica per aggiungere piatti, cocktail o prodotti.</p>
+                      <p className="muted">{t("recipes.noItems")}</p>
                     ) : null}
                   </div>
                 ) : (
-                  <p className="muted">Nessuno spazio attivo. Attivalo nei Parametri avanzati.</p>
+                  <p className="muted">{t("recipes.noActiveSpace")}</p>
                 )}
               </section>
             </div>
@@ -1499,107 +1772,159 @@ function App() {
           {nav === "comande" && (
             <div className="grid grid-single">
               <section className="panel">
-                <h2>Liste comande</h2>
-                <p className="muted">Intervallo date, filtro carte/categorie e output per fornitore, ricetta o settore.</p>
+                <h2>{t("orders.title")}</h2>
+                <p className="muted">{t("orders.desc")}</p>
                 <div className="grid grid-2">
                   <div>
-                    <label>Data inizio</label>
+                    <label>{t("orders.dateFrom")}</label>
                     <input type="date" value={comandaDateFrom} onChange={(e) => setComandaDateFrom(e.target.value)} />
                   </div>
                   <div>
-                    <label>Data fine</label>
+                    <label>{t("orders.dateTo")}</label>
                     <input type="date" value={comandaDateTo} onChange={(e) => setComandaDateTo(e.target.value)} />
                   </div>
                 </div>
                 <div className="grid grid-2">
                   <div>
-                    <label>Carte incluse</label>
-                    <div className="check-group">
-                      {availableComandaSpaces.map((space) => (
-                        <label key={space.id} className="checkline">
-                          <input
-                            type="checkbox"
-                            checked={selectedComandaSpaces.includes(space.id)}
-                            onChange={(e) =>
-                              setSelectedComandaSpaces((prev) =>
-                                e.target.checked ? [...new Set([...prev, space.id])] : prev.filter((id) => id !== space.id)
-                              )
-                            }
-                          />
-                          {space.label}
-                        </label>
-                      ))}
-                    </div>
+                    <label>{t("orders.includedMenus")}</label>
+                    <table className="selection-table">
+                      <thead>
+                        <tr>
+                          <th>{t("orders.include")}</th>
+                          <th>{t("orders.menu")}</th>
+                          <th>{t("orders.key")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {availableComandaSpaces.map((space) => (
+                          <tr key={space.id}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={selectedComandaSpaces.includes(space.id)}
+                                onChange={(e) =>
+                                  setSelectedComandaSpaces((prev) =>
+                                    e.target.checked ? [...new Set([...prev, space.id])] : prev.filter((id) => id !== space.id)
+                                  )
+                                }
+                              />
+                            </td>
+                            <td>{space.label}</td>
+                            <td>{space.id}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                   <div>
-                    <label>Categorie/settori</label>
-                    <div className="check-group">
-                      {availableComandaSections.length === 0 ? (
-                        <span className="muted">Nessuna categoria disponibile.</span>
-                      ) : (
-                        availableComandaSections.map((section) => (
-                          <label key={section} className="checkline">
-                            <input
-                              type="checkbox"
-                              checked={selectedComandaSections.includes(section)}
-                              onChange={(e) =>
-                                setSelectedComandaSections((prev) =>
-                                  e.target.checked ? [...new Set([...prev, section])] : prev.filter((item) => item !== section)
-                                )
-                              }
-                            />
-                            {section}
-                          </label>
-                        ))
-                      )}
-                    </div>
+                    <label>{t("orders.categoriesSectors")}</label>
+                    {availableComandaSections.length === 0 ? (
+                      <p className="muted">{t("orders.noCategory")}</p>
+                    ) : (
+                      <table className="selection-table">
+                        <thead>
+                          <tr>
+                              <th>{t("orders.include")}</th>
+                              <th>{t("orders.sectorCategory")}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {availableComandaSections.map((section) => (
+                            <tr key={section}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedComandaSections.includes(section)}
+                                  onChange={(e) =>
+                                    setSelectedComandaSections((prev) =>
+                                      e.target.checked ? [...new Set([...prev, section])] : prev.filter((item) => item !== section)
+                                    )
+                                  }
+                                />
+                              </td>
+                              <td>{section}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
                   </div>
                 </div>
-                <div className="grid grid-2">
-                  <div>
-                    <label>Vista</label>
-                    <select
-                      value={ingredientsView}
-                      onChange={(e) => {
-                        const nextView = e.target.value as ChecklistView;
-                        setIngredientsView(nextView);
-                        if (ingredientsRows.length > 0) {
-                          void loadIngredientsChecklist(nextView);
-                        }
-                      }}
-                    >
-                      <option value="supplier">Aggregata per fornitore</option>
-                      <option value="recipe">Dettaglio per ricetta</option>
-                      <option value="sector">Comanda per settore</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label>Modalita output</label>
-                    <select
-                      value={quantityMode}
-                      onChange={(e) => {
-                        const nextMode = e.target.value as QuantityMode;
-                        setQuantityMode(nextMode);
-                        if (ingredientsRows.length > 0) {
-                          void loadIngredientsChecklist(ingredientsView);
-                        }
-                      }}
-                    >
-                      <option value="with_qty">Quantita suggerite</option>
-                      <option value="ingredients_only">Solo lista ingredienti</option>
-                    </select>
-                  </div>
+                <div className="checklist-mode-bar no-print">
+                  <button
+                    type="button"
+                    className={ingredientsView === "supplier" ? "space-tab-btn space-tab-btn--active" : "space-tab-btn"}
+                    onClick={() => setIngredientsView("supplier")}
+                  >
+                    {t("orders.viewSupplier")}
+                  </button>
+                  <button
+                    type="button"
+                    className={ingredientsView === "sector" ? "space-tab-btn space-tab-btn--active" : "space-tab-btn"}
+                    onClick={() => setIngredientsView("sector")}
+                  >
+                    {t("orders.viewSector")}
+                  </button>
+                  <button
+                    type="button"
+                    className={ingredientsView === "recipe" ? "space-tab-btn space-tab-btn--active" : "space-tab-btn"}
+                    onClick={() => setIngredientsView("recipe")}
+                  >
+                    {t("orders.viewRecipe")}
+                  </button>
+                </div>
+                <div className="checklist-mode-bar no-print">
+                  <button
+                    type="button"
+                    className={quantityMode === "with_qty" ? "space-tab-btn space-tab-btn--active" : "space-tab-btn"}
+                    onClick={() => setQuantityMode("with_qty")}
+                  >
+                    {t("orders.qtySuggested")}
+                  </button>
+                  <button
+                    type="button"
+                    className={quantityMode === "ingredients_only" ? "space-tab-btn space-tab-btn--active" : "space-tab-btn"}
+                    onClick={() => setQuantityMode("ingredients_only")}
+                  >
+                    {t("orders.ingredientsOnly")}
+                  </button>
                 </div>
                 <div className="entry-actions">
                   <button type="button" onClick={onGenerateChecklist} disabled={isChecklistLoading}>
-                    {isChecklistLoading ? "Caricamento..." : "Genera checklist"}
+                    {isChecklistLoading ? t("action.loading") : t("action.generateChecklist")}
                   </button>
-                  <button type="button" onClick={() => window.print()} disabled={ingredientsRows.length === 0}>
-                    Stampa checklist
-                  </button>
-                  <button type="button" onClick={() => window.print()} disabled={ingredientsRows.length === 0}>
-                    Genera PDF
-                  </button>
+                </div>
+                <div className="no-print">
+                  {ingredientsView === "supplier" ? (
+                    <>
+                      <label>{t("orders.searchSupplier")}</label>
+                      <input
+                        value={supplierSearch}
+                        onChange={(e) => setSupplierSearch(e.target.value)}
+                        placeholder={t("orders.searchSupplierPlaceholder")}
+                      />
+                    </>
+                  ) : null}
+                  {ingredientsView === "sector" ? (
+                    <>
+                      <label>{t("orders.searchSector")}</label>
+                      <input
+                        value={sectorSearch}
+                        onChange={(e) => setSectorSearch(e.target.value)}
+                        placeholder={t("orders.searchSectorPlaceholder")}
+                      />
+                    </>
+                  ) : null}
+                  {ingredientsView === "recipe" ? (
+                    <>
+                      <label>{t("orders.searchRecipe")}</label>
+                      <input
+                        value={recipeSearch}
+                        onChange={(e) => setRecipeSearch(e.target.value)}
+                        placeholder={t("orders.searchRecipePlaceholder")}
+                      />
+                    </>
+                  ) : null}
                 </div>
                 {ingredientWarnings.length > 0 ? (
                   <ul className="clean-list">
@@ -1611,125 +1936,26 @@ function App() {
                   </ul>
                 ) : null}
                 {ingredientsRows.length === 0 ? (
-                  <p className="muted">Nessun risultato ancora. Premi "Genera checklist".</p>
+                  <p className="muted">{t("orders.noResultsYet")}</p>
                 ) : ingredientsView === "supplier" ? (
-                  <div className="comande-sections">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Fornitore</th>
-                          <th>Ingrediente</th>
-                          <th>Origine</th>
-                          {quantityMode === "with_qty" ? <th>Qta totale</th> : null}
-                          {quantityMode === "with_qty" ? <th>UM</th> : null}
-                          <th>Rimanenza</th>
-                          <th>Da ordinare</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {ingredientsRows.map((row, idx) => (
-                          <tr key={`${String(row.supplier)}-${String(row.ingredient)}-${idx}`}>
-                            <td>{String(row.supplier ?? "-")}</td>
-                            <td>{String(row.ingredient ?? "-")}</td>
-                            <td>{renderSourceBadge(row)}</td>
-                            {quantityMode === "with_qty" ? <td>{String(row.qty_total ?? "-")}</td> : null}
-                            {quantityMode === "with_qty" ? <td>{String(row.unit ?? "-")}</td> : null}
-                            <td>_____</td>
-                            <td>_____</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : ingredientsView === "sector" ? (
-                  <div className="comande-sections">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Settore</th>
-                          <th>Ingrediente</th>
-                          <th>Fornitore</th>
-                          {quantityMode === "with_qty" ? <th>Qta totale</th> : null}
-                          {quantityMode === "with_qty" ? <th>UM</th> : null}
-                          <th>Rimanenza</th>
-                          <th>Da ordinare</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {ingredientsRows.map((row, idx) => (
-                          <tr key={`${String(row.section)}-${String(row.ingredient)}-${idx}`}>
-                            <td>{String(row.section ?? "Senza sezione")}</td>
-                            <td>{String(row.ingredient ?? "-")}</td>
-                            <td>{String(row.supplier ?? "-")}</td>
-                            {quantityMode === "with_qty" ? <td>{String(row.qty_total ?? "-")}</td> : null}
-                            {quantityMode === "with_qty" ? <td>{String(row.unit ?? "-")}</td> : null}
-                            <td>_____</td>
-                            <td>_____</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="menu-entry-list">
-                    {ingredientsRows.map((row, idx) => (
-                      <article key={`${String(row.title)}-${idx}`} className="menu-entry-item">
-                        <div>
-                          <strong>{String(row.title ?? "-")}</strong>
-                          <small>
-                            {String(row.service_date ?? "-")} | {String(row.space ?? "-")} | {String(row.section ?? "Senza sezione")}
-                            {quantityMode === "with_qty" ? <> | Porzioni target {String(row.expected_qty ?? "0")}</> : null}
-                          </small>
-                          <ul className="clean-list">
-                            {Array.isArray(row.ingredients)
-                              ? row.ingredients.map((ing, ingIdx) => {
-                                  const item = ing as Record<string, unknown>;
-                                  return (
-                                    <li key={`${String(item.ingredient)}-${ingIdx}`}>
-                                      {String(item.ingredient ?? "-")}
-                                      {quantityMode === "with_qty"
-                                        ? ` - ${String(item.qty_total ?? "-")} ${String(item.unit ?? "-")}`
-                                        : ""}
-                                      {` (${String(item.supplier ?? "Senza fornitore")})`}{" "}
-                                      {renderSourceBadge(item)}
-                                    </li>
-                                  );
-                                })
-                              : null}
-                          </ul>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-                <section>
-                  <h3>Ordini per fornitore</h3>
-                  {ingredientsRows.length === 0 ? (
-                    <p className="muted">Genera prima la checklist per visualizzare gli ordini.</p>
-                  ) : ingredientsView !== "supplier" ? (
-                    <div className="entry-actions">
-                      <p className="muted">Questa vista richiede "Aggregata per fornitore".</p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIngredientsView("supplier");
-                          void loadIngredientsChecklist("supplier");
-                        }}
-                      >
-                        Passa a vista fornitore
-                      </button>
-                    </div>
-                  ) : supplierOrderGroups.length === 0 ? (
-                    <p className="muted">Nessun ordine per fornitore disponibile.</p>
+                  filteredSupplierGroups.length === 0 ? (
+                    <p className="muted">{t("orders.noSupplierCard")}</p>
                   ) : (
                     <div className="supplier-order-grid">
-                      {supplierOrderGroups.map((group) => (
+                      {filteredSupplierGroups.map((group) => (
                         <article key={group.supplier} className="panel supplier-order-card">
-                          <h4>{group.supplier}</h4>
+                          <div className="supplier-order-card__head">
+                            <h4>{group.supplier}</h4>
+                            <div className="supplier-order-card__actions no-print">
+                              <button type="button" onClick={() => printSupplierOrderCard(group)}>{t("action.print")}</button>
+                              <button type="button" onClick={() => printSupplierOrderCard(group)}>{t("action.pdf")}</button>
+                            </div>
+                          </div>
                           <ul className="clean-list">
                             {group.rows.map((row, idx) => (
                               <li key={`${group.supplier}-${idx}`}>
                                 {String(row.ingredient ?? "-")}
+                                {row.supplier_code ? ` [${String(row.supplier_code)}]` : ""}
                                 {quantityMode === "with_qty" ? ` - ${String(row.qty_total ?? "-")} ${String(row.unit ?? "-")}` : ""}
                                 {" "}
                                 {renderSourceBadge(row)}
@@ -1739,8 +1965,77 @@ function App() {
                         </article>
                       ))}
                     </div>
-                  )}
-                </section>
+                  )
+                ) : ingredientsView === "sector" ? (
+                  filteredSectorGroups.length === 0 ? (
+                    <p className="muted">{t("orders.noSectorCard")}</p>
+                  ) : (
+                    <div className="supplier-order-grid">
+                      {filteredSectorGroups.map((group) => (
+                        <article key={group.section} className="panel supplier-order-card">
+                          <div className="supplier-order-card__head">
+                            <h4>{group.section}</h4>
+                            <div className="supplier-order-card__actions no-print">
+                              <button type="button" onClick={() => printSectorOrderCard(group)}>{t("action.print")}</button>
+                              <button type="button" onClick={() => printSectorOrderCard(group)}>{t("action.pdf")}</button>
+                            </div>
+                          </div>
+                          <ul className="clean-list">
+                            {group.rows.map((row, idx) => (
+                              <li key={`${group.section}-${idx}`}>
+                                {String(row.ingredient ?? "-")} ({String(row.supplier ?? "-")})
+                                {row.supplier_code ? ` [${String(row.supplier_code)}]` : ""}
+                                {quantityMode === "with_qty" ? ` - ${String(row.qty_total ?? "-")} ${String(row.unit ?? "-")}` : ""}
+                              </li>
+                            ))}
+                          </ul>
+                        </article>
+                      ))}
+                    </div>
+                  )
+                ) : filteredRecipeGroups.length === 0 ? (
+                  <p className="muted">{t("orders.noRecipeCard")}</p>
+                ) : (
+                  <div className="supplier-order-grid">
+                    {filteredRecipeGroups.map((group) => (
+                      <article key={group.title} className="panel supplier-order-card">
+                        <div className="supplier-order-card__head">
+                          <h4>{group.title}</h4>
+                          <div className="supplier-order-card__actions no-print">
+                              <button type="button" onClick={() => printRecipeOrderCard(group)}>{t("action.print")}</button>
+                              <button type="button" onClick={() => printRecipeOrderCard(group)}>{t("action.pdf")}</button>
+                          </div>
+                        </div>
+                        {group.rows.map((row, rowIdx) => (
+                          <div key={`${group.title}-${rowIdx}`}>
+                            <p className="muted">
+                              {String(row.service_date ?? "-")} | {String(row.recipe_category ?? row.section ?? t("label.noCategory"))}
+                              {quantityMode === "with_qty" ? ` | ${t("recipes.targetPortions")} ${String(row.expected_qty ?? "0")}` : ""}
+                            </p>
+                            <ul className="clean-list">
+                              {Array.isArray(row.ingredients)
+                                ? row.ingredients.map((ing, ingIdx) => {
+                                    const item = ing as Record<string, unknown>;
+                                    return (
+                                      <li key={`${group.title}-${rowIdx}-${ingIdx}`}>
+                                        {String(item.ingredient ?? "-")} ({String(item.supplier ?? "-")})
+                                        {item.supplier_code ? ` [${String(item.supplier_code)}]` : ""}
+                                        {quantityMode === "with_qty"
+                                          ? ` - ${String(item.qty_total ?? "-")} ${String(item.unit ?? "-")}`
+                                          : ""}
+                                        {" "}
+                                        {renderSourceBadge(item)}
+                                      </li>
+                                    );
+                                  })
+                                : null}
+                            </ul>
+                          </div>
+                        ))}
+                      </article>
+                    ))}
+                  </div>
+                )}
               </section>
             </div>
           )}
@@ -1748,34 +2043,34 @@ function App() {
           {nav === "fornitori" && (
             <div className="grid">
               <section className="panel">
-                <h2>Gestione fornitori</h2>
+                <h2>{t("suppliers.manage")}</h2>
                 <form onSubmit={onCreateSupplier}>
-                  <label>Nuovo fornitore</label>
-                  <input value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="Nome fornitore" />
-                  <button type="submit">Aggiungi fornitore</button>
+                  <label>{t("suppliers.newSupplier")}</label>
+                  <input value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder={t("suppliers.namePlaceholder")} />
+                  <button type="submit">{t("suppliers.addSupplier")}</button>
                 </form>
-                <button type="button" onClick={loadSuppliers}>Aggiorna elenco</button>
+                <button type="button" onClick={loadSuppliers}>{t("suppliers.refreshList")}</button>
                 <hr />
                 <h3>Fiches-recettes</h3>
-                <p className="muted">Sincronizza automaticamente tutte le fiches in CookOps (delta per hash + storico).</p>
+                <p className="muted">{t("suppliers.fichesSyncDesc")}</p>
                 <button type="button" onClick={onSyncFichesSnapshots} disabled={isFichesSyncing}>
-                  {isFichesSyncing ? "Aggiornamento fiches..." : "Aggiorna fiches"}
+                  {isFichesSyncing ? t("suppliers.fichesSyncLoading") : t("suppliers.fichesSync")}
                 </button>
-                <p className="muted">Fallback manuale: importa export JSON v1.1 da file.</p>
+                <p className="muted">{t("suppliers.fichesImportDesc")}</p>
                 <input
                   type="file"
                   accept=".json,application/json"
                   onChange={(e) => setFichesJsonFile(e.target.files?.[0] ?? null)}
                 />
                 <button type="button" onClick={onImportFichesJsonEnvelope} disabled={isFichesJsonImporting || !fichesJsonFile}>
-                  {isFichesJsonImporting ? "Import JSON fiches..." : "Importa JSON fiches v1.1"}
+                  {isFichesJsonImporting ? t("suppliers.fichesImportLoading") : t("suppliers.fichesImport")}
                 </button>
               </section>
               <section className="panel">
-                <h2>Elenco fornitori</h2>
+                <h2>{t("suppliers.list")}</h2>
                 <ul className="clean-list">
                   {suppliers.map((s) => (
-                    <li key={s.id}>{s.name}{s.vat_number ? ` - P.IVA ${s.vat_number}` : ""}</li>
+                    <li key={s.id}>{s.name}{s.vat_number ? ` - ${t("suppliers.vat")} ${s.vat_number}` : ""}</li>
                   ))}
                 </ul>
               </section>
@@ -1785,23 +2080,23 @@ function App() {
           {nav === "acquisti" && (
             <div className="grid">
               <section className="panel">
-                <h2>1) Carica bolla o fattura</h2>
+                <h2>{t("purchases.step1Title")}</h2>
                 <form onSubmit={onUploadDocument}>
-                  <label>Tipo documento</label>
+                  <label>{t("purchases.documentType")}</label>
                   <select value={uploadDocType} onChange={(e) => setUploadDocType(e.target.value as "goods_receipt" | "invoice")}>
-                    <option value="goods_receipt">Bolla di consegna</option>
-                    <option value="invoice">Fattura</option>
+                    <option value="goods_receipt">{t("purchases.deliveryNote")}</option>
+                    <option value="invoice">{t("purchases.invoice")}</option>
                   </select>
-                  <label>File</label>
+                  <label>{t("purchases.file")}</label>
                   <input type="file" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
-                  <button disabled={!canUpload} type="submit">Carica documento</button>
+                  <button disabled={!canUpload} type="submit">{t("purchases.uploadDocument")}</button>
                 </form>
-                <button type="button" onClick={loadDocuments}>Aggiorna documenti</button>
+                <button type="button" onClick={loadDocuments}>{t("purchases.refreshDocuments")}</button>
               </section>
 
               <section className="panel">
-                <h2>2) Controlla estrazione OCR</h2>
-                <label>Documento</label>
+                <h2>{t("purchases.step2Title")}</h2>
+                <label>{t("purchases.document")}</label>
                 <select
                   value={selectedDocId}
                   onChange={(e) => {
@@ -1811,26 +2106,26 @@ function App() {
                     if (doc) setSelectedDocType(doc.document_type);
                   }}
                 >
-                  <option value="">Seleziona</option>
+                  <option value="">{t("action.select")}</option>
                   {documents.map((d) => (
                     <option key={d.id} value={d.id}>{d.filename} ({d.document_type})</option>
                   ))}
                 </select>
-                <label>Dati letti (JSON)</label>
+                <label>{t("purchases.readDataJson")}</label>
                 <textarea rows={10} value={normalizedPayload} onChange={(e) => setNormalizedPayload(e.target.value)} />
-                <button type="button" onClick={onCreateExtraction}>Conferma dati OCR</button>
+                <button type="button" onClick={onCreateExtraction}>{t("purchases.confirmOcrData")}</button>
               </section>
 
               <section className="panel">
-                <h2>3) Registra in CookOps</h2>
-                <label>ID estrazione</label>
+                <h2>{t("purchases.step3Title")}</h2>
+                <label>{t("purchases.extractionId")}</label>
                 <input value={selectedExtractionId} onChange={(e) => setSelectedExtractionId(e.target.value)} />
-                <label>Destinazione</label>
+                <label>{t("purchases.destination")}</label>
                 <select value={selectedDocType} onChange={(e) => setSelectedDocType(e.target.value as "goods_receipt" | "invoice")}>
-                  <option value="goods_receipt">Bolle</option>
-                  <option value="invoice">Fatture</option>
+                  <option value="goods_receipt">{t("purchases.deliveryNotesPlural")}</option>
+                  <option value="invoice">{t("purchases.invoicesPlural")}</option>
                 </select>
-                <button type="button" onClick={onIngestExtraction}>Registra documento</button>
+                <button type="button" onClick={onIngestExtraction}>{t("purchases.registerDocument")}</button>
               </section>
             </div>
           )}
@@ -1838,18 +2133,18 @@ function App() {
           {nav === "riconciliazioni" && (
             <div className="grid">
               <section className="panel">
-                <h2>Riconciliazione manuale bolle/fatture</h2>
+                <h2>{t("reco.manualTitle")}</h2>
                 <form onSubmit={onCreateReconciliation}>
-                  <label>Riga fattura (UUID)</label>
+                  <label>{t("reco.invoiceLine")}</label>
                   <input value={recoInvoiceLine} onChange={(e) => setRecoInvoiceLine(e.target.value)} />
-                  <label>Riga bolla (UUID)</label>
+                  <label>{t("reco.goodsReceiptLine")}</label>
                   <input value={recoGoodsReceiptLine} onChange={(e) => setRecoGoodsReceiptLine(e.target.value)} />
-                  <button type="submit">Collega fattura e bolla</button>
+                  <button type="submit">{t("reco.linkInvoiceAndNote")}</button>
                 </form>
               </section>
               <section className="panel">
-                <h2>Stato</h2>
-                <p className="muted">Step successivo: matching assistito con suggerimenti automatici e semafori.</p>
+                <h2>{t("reco.status")}</h2>
+                <p className="muted">{t("reco.nextStep")}</p>
               </section>
             </div>
           )}
@@ -1857,16 +2152,16 @@ function App() {
           {nav === "inventario" && (
             <div className="grid">
               <section className="panel">
-                <h2>Giacenze e lotti</h2>
+                <h2>{t("inventory.stockLots")}</h2>
                 <ul className="clean-list">
-                  <li>Giacenze per punto vendita e settore</li>
-                  <li>Scadenze DLC</li>
-                  <li>Rettifiche manuali tracciate</li>
+                  <li>{t("inventory.item1")}</li>
+                  <li>{t("inventory.item2")}</li>
+                  <li>{t("inventory.item3")}</li>
                 </ul>
               </section>
               <section className="panel">
-                <h2>Allerte</h2>
-                <p className="muted">In arrivo: sottoscorta, DLC ravvicinate e lotti bloccati.</p>
+                <h2>{t("inventory.alerts")}</h2>
+                <p className="muted">{t("inventory.alertsDesc")}</p>
               </section>
             </div>
           )}
@@ -1874,20 +2169,20 @@ function App() {
           {nav === "report" && (
             <div className="grid">
               <section className="panel">
-                <h2>Import giornaliero POS</h2>
+                <h2>{t("report.dailyPosImport")}</h2>
                 <form onSubmit={onImportPos}>
-                  <label>Data vendite</label>
+                  <label>{t("report.salesDate")}</label>
                   <input type="date" value={salesDate} onChange={(e) => setSalesDate(e.target.value)} />
-                  <label>ID sorgente POS</label>
-                  <input value={posSourceId} onChange={(e) => setPosSourceId(e.target.value)} placeholder="UUID sorgente POS" />
-                  <label>Righe vendite (JSON)</label>
+                  <label>{t("report.posSourceId")}</label>
+                  <input value={posSourceId} onChange={(e) => setPosSourceId(e.target.value)} placeholder={t("report.posSourcePlaceholder")} />
+                  <label>{t("report.salesLinesJson")}</label>
                   <textarea value={salesLines} onChange={(e) => setSalesLines(e.target.value)} rows={8} />
-                  <button type="submit">Importa vendite</button>
+                  <button type="submit">{t("report.importSales")}</button>
                 </form>
               </section>
               <section className="panel">
-                <h2>Analisi</h2>
-                <p className="muted">In arrivo: food cost teorico vs consuntivo, scostamenti e export CSV/PDF.</p>
+                <h2>{t("report.analysis")}</h2>
+                <p className="muted">{t("report.analysisDesc")}</p>
               </section>
             </div>
           )}
@@ -1899,24 +2194,24 @@ function App() {
         <div className="modal-backdrop" onClick={() => setIsSettingsOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="modal-close-btn" onClick={() => setIsSettingsOpen(false)}>
-              Chiudi
+              {t("action.close")}
             </button>
-            <h2>Parametri</h2>
+            <h2>{t("settings.title")}</h2>
             <p className="params-note">{notice}</p>
-            <label>Chiave API (X-API-Key)</label>
+            <label>{t("settings.apiKey")}</label>
             <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
-            <button type="button" onClick={loadSites}>Aggiorna punti vendita</button>
+            <button type="button" onClick={loadSites}>{t("settings.refreshSites")}</button>
             <div className="site-admin-grid">
               <form onSubmit={onCreateSite}>
-                <h3>Nuovo punto vendita</h3>
-                <label>Nome</label>
-                <input value={newSiteName} onChange={(e) => setNewSiteName(e.target.value)} placeholder="Es. Paillotte Beach" />
-                <label>Codice</label>
-                <input value={newSiteCode} onChange={(e) => setNewSiteCode(e.target.value)} placeholder="Opzionale (auto dal nome)" />
-                <button type="submit">Crea punto vendita</button>
+                <h3>{t("settings.newSite")}</h3>
+                <label>{t("settings.name")}</label>
+                <input value={newSiteName} onChange={(e) => setNewSiteName(e.target.value)} placeholder={t("settings.siteNamePlaceholder")} />
+                <label>{t("settings.code")}</label>
+                <input value={newSiteCode} onChange={(e) => setNewSiteCode(e.target.value)} placeholder={t("settings.siteCodePlaceholder")} />
+                <button type="submit">{t("settings.createSite")}</button>
               </form>
               <section>
-                <h3>Punti vendita disponibili</h3>
+                <h3>{t("settings.availableSites")}</h3>
                 <ul className="site-list">
                   {sites.map((site) => (
                     <li key={site.id} className="site-row">
@@ -1924,21 +2219,21 @@ function App() {
                         <strong>{site.name}</strong>
                         <small>{site.code}</small>
                         <span className={`site-status ${site.is_active ? "site-status--active" : "site-status--inactive"}`}>
-                          {site.is_active ? "attivo" : "disattivato"}
+                          {site.is_active ? t("settings.active") : t("settings.disabled")}
                         </span>
                       </div>
                       <div className="site-actions">
                         {site.is_active ? (
                           <button type="button" className="warning-btn" onClick={() => onDisableSite(site.id)}>
-                            Disattiva
+                            {t("settings.disable")}
                           </button>
                         ) : (
                           <button type="button" className="success-btn" onClick={() => onReactivateSite(site.id)}>
-                            Riattiva
+                            {t("settings.reactivate")}
                           </button>
                         )}
                         <button type="button" className="danger-btn" onClick={() => setSiteToDelete(site)}>
-                          Elimina
+                          {t("action.delete")}
                         </button>
                       </div>
                     </li>
@@ -1947,15 +2242,15 @@ function App() {
               </section>
             </div>
             <hr />
-            <h3>Parametri pagina Ricette e carte</h3>
+            <h3>{t("settings.recipesPageSettings")}</h3>
             <label className="checkline">
               <input type="checkbox" checked={isMenuAdvancedMode} onChange={(e) => setIsMenuAdvancedMode(e.target.checked)} />
-              Modalita avanzata spazi carta
+              {t("settings.advancedMenuSpaces")}
             </label>
             {isMenuAdvancedMode ? (
               <div className="menu-advanced-grid">
                 <section>
-                  <h3>Spazi</h3>
+                  <h3>{t("settings.spaces")}</h3>
                   {menuSpaces
                     .slice()
                     .sort((a, b) => a.order - b.order)
@@ -1963,38 +2258,38 @@ function App() {
                       <div key={space.id} className="space-row">
                         <input value={space.label} onChange={(e) => updateMenuSpace(space.id, { label: e.target.value })} />
                         <select value={space.type} onChange={(e) => updateMenuSpace(space.id, { type: e.target.value as MenuSpaceType })}>
-                          <option value="recipes">Ricette</option>
-                          <option value="supplier_products">Prodotti fornitore</option>
-                          <option value="mixed">Misto</option>
+                          <option value="recipes">{t("settings.spaceTypeRecipes")}</option>
+                          <option value="supplier_products">{t("settings.spaceTypeSupplierProducts")}</option>
+                          <option value="mixed">{t("settings.spaceTypeMixed")}</option>
                         </select>
                         <select
                           value={space.schedule_mode}
                           onChange={(e) => updateMenuSpace(space.id, { schedule_mode: e.target.value as EntryScheduleMode })}
                         >
-                          <option value="permanent">Permanente</option>
-                          <option value="date_specific">Per data</option>
-                          <option value="recurring_weekly">Ricorrente sett.</option>
+                          <option value="permanent">{t("settings.schedulePermanent")}</option>
+                          <option value="date_specific">{t("settings.scheduleDate")}</option>
+                          <option value="recurring_weekly">{t("settings.scheduleRecurring")}</option>
                         </select>
                         <label className="checkline">
                           <input type="checkbox" checked={space.enabled} onChange={(e) => updateMenuSpace(space.id, { enabled: e.target.checked })} />
-                          Attivo
+                          {t("settings.activeShort")}
                         </label>
-                        <button type="button" className="danger-btn" onClick={() => removeMenuSpace(space.id)}>Rimuovi</button>
+                        <button type="button" className="danger-btn" onClick={() => removeMenuSpace(space.id)}>{t("action.remove")}</button>
                       </div>
                     ))}
-                  <label>Nuovo spazio</label>
-                  <input value={newSpaceLabel} onChange={(e) => setNewSpaceLabel(e.target.value)} placeholder="Es. Carta vini" />
-                  <label>Tipo spazio</label>
+                  <label>{t("settings.newSpace")}</label>
+                  <input value={newSpaceLabel} onChange={(e) => setNewSpaceLabel(e.target.value)} placeholder={t("settings.newSpacePlaceholder")} />
+                  <label>{t("settings.spaceType")}</label>
                   <select value={newSpaceType} onChange={(e) => setNewSpaceType(e.target.value as MenuSpaceType)}>
-                    <option value="recipes">Ricette</option>
-                    <option value="supplier_products">Prodotti fornitore</option>
-                    <option value="mixed">Misto</option>
+                    <option value="recipes">{t("settings.spaceTypeRecipes")}</option>
+                    <option value="supplier_products">{t("settings.spaceTypeSupplierProducts")}</option>
+                    <option value="mixed">{t("settings.spaceTypeMixed")}</option>
                   </select>
-                  <button type="button" onClick={addMenuSpace}>Aggiungi spazio</button>
+                  <button type="button" onClick={addMenuSpace}>{t("settings.addSpace")}</button>
                 </section>
                 <section>
-                  <h3>Sezioni per spazio</h3>
-                  <label>Spazio</label>
+                  <h3>{t("settings.sectionsForSpace")}</h3>
+                  <label>{t("settings.space")}</label>
                   <select value={editingSpaceId} onChange={(e) => setEditingSpaceId(e.target.value)}>
                     {menuSpaces.map((space) => (
                       <option key={space.id} value={space.id}>{space.label}</option>
@@ -2021,14 +2316,14 @@ function App() {
                             )
                           }
                         >
-                          ✕
+                          {t("action.delete")}
                         </button>
                       </li>
                     ))}
                   </ul>
-                  <label>Nuova sezione</label>
-                  <input value={newSectionName} onChange={(e) => setNewSectionName(e.target.value)} placeholder="Es. Antipasti" />
-                  <button type="button" onClick={addMenuSection}>Aggiungi sezione</button>
+                  <label>{t("settings.newSection")}</label>
+                  <input value={newSectionName} onChange={(e) => setNewSectionName(e.target.value)} placeholder={t("settings.newSectionPlaceholder")} />
+                  <button type="button" onClick={addMenuSection}>{t("settings.addSection")}</button>
                 </section>
               </div>
             ) : null}
@@ -2040,27 +2335,27 @@ function App() {
         <div className="modal-backdrop" onClick={() => setIsMenuEditorOpen(false)}>
           <div className="modal-card modal-card--narrow" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="modal-close-btn" onClick={() => setIsMenuEditorOpen(false)}>
-              Chiudi
+              {t("action.close")}
             </button>
-            <h2>Modifica spazio: {editingSpace.label}</h2>
+            <h2>{t("menuEditor.editSpace", { space: editingSpace.label })}</h2>
             <form onSubmit={onSubmitMenuEntry}>
-              <label>Titolo</label>
-              <input list="menu-entry-suggestions" value={entryTitle} onChange={(e) => setEntryTitle(e.target.value)} placeholder="Cerca ricetta/prodotto" />
+              <label>{t("menuEditor.title")}</label>
+              <input list="menu-entry-suggestions" value={entryTitle} onChange={(e) => setEntryTitle(e.target.value)} placeholder={t("menuEditor.titlePlaceholder")} />
               <datalist id="menu-entry-suggestions">
                 {menuSuggestions.map((suggestion) => (
                   <option key={suggestion.key} value={suggestion.value} />
                 ))}
               </datalist>
-              <label>Tipo voce</label>
+              <label>{t("menuEditor.entryType")}</label>
               <select value={entryKind} onChange={(e) => setEntryKind(e.target.value as "recipe" | "product")}>
-                <option value="recipe">Ricetta</option>
-                <option value="product">Prodotto</option>
+                <option value="recipe">{t("menuEditor.entryTypeRecipe")}</option>
+                <option value="product">{t("menuEditor.entryTypeProduct")}</option>
               </select>
               {entryKind === "recipe" ? (
                 <p className="muted">
-                  Ricetta collegata: {entryFicheProductId ?? "non mappata (titolo non trovato)"}
+                  {t("menuEditor.linkedRecipe")}: {entryFicheProductId ?? t("menuEditor.notMapped")}
                   {" | "}
-                  Porzioni fiche:{" "}
+                  {t("menuEditor.fichePortions")}:{" "}
                   {(
                     recipeTitleSuggestions.find(
                       (item) => item.title.trim().toLowerCase() === entryTitle.trim().toLowerCase()
@@ -2068,7 +2363,7 @@ function App() {
                   ).toString()}
                 </p>
               ) : null}
-              <label>Porzioni target</label>
+              <label>{t("menuEditor.targetPortions")}</label>
               <input
                 type="number"
                 min="0"
@@ -2076,31 +2371,34 @@ function App() {
                 value={entryExpectedQty}
                 onChange={(e) => setEntryExpectedQty(e.target.value)}
               />
-              <label>Sezione</label>
+              <label>{t("menuEditor.section")}</label>
               <select value={entrySection} onChange={(e) => setEntrySection(e.target.value)}>
-                <option value="">Senza sezione</option>
+                <option value="">{t("label.noSection")}</option>
+                {entrySection && !editingSpace.sections.includes(entrySection) ? (
+                  <option value={entrySection}>{entrySection}</option>
+                ) : null}
                 {editingSpace.sections.map((section) => (
                   <option key={section} value={section}>{section}</option>
                 ))}
               </select>
-              <label>Pianificazione</label>
+              <label>{t("menuEditor.schedule")}</label>
               <select value={entryScheduleMode} onChange={(e) => setEntryScheduleMode(e.target.value as EntryScheduleMode)}>
-                <option value="permanent">Permanente (sempre attiva)</option>
-                <option value="date_specific">Data specifica/intervallo</option>
-                <option value="recurring_weekly">Ricorrenza settimanale</option>
+                <option value="permanent">{t("menuEditor.schedulePermanent")}</option>
+                <option value="date_specific">{t("menuEditor.scheduleDateRange")}</option>
+                <option value="recurring_weekly">{t("menuEditor.scheduleWeekly")}</option>
               </select>
               {entryScheduleMode === "recurring_weekly" ? (
                 <div>
-                  <label>Giorni ricorrenti</label>
+                  <label>{t("menuEditor.weekdays")}</label>
                   <div className="checkline">
                     {[
-                      { key: 0, label: "Lun" },
-                      { key: 1, label: "Mar" },
-                      { key: 2, label: "Mer" },
-                      { key: 3, label: "Gio" },
-                      { key: 4, label: "Ven" },
-                      { key: 5, label: "Sab" },
-                      { key: 6, label: "Dom" },
+                      { key: 0, label: t("weekday.mon") },
+                      { key: 1, label: t("weekday.tue") },
+                      { key: 2, label: t("weekday.wed") },
+                      { key: 3, label: t("weekday.thu") },
+                      { key: 4, label: t("weekday.fri") },
+                      { key: 5, label: t("weekday.sat") },
+                      { key: 6, label: t("weekday.sun") },
                     ].map((day) => (
                       <label key={day.key} className="checkline">
                         <input
@@ -2120,15 +2418,15 @@ function App() {
               ) : null}
               <div className="grid grid-2">
                 <div>
-                  <label>Valida dal</label>
+                  <label>{t("menuEditor.validFrom")}</label>
                   <input type="date" value={entryValidFrom} onChange={(e) => setEntryValidFrom(e.target.value)} />
                 </div>
                 <div>
-                  <label>Valida al</label>
+                  <label>{t("menuEditor.validTo")}</label>
                   <input type="date" value={entryValidTo} onChange={(e) => setEntryValidTo(e.target.value)} />
                 </div>
               </div>
-              <button type="submit">{editingEntryId ? "Salva sostituzione" : "Aggiungi voce"}</button>
+              <button type="submit">{editingEntryId ? t("menuEditor.saveReplacement") : t("menuEditor.addEntry")}</button>
             </form>
           </div>
         </div>
@@ -2138,25 +2436,25 @@ function App() {
         <div className="modal-backdrop" onClick={closeDeleteSiteDialog}>
           <div className="modal-card modal-card--narrow" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="modal-close-btn" onClick={closeDeleteSiteDialog}>
-              Chiudi
+              {t("action.close")}
             </button>
-            <h2>Elimina punto vendita</h2>
+            <h2>{t("deleteSite.title")}</h2>
             <p className="muted">
-              Questa azione elimina definitivamente <strong>{siteToDelete.name}</strong>.
+              {t("deleteSite.descStart")} <strong>{siteToDelete.name}</strong>.
             </p>
-            <p className="muted">Per confermare digita: <strong>ELIMINA DEFINITIVAMENTE</strong></p>
+            <p className="muted">{t("deleteSite.confirmPrompt")} <strong>{t("deleteSite.confirmText")}</strong></p>
             <input
               value={deleteConfirmText}
               onChange={(e) => setDeleteConfirmText(e.target.value)}
-              placeholder="ELIMINA DEFINITIVAMENTE"
+              placeholder={t("deleteSite.confirmText")}
             />
             <button
               type="button"
               className="danger-btn"
               onClick={onHardDeleteSite}
-              disabled={deleteConfirmText !== "ELIMINA DEFINITIVAMENTE"}
+              disabled={deleteConfirmText !== t("deleteSite.confirmText")}
             >
-              Elimina definitivamente
+              {t("deleteSite.deleteForever")}
             </button>
           </div>
         </div>
@@ -2168,3 +2466,12 @@ function App() {
 }
 
 export default App;
+
+
+
+
+
+
+
+
+

@@ -65,7 +65,8 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, obje
         sql = (
             f"SELECT DISTINCT {id_col}::text, {title_col}, "
             f"CASE WHEN ({data_col}->>'portions') ~ '^[0-9]+([.,][0-9]+)?$' "
-            f"THEN REPLACE({data_col}->>'portions', ',', '.')::numeric ELSE NULL END "
+            f"THEN REPLACE({data_col}->>'portions', ',', '.')::numeric ELSE NULL END, "
+            f"COALESCE({data_col}->>'category', '') "
             f"FROM {table_name} WHERE {title_col} IS NOT NULL"
         )
         params: list[object] = []
@@ -83,7 +84,12 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, obje
             with connections["fiches"].cursor() as cursor:
                 cursor.execute(sql, params)
                 return [
-                    {"fiche_product_id": row[0], "title": _normalize_title(row[1]), "portions": _to_decimal_or_none(row[2])}
+                    {
+                        "fiche_product_id": row[0],
+                        "title": _normalize_title(row[1]),
+                        "portions": _to_decimal_or_none(row[2]),
+                        "category": _normalize_title(row[3]),
+                    }
                     for row in cursor.fetchall()
                     if row[1]
                 ]
@@ -91,7 +97,7 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, obje
             # Fallback to local snapshots when fiches DB is unavailable in current env/test.
             pass
 
-    queryset = RecipeSnapshot.objects.values("fiche_product_id", "title", "portions")
+    queryset = RecipeSnapshot.objects.values("fiche_product_id", "title", "portions", "category")
     if query:
         queryset = queryset.filter(title__icontains=query)
     titles = queryset.order_by("title").distinct()[:limit]
@@ -100,6 +106,7 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, obje
             "fiche_product_id": str(item["fiche_product_id"]),
             "title": _normalize_title(item["title"]),
             "portions": item.get("portions"),
+            "category": _normalize_title(item.get("category")),
         }
         for item in titles
         if item.get("title")

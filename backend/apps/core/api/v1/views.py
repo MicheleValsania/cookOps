@@ -1,6 +1,8 @@
 ﻿from collections import defaultdict
 from datetime import date
 from decimal import Decimal
+import re
+import unicodedata
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404
@@ -8,6 +10,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.catalog.models import SupplierProduct
 from apps.core.api.v1.serializers import (
     ServiceMenuEntrySerializer,
     ServiceMenuEntrySyncSerializer,
@@ -72,6 +75,47 @@ class SiteDetailView(APIView):
 
 
 class ServiceMenuEntrySyncView(APIView):
+    @staticmethod
+    def _resolve_recipe_category_for_entry(entry: ServiceMenuEntry) -> str:
+        if entry.fiche_product_id:
+            snap = (
+                RecipeSnapshot.objects.filter(fiche_product_id=entry.fiche_product_id)
+                .order_by("-source_updated_at", "-created_at")
+                .first()
+            )
+            if snap and snap.category:
+                return str(snap.category).strip()
+        title = (entry.title or "").strip()
+        if not title:
+            return ""
+        snap = RecipeSnapshot.objects.filter(title__iexact=title).order_by("-source_updated_at", "-created_at").first()
+        if snap and snap.category:
+            return str(snap.category).strip()
+        snap = RecipeSnapshot.objects.filter(title__icontains=title).order_by("-source_updated_at", "-created_at").first()
+        if snap and snap.category:
+            return str(snap.category).strip()
+        return ""
+
+    @classmethod
+    def _enrich_entries_recipe_category(cls, entries: list[ServiceMenuEntry]):
+        for entry in entries:
+            metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+            if metadata.get("item_kind") == "product":
+                continue
+            current = str(metadata.get("recipe_category") or "").strip()
+            if current:
+                continue
+            resolved = cls._resolve_recipe_category_for_entry(entry)
+            if not resolved:
+                continue
+            try:
+                resolved = ServiceIngredientsView._canonicalize_category(resolved)
+            except NameError:
+                pass
+            next_meta = dict(metadata)
+            next_meta["recipe_category"] = resolved
+            entry.metadata = next_meta
+
     @staticmethod
     def _parse_iso_date(raw_value):
         if not raw_value:
@@ -231,6 +275,7 @@ class ServiceMenuEntrySyncView(APIView):
             return Response({"detail": "Query param 'date' must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
 
         effective_entries = self._get_effective_entries(site_id, parsed_service_date)
+        self._enrich_entries_recipe_category(effective_entries)
         return Response({"count": len(effective_entries), "entries": ServiceMenuEntrySerializer(effective_entries, many=True).data})
 
     @transaction.atomic
@@ -297,6 +342,7 @@ class ServiceMenuEntrySyncView(APIView):
             ServiceMenuEntry.objects.bulk_create(dated_instances)
 
         effective_entries = self._get_effective_entries(site.id, service_date)
+        self._enrich_entries_recipe_category(effective_entries)
         return Response(
             {
                 "site": str(site.id),
@@ -309,6 +355,36 @@ class ServiceMenuEntrySyncView(APIView):
 
 
 class ServiceIngredientsView(APIView):
+    CATEGORY_CANONICAL_MAP = {
+        "entree": "Entrees",
+        "entrees": "Entrees",
+        "antipasti": "Entrees",
+        "starter": "Entrees",
+        "starters": "Entrees",
+        "pates": "Pates et risotto",
+        "pasta": "Pates et risotto",
+        "pastas": "Pates et risotto",
+        "risotto": "Pates et risotto",
+        "risotti": "Pates et risotto",
+        "pates et risotto": "Pates et risotto",
+        "pates risotto": "Pates et risotto",
+        "pizza": "Pizzas",
+        "pizzas": "Pizzas",
+        "dessert": "Desserts",
+        "desserts": "Desserts",
+        "dolci": "Desserts",
+        "sauce": "Sauces",
+        "sauces": "Sauces",
+        "special": "Speciali",
+        "specials": "Speciali",
+        "speciale": "Speciali",
+        "speciali": "Speciali",
+        "fuori menu": "Fuori menu",
+        "hors carte": "Fuori menu",
+        "burger": "Burger",
+        "burgers": "Burger",
+    }
+
     @staticmethod
     def _resolve_snapshot_for_entry(entry: ServiceMenuEntry):
         if entry.fiche_product_id:
@@ -350,6 +426,105 @@ class ServiceIngredientsView(APIView):
     def _is_entry_valid_for_service_date(cls, entry: ServiceMenuEntry, service_date: date):
         return ServiceMenuEntrySyncView._is_entry_applicable_for_date(entry, service_date)
 
+    @staticmethod
+    def _clean_key(value: str) -> str:
+        return (value or "").strip().lower()
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        cleaned = unicodedata.normalize("NFKD", value or "")
+        cleaned = "".join(ch for ch in cleaned if not unicodedata.combining(ch))
+        cleaned = cleaned.lower()
+        cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    @staticmethod
+    def _extract_snapshot_category(snapshot) -> str:
+        payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
+        recipe_part = payload.get("recipe") if isinstance(payload.get("recipe"), dict) else {}
+        data_part = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        candidates = [
+            payload.get("category"),
+            payload.get("section"),
+            payload.get("menu_category"),
+            payload.get("family"),
+            payload.get("rubrique"),
+            recipe_part.get("category"),
+            data_part.get("category"),
+        ]
+        for item in candidates:
+            value = str(item or "").strip()
+            if value:
+                return value
+        return ""
+
+    @classmethod
+    def _canonicalize_category(cls, raw_value: str | None) -> str:
+        text = str(raw_value or "").strip()
+        if not text:
+            return ""
+        normalized = cls._normalize_text(text)
+        return cls.CATEGORY_CANONICAL_MAP.get(normalized, text)
+
+    def _build_supplier_code_lookup(self, ingredients: list[dict]) -> dict[tuple[str, str], str]:
+        supplier_names = {
+            self._normalize_text(str(item.get("supplier") or ""))
+            for item in ingredients
+            if self._normalize_text(str(item.get("supplier") or ""))
+        }
+        ingredient_names = {
+            self._normalize_text(str(item.get("ingredient") or ""))
+            for item in ingredients
+            if self._normalize_text(str(item.get("ingredient") or ""))
+        }
+        if not supplier_names or not ingredient_names:
+            return {}
+
+        queryset = SupplierProduct.objects.select_related("supplier").filter(active=True)
+        lookup: dict[tuple[str, str], str] = {}
+        fuzzy_pool: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for item in queryset:
+            supplier_key = self._normalize_text(item.supplier.name)
+            product_key = self._normalize_text(item.name)
+            if supplier_key not in supplier_names:
+                continue
+            sku = (item.supplier_sku or "").strip()
+            if sku:
+                if product_key in ingredient_names:
+                    lookup[(supplier_key, product_key)] = sku
+                fuzzy_pool[supplier_key].append((product_key, sku))
+        for supplier_key in supplier_names:
+            for ingredient_key in ingredient_names:
+                if (supplier_key, ingredient_key) in lookup:
+                    continue
+                best_sku = ""
+                best_score = -1
+                for product_key, sku in fuzzy_pool.get(supplier_key, []):
+                    if not product_key:
+                        continue
+                    if ingredient_key == product_key:
+                        best_sku = sku
+                        best_score = 10_000
+                        break
+                    if ingredient_key in product_key or product_key in ingredient_key:
+                        overlap = min(len(ingredient_key), len(product_key))
+                        if overlap > best_score:
+                            best_score = overlap
+                            best_sku = sku
+                if best_sku:
+                    lookup[(supplier_key, ingredient_key)] = best_sku
+        return lookup
+
+    def _resolve_supplier_code(self, ingredient_item: dict, code_lookup: dict[tuple[str, str], str]) -> str:
+        raw_code = (ingredient_item.get("supplier_code") or "").strip()
+        if raw_code:
+            return raw_code
+        supplier_key = self._normalize_text(str(ingredient_item.get("supplier") or ""))
+        ingredient_key = self._normalize_text(str(ingredient_item.get("ingredient") or ""))
+        if not supplier_key or not ingredient_key:
+            return ""
+        return code_lookup.get((supplier_key, ingredient_key), "")
+
     def _expand_snapshot_ingredients(
         self,
         snapshot,
@@ -358,6 +533,7 @@ class ServiceIngredientsView(APIView):
         visited: set[str],
         depth: int = 0,
         derived_from_recipe: str | None = None,
+        derived_from_category: str | None = None,
     ):
         ingredients = extract_ingredients(snapshot.payload or {})
         if not ingredients:
@@ -373,6 +549,7 @@ class ServiceIngredientsView(APIView):
             ingredient_name = (ing.get("name") or "").strip()
             qty_total = (ing.get("qty") or Decimal("0")) * multiplier
             supplier = ing.get("supplier") or "Senza fornitore"
+            supplier_code = (ing.get("supplier_code") or "").strip()
 
             nested_snapshot = self._resolve_snapshot_for_ingredient_title(ingredient_name)
             nested_key = ""
@@ -395,6 +572,29 @@ class ServiceIngredientsView(APIView):
                     nested_visited,
                     depth + 1,
                     derived_from_recipe or nested_snapshot.title,
+                    derived_from_category or self._canonicalize_category(self._extract_snapshot_category(nested_snapshot)),
+                )
+                if nested_items:
+                    expanded.extend(nested_items)
+                    continue
+            if nested_snapshot and qty_total <= 0:
+                nested_portions = nested_snapshot.portions if nested_snapshot.portions and nested_snapshot.portions > 0 else None
+                # Fallback: internal prep without qty is treated as one portion.
+                nested_multiplier = Decimal("1") / nested_portions if nested_portions else Decimal("1")
+                warnings.append(
+                    f"'{ingredient_name}': quantita non valorizzata, applicata assunzione 1 porzione per espansione ingredienti."
+                )
+                nested_visited = set(visited)
+                if nested_key:
+                    nested_visited.add(nested_key)
+                nested_items = self._expand_snapshot_ingredients(
+                    nested_snapshot,
+                    nested_multiplier,
+                    warnings,
+                    nested_visited,
+                    depth + 1,
+                    derived_from_recipe or nested_snapshot.title,
+                    derived_from_category or self._canonicalize_category(self._extract_snapshot_category(nested_snapshot)),
                 )
                 if nested_items:
                     expanded.extend(nested_items)
@@ -405,10 +605,12 @@ class ServiceIngredientsView(APIView):
                 {
                     "ingredient": ingredient_name,
                     "supplier": supplier,
+                    "supplier_code": supplier_code,
                     "qty_total": qty_normalized,
                     "unit": unit_normalized,
                     "source_type": "derived_recipe" if derived_from_recipe else "direct",
                     "source_recipe_title": derived_from_recipe,
+                    "source_recipe_category": self._canonicalize_category(derived_from_category),
                 }
             )
         return expanded
@@ -431,7 +633,7 @@ class ServiceIngredientsView(APIView):
 
         warnings: list[str] = []
 
-        supplier_agg: dict[tuple[str, str, str, str, str], Decimal] = defaultdict(lambda: Decimal("0"))
+        supplier_agg: dict[tuple[str, str, str, str, str, str], Decimal] = defaultdict(lambda: Decimal("0"))
         recipe_rows: list[dict] = []
 
         for entry in entries:
@@ -457,20 +659,25 @@ class ServiceIngredientsView(APIView):
                 continue
 
             recipe_ingredients: list[dict] = []
+            code_lookup = self._build_supplier_code_lookup(expanded_ingredients)
             for ing in expanded_ingredients:
                 qty_total = ing["qty_total"]
                 supplier = ing["supplier"] or "Senza fornitore"
+                supplier_code = self._resolve_supplier_code(ing, code_lookup)
                 source_type = ing.get("source_type") or "direct"
                 source_recipe_title = ing.get("source_recipe_title") or ""
-                supplier_agg[(supplier, ing["ingredient"], ing["unit"], source_type, source_recipe_title)] += qty_total
+                source_recipe_category = ing.get("source_recipe_category") or ""
+                supplier_agg[(supplier, ing["ingredient"], supplier_code, ing["unit"], source_type, source_recipe_title)] += qty_total
                 recipe_ingredients.append(
                     {
                         "ingredient": ing["ingredient"],
                         "supplier": supplier,
+                        "supplier_code": supplier_code,
                         "qty_total": str(qty_total),
                         "unit": ing["unit"],
                         "source_type": source_type,
                         "source_recipe_title": source_recipe_title or None,
+                        "source_recipe_category": source_recipe_category or None,
                     }
                 )
 
@@ -478,6 +685,7 @@ class ServiceIngredientsView(APIView):
                 {
                     "space": entry.space_key,
                     "section": entry.section,
+                    "recipe_category": self._canonicalize_category(self._extract_snapshot_category(snapshot)) or entry.section,
                     "title": entry.title,
                     "expected_qty": str(planned_portions),
                     "recipe_portions": str(recipe_portions) if recipe_portions else None,
@@ -492,14 +700,15 @@ class ServiceIngredientsView(APIView):
             {
                 "supplier": supplier,
                 "ingredient": ingredient,
+                "supplier_code": supplier_code or None,
                 "qty_total": str(total),
                 "unit": unit,
                 "source_type": source_type,
                 "source_recipe_title": source_recipe_title or None,
             }
-            for (supplier, ingredient, unit, source_type, source_recipe_title), total in sorted(
+            for (supplier, ingredient, supplier_code, unit, source_type, source_recipe_title), total in sorted(
                 supplier_agg.items(),
-                key=lambda item: (item[0][0], item[0][1], item[0][3], item[0][4]),
+                key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][4], item[0][5]),
             )
         ]
         return Response({"view": "supplier", "rows": supplier_rows, "warnings": warnings})

@@ -139,6 +139,15 @@ li {
   color: var(--text);
 }
 
+.nav-lang-select {
+  width: 132px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  padding: 10px 14px;
+  color: var(--text);
+}
+
 .app-layout {
   display: grid;
   grid-template-columns: 300px 1fr;
@@ -569,6 +578,29 @@ th {
   gap: 14px;
 }
 
+.checklist-mode-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.checklist-mode-bar .space-tab-btn {
+  width: auto;
+  margin: 0;
+}
+
+.selection-table th:first-child,
+.selection-table td:first-child {
+  width: 88px;
+  text-align: center;
+}
+
+.selection-table input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
 .supplier-order-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(260px, 1fr));
@@ -583,6 +615,26 @@ th {
   margin: 0 0 8px;
   font-size: 0.98rem;
   color: #16304f;
+}
+
+.supplier-order-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.supplier-order-card__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.supplier-order-card__actions button {
+  width: auto;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 0.82rem;
 }
 
 .origin-badge {

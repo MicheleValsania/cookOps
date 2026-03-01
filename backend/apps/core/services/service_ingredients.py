@@ -85,12 +85,21 @@ def extract_ingredients(payload: dict[str, Any]) -> list[dict[str, Any]]:
         parsed_qty, parsed_unit = _parse_qty_and_unit(qty)
         unit = item.get("unit") or item.get("uom") or item.get("qty_unit") or parsed_unit or "pc"
         supplier = item.get("supplier") or item.get("supplier_name") or item.get("vendor") or ""
+        supplier_code = (
+            item.get("supplier_code")
+            or item.get("supplier_sku")
+            or item.get("vendor_code")
+            or item.get("article_code")
+            or item.get("code")
+            or ""
+        )
         result.append(
             {
                 "name": str(name).strip(),
                 "qty": parsed_qty,
                 "unit": str(unit).strip(),
                 "supplier": str(supplier).strip(),
+                "supplier_code": str(supplier_code).strip(),
             }
         )
     return result
