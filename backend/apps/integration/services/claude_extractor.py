@@ -20,28 +20,53 @@ class ClaudeExtractionResult:
 def _build_schema_hint(document_type: str) -> dict[str, Any]:
     line_base = {
         "supplier_product": None,
+        "supplier_code": None,
         "raw_product_name": "string",
+        "description": None,
         "qty_value": "0.000",
         "qty_unit": "kg|g|l|ml|cl|pc",
         "unit_price": None,
+        "line_total": None,
+        "vat_rate": None,
+        "supplier_lot_code": None,
+        "dlc_date": None,
+        "note": None,
     }
     if document_type == DocumentType.GOODS_RECEIPT:
-        line_base.update({"supplier_lot_code": None, "dlc_date": None})
         return {
             "site": "uuid",
             "supplier": "uuid",
+            "supplier_name": "string",
+            "supplier_vat": "string|null",
+            "document_number": "string",
             "delivery_note_number": "string",
+            "document_date": "YYYY-MM-DD|null",
             "received_at": "YYYY-MM-DDTHH:MM:SSZ",
+            "currency": "EUR|USD|...|null",
+            "total_amount": None,
+            "total_ht": None,
+            "vat_amount": None,
+            "vat_rate": None,
             "metadata": {},
             "lines": [line_base],
         }
-    line_base.update({"line_total": None, "vat_rate": None, "note": None})
     return {
         "site": "uuid",
         "supplier": "uuid",
+        "supplier_name": "string",
+        "supplier_vat": "string|null",
+        "document_number": "string",
         "invoice_number": "string",
+        "delivery_note_number": "string|null",
+        "document_date": "YYYY-MM-DD|null",
         "invoice_date": "YYYY-MM-DD",
         "due_date": None,
+        "currency": "EUR|USD|...|null",
+        "total_amount": None,
+        "total_ht": None,
+        "vat_amount": None,
+        "vat_rate": None,
+        "payment_terms": None,
         "metadata": {},
         "lines": [line_base],
     }
@@ -99,9 +124,14 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
 
     model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest").strip()
     schema_hint = _build_schema_hint(document.document_type)
+    document_label = "invoice" if document.document_type == DocumentType.INVOICE else "delivery note"
     prompt = (
-        "Extract a single JSON object from this document. "
-        "Do not include markdown or additional text. "
+        "You are an OCR extraction engine for restaurant purchasing documents. "
+        f"Extract data from this {document_label} and return exactly one JSON object. "
+        "No markdown, no prose, no code fences, JSON only. "
+        "Rules: keep decimal values as strings using dot separator; use null when not found; preserve line ordering; "
+        "extract every visible line item with quantity and unit if present. "
+        "If supplier/site UUIDs are not present in the file, keep them as null. "
         f"Target schema: {json.dumps(schema_hint)}"
     )
     content_type = (document.content_type or "application/pdf").strip().lower()

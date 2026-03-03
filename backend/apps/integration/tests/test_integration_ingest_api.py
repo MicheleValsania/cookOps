@@ -4,7 +4,7 @@ from rest_framework.test import APITestCase
 from apps.catalog.models import Supplier
 from apps.core.models import Site
 from apps.integration.models import DocumentExtraction, IntegrationDocument, IntegrationImportBatch
-from apps.purchasing.models import GoodsReceipt
+from apps.purchasing.models import GoodsReceipt, Invoice
 
 
 class IntegrationIngestApiTests(APITestCase):
@@ -104,3 +104,53 @@ class IntegrationIngestApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.json()["code"], "validation_error")
         self.assertIn("extraction_id", response.json()["field_errors"])
+
+    def test_ingest_invoice_normalizes_alias_fields(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-ocr-001.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "document_number": "FCL-ALIAS-001",
+                "document_date": "2026-03-01",
+                "currency": "EUR",
+                "total_amount": "123.45",
+                "lines": [
+                    {
+                        "description": "Tomato",
+                        "quantity": "2,500",
+                        "unit": "kg",
+                        "price": "4,20",
+                        "total": "10,50",
+                        "tva": "5,5",
+                    }
+                ],
+            },
+        )
+
+        payload = {
+            "extraction_id": str(extraction.id),
+            "idempotency_key": "ocr-inv-alias-001",
+            "target": "invoice",
+        }
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Invoice.objects.count(), 1)
+        line = Invoice.objects.first().lines.first()
+        self.assertEqual(str(line.qty_value), "2.500")
+        self.assertEqual(line.qty_unit, "kg")

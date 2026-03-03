@@ -18,6 +18,8 @@ type DocumentItem = {
   document_type: "goods_receipt" | "invoice";
   status: string;
   site: string;
+  file?: string | null;
+  storage_path?: string | null;
 };
 
 type SupplierItem = {
@@ -101,6 +103,8 @@ type MenuSuggestion = {
 
 type ChecklistView = "supplier" | "recipe" | "sector";
 type QuantityMode = "with_qty" | "ingredients_only";
+type IntakeStage = "idle" | "uploading" | "extracting" | "review" | "ingesting";
+type InvoiceIngestMode = "invoice_with_transport" | "invoice_direct" | "invoice_after_delivery";
 
 const DEFAULT_MENU_SPACES: MenuSpace[] = [
   {
@@ -186,6 +190,14 @@ function formatDisplayNumber(lang: Lang, value: unknown, maxFractionDigits = 3):
   }).format(parsed);
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function asArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.map((item) => asRecord(item)) : [];
+}
+
 function getTodayIsoDate() {
   const now = new Date();
   const year = now.getFullYear();
@@ -213,13 +225,20 @@ function App() {
   const [selectedDocId, setSelectedDocId] = useState("");
   const [selectedDocType, setSelectedDocType] = useState<"goods_receipt" | "invoice">("goods_receipt");
   const [selectedExtractionId, setSelectedExtractionId] = useState("");
+  const [isClaudeExtracting, setIsClaudeExtracting] = useState(false);
+  const [intakeStage, setIntakeStage] = useState<IntakeStage>("idle");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadDocType, setUploadDocType] = useState<"goods_receipt" | "invoice">("goods_receipt");
+  const [invoiceIngestMode] = useState<InvoiceIngestMode>("invoice_direct");
+  const [originalDocumentBlobUrl, setOriginalDocumentBlobUrl] = useState("");
+  const [isOriginalDocumentLoading, setIsOriginalDocumentLoading] = useState(false);
 
   const [normalizedPayload, setNormalizedPayload] = useState(`{\n  "site": "",\n  "supplier": "",\n  "delivery_note_number": "BL-001",\n  "received_at": "2026-02-27T10:00:00Z",\n  "metadata": {"source": "ocr"},\n  "lines": [{"raw_product_name": "Tomato", "qty_value": "3.000", "qty_unit": "kg"}]\n}`);
 
   const [recoInvoiceLine, setRecoInvoiceLine] = useState("");
   const [recoGoodsReceiptLine, setRecoGoodsReceiptLine] = useState("");
+  const [autoMatchInvoiceId, setAutoMatchInvoiceId] = useState("");
+  const [isAutoMatching, setIsAutoMatching] = useState(false);
 
   const [suppliers, setSuppliers] = useState<SupplierItem[]>([]);
   const [newSupplierName, setNewSupplierName] = useState("");
@@ -273,6 +292,17 @@ function App() {
   const errorWithDetail = (labelKey: string, detail: unknown) =>
     t("notice.errorWithDetail", { label: t(labelKey), detail: String(detail) });
 
+  const normalizedData = useMemo(() => {
+    try {
+      return asRecord(JSON.parse(normalizedPayload));
+    } catch {
+      return {};
+    }
+  }, [normalizedPayload]);
+  const normalizedMeta = useMemo(() => asRecord(normalizedData.metadata), [normalizedData]);
+
+  const previewLines = useMemo(() => asArray(normalizedData.lines), [normalizedData]);
+
   useEffect(() => {
     setDefaultApiKey(apiKey);
   }, [apiKey]);
@@ -284,6 +314,63 @@ function App() {
   useEffect(() => {
     void loadSites();
   }, []);
+
+  useEffect(() => {
+    if (!selectedDocId) return;
+    if (isClaudeExtracting) return;
+    if (selectedExtractionId) return;
+    void onExtractWithClaude(selectedDocId);
+  }, [selectedDocId]);
+
+  useEffect(() => {
+    if (nav !== "acquisti") return;
+    void loadDocuments();
+  }, [nav]);
+
+  useEffect(() => {
+    const selected = documents.find((doc) => doc.id === selectedDocId) ?? null;
+    const raw = String(selected?.file || selected?.storage_path || "").trim();
+    let resolvedUrl = "";
+    if (raw) {
+      if (raw.startsWith("http://") || raw.startsWith("https://")) {
+        resolvedUrl = raw;
+      } else {
+        const apiBase = getApiBase();
+        const root = apiBase.replace(/\/api\/v1\/?$/, "");
+        resolvedUrl = raw.startsWith("/") ? `${root}${raw}` : `${root}/media/${raw.replace(/^media\//, "")}`;
+      }
+    }
+
+    if (!resolvedUrl) {
+      setOriginalDocumentBlobUrl("");
+      setIsOriginalDocumentLoading(false);
+      return;
+    }
+    let active = true;
+    let nextBlobUrl = "";
+    setIsOriginalDocumentLoading(true);
+    fetch(resolvedUrl)
+      .then((res) => {
+        if (!res.ok) throw new Error(`preview_http_${res.status}`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (!active) return;
+        nextBlobUrl = URL.createObjectURL(blob);
+        setOriginalDocumentBlobUrl(nextBlobUrl);
+      })
+      .catch(() => {
+        if (!active) return;
+        setOriginalDocumentBlobUrl("");
+      })
+      .finally(() => {
+        if (active) setIsOriginalDocumentLoading(false);
+      });
+    return () => {
+      active = false;
+      if (nextBlobUrl) URL.revokeObjectURL(nextBlobUrl);
+    };
+  }, [documents, selectedDocId]);
 
   useEffect(() => {
     const storedSpaces = localStorage.getItem(MENU_SPACES_STORAGE_KEY);
@@ -973,9 +1060,23 @@ function App() {
     setNotice(t("notice.documentsLoaded", { count: data.length }));
   }
 
+  function onUploadFileSelected(file: File | null) {
+    setUploadFile(file);
+    const name = (file?.name || "").toLowerCase();
+    if (!name) return;
+    if (name.includes("facture") || name.includes("invoice")) {
+      setUploadDocType("invoice");
+      return;
+    }
+    if (name.includes("bl") || name.includes("bon") || name.includes("livraison") || name.includes("ddt")) {
+      setUploadDocType("goods_receipt");
+    }
+  }
+
   async function onUploadDocument(e: FormEvent) {
     e.preventDefault();
     if (!canUpload || !uploadFile) return;
+    setIntakeStage("uploading");
 
     const form = new FormData();
     form.append("site", siteId);
@@ -987,15 +1088,26 @@ function App() {
     const body = await res.json();
     if (!res.ok) {
       setNotice(errorWithDetail("error.documentUpload", body.detail ?? JSON.stringify(body)));
+      setIntakeStage("idle");
       return;
     }
     setNotice(t("notice.documentUploaded", { name: body.filename }));
+    const uploadedId = String(body.id ?? "");
+    const uploadedType = (body.document_type as "goods_receipt" | "invoice" | undefined) ?? uploadDocType;
     setUploadFile(null);
     await loadDocuments();
+    if (uploadedId) {
+      setSelectedDocId(uploadedId);
+      setSelectedDocType(uploadedType);
+      setSelectedExtractionId("");
+      await onExtractWithClaude(uploadedId);
+    } else {
+      setIntakeStage("idle");
+    }
   }
 
-  async function onCreateExtraction(e: FormEvent) {
-    e.preventDefault();
+  async function onCreateExtraction(e?: FormEvent) {
+    e?.preventDefault();
     if (!selectedDocId) return;
 
     let normalized: unknown;
@@ -1028,9 +1140,51 @@ function App() {
     setNotice(t("notice.extractionSaved", { id: body.id }));
   }
 
-  async function onIngestExtraction(e: FormEvent) {
-    e.preventDefault();
+  async function onExtractWithClaude(forcedDocId?: string) {
+    const targetDocId = (forcedDocId || selectedDocId || "").trim();
+    if (!targetDocId) {
+      setNotice(t("validation.selectDocument"));
+      return;
+    }
+    setIsClaudeExtracting(true);
+    setIntakeStage("extracting");
+    try {
+      const res = await apiFetch(`/integration/documents/${targetDocId}/extract-claude/`, {
+        method: "POST",
+        body: JSON.stringify({ idempotency_key: `ui-claude-${targetDocId}-${Date.now()}` }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        const extraction = body?.extraction;
+        const detail = extraction?.error_message || body.detail || JSON.stringify(body);
+        setNotice(errorWithDetail("error.claudeExtract", detail));
+        return;
+      }
+      if (body.status && String(body.status) !== "succeeded") {
+        const detail = body.error_message || t("error.claudeExtract");
+        setNotice(errorWithDetail("error.claudeExtract", detail));
+        return;
+      }
+      if (body.id) {
+        setSelectedExtractionId(String(body.id));
+      }
+      if (body.normalized_payload && typeof body.normalized_payload === "object") {
+        setNormalizedPayload(JSON.stringify(body.normalized_payload, null, 2));
+      }
+      setIntakeStage("review");
+      setNotice(t("notice.claudeExtractionSaved", { id: body.id ?? "-" }));
+    } catch {
+      setNotice(t("error.claudeExtractConnection"));
+      setIntakeStage("idle");
+    } finally {
+      setIsClaudeExtracting(false);
+    }
+  }
+
+  async function onIngestExtraction(e?: FormEvent) {
+    e?.preventDefault();
     if (!selectedDocId || !selectedExtractionId) return;
+    setIntakeStage("ingesting");
 
     const payload = {
       extraction_id: selectedExtractionId,
@@ -1045,8 +1199,21 @@ function App() {
     const body = await res.json();
     if (!res.ok) {
       setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+      setIntakeStage("review");
       return;
     }
+    if (selectedDocType === "invoice" && body.id) {
+      setAutoMatchInvoiceId(String(body.id));
+      if (invoiceIngestMode === "invoice_after_delivery") {
+        const matched = await autoMatchInvoiceById(String(body.id), true);
+        if (matched) {
+          setNotice(t("notice.invoiceAfterDeliveryProcessed", { id: body.id }));
+          setIntakeStage("review");
+          return;
+        }
+      }
+    }
+    setIntakeStage("review");
     setNotice(t("notice.documentIngested", { id: body.id }));
   }
 
@@ -1072,6 +1239,54 @@ function App() {
       return;
     }
     setNotice(t("notice.reconciliationCreated", { id: body.id }));
+  }
+
+  async function onAutoMatchInvoice() {
+    if (!autoMatchInvoiceId.trim()) {
+      setNotice(t("validation.invoiceIdRequired"));
+      return;
+    }
+    setIsAutoMatching(true);
+    try {
+      await autoMatchInvoiceById(autoMatchInvoiceId, false);
+    } finally {
+      setIsAutoMatching(false);
+    }
+  }
+
+  async function autoMatchInvoiceById(invoiceId: string, silent = false): Promise<boolean> {
+    try {
+      const res = await apiFetch("/reconciliation/auto-match/", {
+        method: "POST",
+        body: JSON.stringify({
+          invoice_id: invoiceId.trim(),
+          qty_tolerance_ratio: "0.0500",
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        if (!silent) {
+          setNotice(errorWithDetail("error.reconciliationAutoMatch", body.detail ?? JSON.stringify(body)));
+        }
+        return false;
+      }
+      const warningsCount = Array.isArray(body.warnings) ? body.warnings.length : 0;
+      if (!silent) {
+        setNotice(
+          t("notice.reconciliationAutoMatched", {
+            matches: Number(body.created_matches ?? 0),
+            linked: Number(body.linked_invoice_lines ?? 0),
+            warnings: warningsCount,
+          })
+        );
+      }
+      return true;
+    } catch {
+      if (!silent) {
+        setNotice(t("error.reconciliationAutoMatchConnection"));
+      }
+      return false;
+    }
   }
 
   async function onImportPos(e: FormEvent) {
@@ -1445,6 +1660,21 @@ function App() {
   );
 
   const activeSite = sites.find((site) => site.id === siteId);
+  const selectedDocument = useMemo(
+    () => documents.find((doc) => doc.id === selectedDocId) ?? null,
+    [documents, selectedDocId]
+  );
+  const originalDocumentUrl = useMemo(() => {
+    if (!selectedDocument) return "";
+    const raw = String(selectedDocument.file || selectedDocument.storage_path || "").trim();
+    if (!raw) return "";
+    if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+    const apiBase = getApiBase();
+    const root = apiBase.replace(/\/api\/v1\/?$/, "");
+    if (raw.startsWith("/")) return `${root}${raw}`;
+    return `${root}/media/${raw.replace(/^media\//, "")}`;
+  }, [selectedDocument]);
+  const previewDocumentUrl = originalDocumentBlobUrl;
   const supplierOrderGroups = useMemo(() => {
     if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
@@ -1723,7 +1953,7 @@ function App() {
         </aside>
 
         <main className="content">
-          {nav !== "ricette" && nav !== "comande" ? (
+          {nav !== "ricette" && nav !== "comande" && nav !== "acquisti" ? (
             <section className="panel page-head">
               <h2>{t(NAV_ITEMS.find((item) => item.key === nav)?.labelKey ?? "")}</h2>
               <p>{t("app.pageHead", { site: activeSite?.name ?? t("app.siteNotSelected"), api: getApiBase() })}</p>
@@ -2117,55 +2347,143 @@ function App() {
           )}
 
           {nav === "acquisti" && (
-            <div className="grid">
+            <div className="grid grid-single">
               <section className="panel">
-                <h2>{t("purchases.step1Title")}</h2>
-                <form onSubmit={onUploadDocument}>
-                  <label>{t("purchases.documentType")}</label>
-                  <select value={uploadDocType} onChange={(e) => setUploadDocType(e.target.value as "goods_receipt" | "invoice")}>
-                    <option value="goods_receipt">{t("purchases.deliveryNote")}</option>
-                    <option value="invoice">{t("purchases.invoice")}</option>
-                  </select>
-                  <label>{t("purchases.file")}</label>
-                  <input type="file" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
-                  <button disabled={!canUpload} type="submit">{t("purchases.uploadDocument")}</button>
-                </form>
-                <button type="button" onClick={loadDocuments}>{t("purchases.refreshDocuments")}</button>
+                <div className="purchase-toolbar">
+                  <form onSubmit={onUploadDocument} className="purchase-toolbar__form">
+                    <label>{t("purchases.file")}</label>
+                    <input type="file" accept=".pdf,image/*" onChange={(e) => onUploadFileSelected(e.target.files?.[0] ?? null)} />
+                    <div className="doc-type-checks">
+                      <label className="checkline">
+                        <input
+                          type="checkbox"
+                          checked={uploadDocType === "invoice"}
+                          onChange={() => setUploadDocType("invoice")}
+                        />
+                        {t("purchases.invoice")}
+                      </label>
+                      <label className="checkline">
+                        <input
+                          type="checkbox"
+                          checked={uploadDocType === "goods_receipt"}
+                          onChange={() => setUploadDocType("goods_receipt")}
+                        />
+                        {t("purchases.deliveryNote")}
+                      </label>
+                    </div>
+                    <button disabled={!canUpload || isClaudeExtracting || intakeStage === "uploading"} type="submit">
+                      {intakeStage === "uploading" || intakeStage === "extracting"
+                        ? t("purchases.processing")
+                        : t("purchases.uploadAndExtract")}
+                    </button>
+                  </form>
+                  <div className="purchase-toolbar__doc">
+                    <label>{t("purchases.document")}</label>
+                    <select
+                      value={selectedDocId}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        setSelectedDocId(id);
+                        setSelectedExtractionId("");
+                        const doc = documents.find((d) => d.id === id);
+                        if (doc) setSelectedDocType(doc.document_type);
+                      }}
+                    >
+                      <option value="">{t("action.select")}</option>
+                      {documents.map((d) => (
+                        <option key={d.id} value={d.id}>{d.filename} ({d.document_type})</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
               </section>
 
-              <section className="panel">
-                <h2>{t("purchases.step2Title")}</h2>
-                <label>{t("purchases.document")}</label>
-                <select
-                  value={selectedDocId}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    setSelectedDocId(id);
-                    const doc = documents.find((d) => d.id === id);
-                    if (doc) setSelectedDocType(doc.document_type);
-                  }}
-                >
-                  <option value="">{t("action.select")}</option>
-                  {documents.map((d) => (
-                    <option key={d.id} value={d.id}>{d.filename} ({d.document_type})</option>
-                  ))}
-                </select>
-                <label>{t("purchases.readDataJson")}</label>
-                <textarea rows={10} value={normalizedPayload} onChange={(e) => setNormalizedPayload(e.target.value)} />
-                <button type="button" onClick={onCreateExtraction}>{t("purchases.confirmOcrData")}</button>
-              </section>
+              <div className="grid grid-2">
+                <section className="panel">
+                  <h2>{t("purchases.originalDoc")}</h2>
+                  {originalDocumentUrl ? (
+                    <div className="doc-frame-wrap">
+                      {isOriginalDocumentLoading ? <p className="muted doc-loading">{t("purchases.processing")}</p> : null}
+                      {previewDocumentUrl ? (
+                        <object className="doc-frame" data={previewDocumentUrl} type="application/pdf">
+                          <p className="muted">
+                            {t("purchases.previewFallback")}
+                            {" "}
+                            <a href={originalDocumentUrl} target="_blank" rel="noreferrer">{t("purchases.openNewTab")}</a>
+                          </p>
+                        </object>
+                      ) : (
+                        <p className="muted">{t("purchases.previewFallback")}</p>
+                      )}
+                      <a className="doc-open-link" href={originalDocumentUrl} target="_blank" rel="noreferrer">
+                        {t("purchases.openNewTab")}
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="muted">{t("purchases.selectDocToPreview")}</p>
+                  )}
+                </section>
 
-              <section className="panel">
-                <h2>{t("purchases.step3Title")}</h2>
-                <label>{t("purchases.extractionId")}</label>
-                <input value={selectedExtractionId} onChange={(e) => setSelectedExtractionId(e.target.value)} />
-                <label>{t("purchases.destination")}</label>
-                <select value={selectedDocType} onChange={(e) => setSelectedDocType(e.target.value as "goods_receipt" | "invoice")}>
-                  <option value="goods_receipt">{t("purchases.deliveryNotesPlural")}</option>
-                  <option value="invoice">{t("purchases.invoicesPlural")}</option>
-                </select>
-                <button type="button" onClick={onIngestExtraction}>{t("purchases.registerDocument")}</button>
-              </section>
+                <section className="panel">
+                  <div className="doc-preview__head">
+                    <h2>{t("purchases.previewTitle")}</h2>
+                    <button type="button" onClick={() => onExtractWithClaude()} disabled={!selectedDocId || isClaudeExtracting}>
+                      {isClaudeExtracting ? t("purchases.extractClaudeLoading") : t("purchases.extractClaude")}
+                    </button>
+                  </div>
+                  <div className="doc-preview__grid">
+                    <div><span>{t("purchases.supplier")}</span><b>{String(normalizedData.supplier_name ?? normalizedData.supplier ?? normalizedMeta.supplier_name ?? "-")}</b></div>
+                    <div><span>{t("purchases.documentNumber")}</span><b>{String(normalizedData.document_number ?? normalizedData.invoice_number ?? normalizedData.delivery_note_number ?? "-")}</b></div>
+                    <div><span>{t("purchases.documentDate")}</span><b>{String(normalizedData.document_date ?? normalizedData.invoice_date ?? "-")}</b></div>
+                    <div><span>{t("purchases.receivedAt")}</span><b>{String(normalizedData.received_at ?? "-")}</b></div>
+                    <div><span>{t("purchases.total")}</span><b>{String(normalizedData.total_amount ?? normalizedData.total ?? normalizedMeta.total_amount ?? "-")}</b></div>
+                    <div><span>{t("purchases.vat")}</span><b>{String(normalizedData.vat_amount ?? normalizedData.vat ?? normalizedMeta.vat_amount ?? "-")}</b></div>
+                    <div><span>{t("purchases.currency")}</span><b>{String(normalizedData.currency ?? normalizedMeta.currency ?? "-")}</b></div>
+                    <div><span>{t("purchases.totalNet")}</span><b>{String(normalizedData.total_ht ?? normalizedMeta.total_ht ?? "-")}</b></div>
+                    <div><span>{t("purchases.dueDate")}</span><b>{String(normalizedData.due_date ?? normalizedMeta.due_date ?? "-")}</b></div>
+                  </div>
+                  <h4>{t("purchases.lines")}</h4>
+                  {previewLines.length === 0 ? (
+                    <p className="muted">{t("purchases.noLines")}</p>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>{t("table.supplierCode")}</th>
+                          <th>{t("table.ingredient")}</th>
+                          <th>{t("table.unit")}</th>
+                          <th>{t("table.qty")}</th>
+                          <th>{t("purchases.unitPrice")}</th>
+                          <th>{t("purchases.lineTotal")}</th>
+                          <th>{t("purchases.vat")}</th>
+                          <th>Lot</th>
+                          <th>DLC/DLM</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewLines.map((line, idx) => (
+                          <tr key={`line-${idx}`}>
+                            <td>{String(line.supplier_code ?? line.supplier_sku ?? line.code ?? "-")}</td>
+                            <td>{String(line.raw_product_name ?? line.description ?? line.name ?? line.product_name ?? "-")}</td>
+                            <td>{String(line.qty_unit ?? line.unit ?? "-")}</td>
+                            <td>{String(line.qty_value ?? line.quantity ?? "-")}</td>
+                            <td>{String(line.unit_price ?? "-")}</td>
+                            <td>{String(line.line_total ?? line.total ?? "-")}</td>
+                            <td>{String(line.vat_rate ?? line.vat ?? "-")}</td>
+                            <td>{String(line.supplier_lot_code ?? line.lot ?? "-")}</td>
+                            <td>{String(line.dlc_date ?? line.expiry_date ?? "-")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <div className="entry-actions no-print">
+                    <button type="button" onClick={onIngestExtraction} disabled={!selectedExtractionId || intakeStage === "ingesting"}>
+                      {t("purchases.registerDocument")}
+                    </button>
+                  </div>
+                </section>
+              </div>
             </div>
           )}
 
@@ -2184,6 +2502,13 @@ function App() {
               <section className="panel">
                 <h2>{t("reco.status")}</h2>
                 <p className="muted">{t("reco.nextStep")}</p>
+                <hr />
+                <h3>{t("reco.autoMatchTitle")}</h3>
+                <label>{t("reco.invoiceId")}</label>
+                <input value={autoMatchInvoiceId} onChange={(e) => setAutoMatchInvoiceId(e.target.value)} />
+                <button type="button" onClick={onAutoMatchInvoice} disabled={isAutoMatching}>
+                  {isAutoMatching ? t("reco.autoMatchLoading") : t("reco.autoMatchButton")}
+                </button>
               </section>
             </div>
           )}
