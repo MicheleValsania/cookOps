@@ -2,6 +2,7 @@
 from rest_framework.routers import DefaultRouter
 
 from apps.integration.api.v1.views import (
+    DocumentClaudeExtractView,
     FicheCatalogImportView,
     DocumentExtractionViewSet,
     FicheSnapshotEnvelopeImportView,
@@ -45,6 +46,11 @@ urlpatterns = [
         "integration/documents/<uuid:document_id>/ingest/",
         DocumentIngestViewSet.as_view({"post": "create"}),
         name="integration-document-ingest-create",
+    ),
+    path(
+        "integration/documents/<uuid:document_id>/extract-claude/",
+        DocumentClaudeExtractView.as_view(),
+        name="integration-document-claude-extract",
     ),
 ]
 

@@ -1,4 +1,6 @@
-﻿from rest_framework import serializers
+from decimal import Decimal
+
+from rest_framework import serializers
 
 from apps.purchasing.models import (
     GoodsReceipt,
@@ -7,6 +9,26 @@ from apps.purchasing.models import (
     InvoiceGoodsReceiptMatch,
     InvoiceLine,
 )
+
+
+class AutoReconciliationSerializer(serializers.Serializer):
+    invoice_id = serializers.UUIDField()
+    qty_tolerance_ratio = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=4,
+        required=False,
+        default=Decimal("0.0500"),
+        min_value=Decimal("0"),
+        max_value=Decimal("1"),
+    )
+
+    def validate_invoice_id(self, value):
+        try:
+            invoice = Invoice.objects.get(pk=value)
+        except Invoice.DoesNotExist as exc:
+            raise serializers.ValidationError("invoice_id not found.") from exc
+        self.context["invoice"] = invoice
+        return value
 
 
 class GoodsReceiptLineSerializer(serializers.ModelSerializer):
@@ -208,3 +230,5 @@ class InvoiceGoodsReceiptMatchSerializer(serializers.ModelSerializer):
             )
 
         return attrs
+
+

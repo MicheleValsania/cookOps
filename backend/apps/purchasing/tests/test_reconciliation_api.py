@@ -92,3 +92,62 @@ class ReconciliationMatchApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.json()["code"], "validation_error")
         self.assertIn("goods_receipt_line", response.json()["field_errors"])
+
+    def test_auto_match_creates_match_for_compatible_lines(self):
+        inv_line, _ = self._build_lines()
+        payload = {"invoice_id": str(inv_line.invoice_id), "qty_tolerance_ratio": "0.0500"}
+
+        response = self.client.post("/api/v1/reconciliation/auto-match/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()["created_matches"], 1)
+        self.assertEqual(InvoiceGoodsReceiptMatch.objects.count(), 1)
+
+    def test_auto_match_marks_partial_when_sensitive_product_missing_traceability(self):
+        sensitive_product = SupplierProduct.objects.create(
+            supplier=self.supplier,
+            name="Fresh fish",
+            uom="kg",
+            traceability_flag=True,
+        )
+        receipt = GoodsReceipt.objects.create(
+            site=self.site,
+            supplier=self.supplier,
+            delivery_note_number="BL-SENS-001",
+            received_at="2026-02-27T10:00:00Z",
+            metadata={},
+        )
+        gr_line = GoodsReceiptLine.objects.create(
+            receipt=receipt,
+            supplier_product=sensitive_product,
+            raw_product_name="Fresh fish",
+            qty_value="5.000",
+            qty_unit="kg",
+            supplier_lot_code=None,
+            dlc_date=None,
+        )
+        invoice = Invoice.objects.create(
+            site=self.site,
+            supplier=self.supplier,
+            invoice_number="INV-SENS-001",
+            invoice_date="2026-02-27",
+            metadata={},
+        )
+        InvoiceLine.objects.create(
+            invoice=invoice,
+            supplier_product=sensitive_product,
+            raw_product_name="Fresh fish",
+            qty_value="5.000",
+            qty_unit="kg",
+        )
+
+        response = self.client.post(
+            "/api/v1/reconciliation/auto-match/",
+            {"invoice_id": str(invoice.id)},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        match = InvoiceGoodsReceiptMatch.objects.get(goods_receipt_line=gr_line)
+        self.assertEqual(match.status, "partial")
+        self.assertIn("traceability_warning", match.metadata)

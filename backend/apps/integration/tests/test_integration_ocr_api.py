@@ -73,3 +73,34 @@ class IntegrationOcrApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(response.json()["code"], "not_found")
+
+    def test_extract_claude_uses_mock_payload_and_creates_extraction(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="goods_receipt",
+            source="api",
+            filename="bl-claude.pdf",
+            status="uploaded",
+            metadata={
+                "mock_claude_normalized_payload": {
+                    "site": str(self.site.id),
+                    "supplier": "11111111-1111-1111-1111-111111111111",
+                    "delivery_note_number": "BL-MOCK-001",
+                    "received_at": "2026-03-01T10:00:00Z",
+                    "metadata": {"source": "mock"},
+                    "lines": [{"raw_product_name": "Milk", "qty_value": "1.000", "qty_unit": "l"}],
+                }
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/extract-claude/",
+            {"idempotency_key": "claude-mock-001"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(DocumentExtraction.objects.count(), 1)
+        extraction = DocumentExtraction.objects.first()
+        self.assertEqual(extraction.extractor_name, "claude")
+        self.assertEqual(extraction.status, "succeeded")

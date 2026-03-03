@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integration.api.v1.serializers import (
+    ClaudeExtractSerializer,
     DocumentExtractionSerializer,
     ExtractionIngestSerializer,
     FicheCatalogImportSerializer,
@@ -20,6 +21,7 @@ from apps.integration.fiches_snapshots import import_recipe_snapshots, import_re
 from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
 from apps.integration.models import DocumentExtraction, IntegrationDocument
+from apps.integration.services.claude_extractor import run_claude_extraction
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
 
 
@@ -92,6 +94,60 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
         except ValidationError as exc:
             fail_batch(batch, status.HTTP_400_BAD_REQUEST, exc.detail)
             raise
+        except Exception as exc:
+            fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
+            raise
+
+
+class DocumentClaudeExtractView(APIView):
+    def post(self, request, document_id):
+        document = get_object_or_404(IntegrationDocument, pk=document_id)
+        serializer = ClaudeExtractSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+
+        idempotency_key = (
+            serializer.validated_data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key", "")
+            or f"claude-extract:{document.id}"
+        )
+        source = "claude"
+        import_type = "document_extraction"
+        existing = find_completed_batch(source, import_type, idempotency_key)
+        if existing:
+            result = existing.result or {}
+            return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
+
+        batch = start_batch(
+            source,
+            import_type,
+            idempotency_key,
+            {
+                "document_id": str(document.id),
+                "document_type": document.document_type,
+                "filename": document.filename,
+            },
+        )
+
+        try:
+            result = run_claude_extraction(document)
+            extraction = DocumentExtraction.objects.create(
+                document=document,
+                extractor_name="claude",
+                extractor_version=result.extractor_version,
+                status=result.status,
+                raw_payload=result.raw_payload,
+                normalized_payload=result.normalized_payload,
+                confidence=result.confidence,
+                error_message=result.error_message,
+            )
+            if result.status == "succeeded":
+                document.status = "extracted"
+            else:
+                document.status = "failed"
+            document.save(update_fields=["status", "updated_at"])
+            payload = DocumentExtractionSerializer(extraction).data
+            complete_batch(batch, status.HTTP_201_CREATED, payload)
+            return Response(payload, status=status.HTTP_201_CREATED)
         except Exception as exc:
             fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
             raise

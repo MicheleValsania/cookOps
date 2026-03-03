@@ -1,14 +1,17 @@
-﻿from rest_framework import mixins, status, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
 from apps.purchasing.api.v1.serializers import (
+    AutoReconciliationSerializer,
     GoodsReceiptSerializer,
     InvoiceGoodsReceiptMatchSerializer,
     InvoiceSerializer,
 )
 from apps.purchasing.models import GoodsReceipt, Invoice, InvoiceGoodsReceiptMatch
+from apps.purchasing.services.reconciliation_auto_match import auto_match_invoice_lines
 
 
 class GoodsReceiptViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
@@ -82,3 +85,22 @@ class InvoiceViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 class InvoiceGoodsReceiptMatchViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
     queryset = InvoiceGoodsReceiptMatch.objects.all()
     serializer_class = InvoiceGoodsReceiptMatchSerializer
+
+
+class InvoiceAutoMatchView(APIView):
+    def post(self, request):
+        serializer = AutoReconciliationSerializer(data=request.data or {}, context={})
+        serializer.is_valid(raise_exception=True)
+        invoice = serializer.context["invoice"]
+        qty_tolerance_ratio = serializer.validated_data["qty_tolerance_ratio"]
+        outcome = auto_match_invoice_lines(invoice, qty_tolerance_ratio=qty_tolerance_ratio)
+        return Response(
+            {
+                "invoice_id": str(invoice.id),
+                "created_matches": outcome.created_matches,
+                "linked_invoice_lines": outcome.linked_invoice_lines,
+                "match_ids": outcome.match_ids,
+                "warnings": outcome.warnings,
+            },
+            status=status.HTTP_200_OK,
+        )
