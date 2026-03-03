@@ -1158,15 +1158,21 @@ function App() {
         const extraction = body?.extraction;
         const detail = extraction?.error_message || body.detail || JSON.stringify(body);
         setNotice(errorWithDetail("error.claudeExtract", detail));
+        setIntakeStage("idle");
         return;
       }
       if (body.status && String(body.status) !== "succeeded") {
         const detail = body.error_message || t("error.claudeExtract");
         setNotice(errorWithDetail("error.claudeExtract", detail));
+        setIntakeStage("idle");
         return;
       }
       if (body.id) {
         setSelectedExtractionId(String(body.id));
+      } else {
+        setNotice(errorWithDetail("error.claudeExtract", "missing extraction id in response"));
+        setIntakeStage("idle");
+        return;
       }
       if (body.normalized_payload && typeof body.normalized_payload === "object") {
         setNormalizedPayload(JSON.stringify(body.normalized_payload, null, 2));

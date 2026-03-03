@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,21 +76,47 @@ def _build_schema_hint(document_type: str) -> dict[str, Any]:
 def _extract_json_blob(text: str) -> dict[str, Any]:
     if not text:
         return {}
+    cleaned = text.strip()
+
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(cleaned)
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
         pass
 
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        parsed = json.loads(text[start : end + 1])
-        return parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        return {}
+    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, re.IGNORECASE)
+    if fenced_match:
+        fenced_payload = fenced_match.group(1).strip()
+        try:
+            parsed = json.loads(fenced_payload)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    candidates: list[str] = []
+    stack = 0
+    start_idx = -1
+    for idx, ch in enumerate(cleaned):
+        if ch == "{":
+            if stack == 0:
+                start_idx = idx
+            stack += 1
+        elif ch == "}":
+            if stack > 0:
+                stack -= 1
+                if stack == 0 and start_idx >= 0:
+                    candidates.append(cleaned[start_idx : idx + 1])
+                    start_idx = -1
+
+    for candidate in sorted(candidates, key=len, reverse=True):
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
+    return {}
 
 
 def _read_document_bytes(document: IntegrationDocument) -> bytes:
@@ -123,6 +150,10 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
         )
 
     model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest").strip()
+    try:
+        max_tokens = int((os.getenv("ANTHROPIC_MAX_TOKENS", "12000") or "12000").strip())
+    except ValueError:
+        max_tokens = 12000
     schema_hint = _build_schema_hint(document.document_type)
     document_label = "invoice" if document.document_type == DocumentType.INVOICE else "delivery note"
     prompt = (
@@ -131,6 +162,7 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
         "No markdown, no prose, no code fences, JSON only. "
         "Rules: keep decimal values as strings using dot separator; use null when not found; preserve line ordering; "
         "extract every visible line item with quantity and unit if present. "
+        "Return compact JSON (single line) and omit optional fields that are null at line level. "
         "If supplier/site UUIDs are not present in the file, keep them as null. "
         f"Target schema: {json.dumps(schema_hint)}"
     )
@@ -141,7 +173,7 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             temperature=0,
             messages=[
                 {
@@ -175,6 +207,31 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
             text_chunks.append(getattr(block, "text", ""))
     output_text = "\n".join(chunk for chunk in text_chunks if chunk)
     normalized = _extract_json_blob(output_text)
+    if not normalized and output_text:
+        repair_prompt = (
+            "Rewrite the following content as one valid JSON object only. "
+            "No markdown, no prose. Keep extracted values, drop broken/truncated trailing fragments, do not invent missing data.\n\n"
+            f"Target schema: {json.dumps(schema_hint)}\n\n"
+            f"CONTENT:\n{output_text}"
+        )
+        try:
+            repair_response = client.messages.create(
+                model=model,
+                max_tokens=4096,
+                temperature=0,
+                messages=[{"role": "user", "content": [{"type": "text", "text": repair_prompt}]}],
+            )
+            repair_chunks: list[str] = []
+            for block in getattr(repair_response, "content", []) or []:
+                if getattr(block, "type", "") == "text":
+                    repair_chunks.append(getattr(block, "text", ""))
+            repaired_text = "\n".join(chunk for chunk in repair_chunks if chunk)
+            repaired_json = _extract_json_blob(repaired_text)
+            if repaired_json:
+                normalized = repaired_json
+                output_text = repaired_text
+        except Exception:
+            pass
     if not normalized:
         return ClaudeExtractionResult(
             status="failed",
