@@ -175,6 +175,17 @@ function asNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function formatDisplayNumber(lang: Lang, value: unknown, maxFractionDigits = 3): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "0";
+  const parsed = Number.parseFloat(raw.replace(",", "."));
+  if (!Number.isFinite(parsed)) return raw;
+  return new Intl.NumberFormat(lang, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: maxFractionDigits,
+  }).format(parsed);
+}
+
 function getTodayIsoDate() {
   const now = new Date();
   const year = now.getFullYear();
@@ -1263,8 +1274,28 @@ function App() {
       });
       setRecipeDerivedSections(Array.from(derivedSections).sort((a, b) => a.localeCompare(b)));
 
-      const allowedSpaces = new Set(selectedComandaSpaces);
-      const allowedSections = new Set(selectedComandaSections);
+      const rowSpaces = new Set<string>();
+      const rowSections = new Set<string>();
+      recipeRows.forEach((row) => {
+        const rowSpace = String(row.space ?? "").trim();
+        if (rowSpace) {
+          rowSpaces.add(rowSpace);
+        }
+        const baseSection = String(row.section ?? row.recipe_category ?? "").trim();
+        if (baseSection) {
+          rowSections.add(baseSection);
+        }
+        const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
+        ingredients.forEach((raw) => {
+          const ing = raw as Record<string, unknown>;
+          const srcCategory = String(ing.source_recipe_category ?? "").trim();
+          if (srcCategory) {
+            rowSections.add(srcCategory);
+          }
+        });
+      });
+      const allowedSpaces = new Set(selectedComandaSpaces.filter((space) => rowSpaces.has(space)));
+      const allowedSections = new Set(selectedComandaSections.filter((section) => rowSections.has(section)));
       const filteredRecipeRows = recipeRows.filter((row) => {
         const rowSpace = String(row.space ?? "");
         const rowSection = String(row.section ?? row.recipe_category ?? "").trim();
@@ -1745,7 +1776,9 @@ function App() {
                             <strong>{entry.title}</strong>
                             <small>
                               {(entry.recipe_category || entry.section || t("label.noSection"))} | {entry.item_kind}
-                              {entry.item_kind === "recipe" ? ` | ${t("recipes.targetPortions")} ${entry.expected_qty ?? "0"}` : ""}
+                              {entry.item_kind === "recipe"
+                                ? ` | ${t("recipes.targetPortions")} ${formatDisplayNumber(lang, entry.expected_qty ?? "0")}`
+                                : ""}
                               {entry.valid_from || entry.valid_to ? ` | ${entry.valid_from || "-"} -> ${entry.valid_to || "-"}` : ""}
                             </small>
                           </div>
@@ -1956,7 +1989,9 @@ function App() {
                               <li key={`${group.supplier}-${idx}`}>
                                 {String(row.ingredient ?? "-")}
                                 {row.supplier_code ? ` [${String(row.supplier_code)}]` : ""}
-                                {quantityMode === "with_qty" ? ` - ${String(row.qty_total ?? "-")} ${String(row.unit ?? "-")}` : ""}
+                                {quantityMode === "with_qty"
+                                  ? ` - ${formatDisplayNumber(lang, row.qty_total ?? "-")} ${String(row.unit ?? "-")}`
+                                  : ""}
                                 {" "}
                                 {renderSourceBadge(row)}
                               </li>
@@ -1985,7 +2020,9 @@ function App() {
                               <li key={`${group.section}-${idx}`}>
                                 {String(row.ingredient ?? "-")} ({String(row.supplier ?? "-")})
                                 {row.supplier_code ? ` [${String(row.supplier_code)}]` : ""}
-                                {quantityMode === "with_qty" ? ` - ${String(row.qty_total ?? "-")} ${String(row.unit ?? "-")}` : ""}
+                                {quantityMode === "with_qty"
+                                  ? ` - ${formatDisplayNumber(lang, row.qty_total ?? "-")} ${String(row.unit ?? "-")}`
+                                  : ""}
                               </li>
                             ))}
                           </ul>
@@ -2010,7 +2047,9 @@ function App() {
                           <div key={`${group.title}-${rowIdx}`}>
                             <p className="muted">
                               {String(row.service_date ?? "-")} | {String(row.recipe_category ?? row.section ?? t("label.noCategory"))}
-                              {quantityMode === "with_qty" ? ` | ${t("recipes.targetPortions")} ${String(row.expected_qty ?? "0")}` : ""}
+                              {quantityMode === "with_qty"
+                                ? ` | ${t("recipes.targetPortions")} ${formatDisplayNumber(lang, row.expected_qty ?? "0")}`
+                                : ""}
                             </p>
                             <ul className="clean-list">
                               {Array.isArray(row.ingredients)
@@ -2021,7 +2060,7 @@ function App() {
                                         {String(item.ingredient ?? "-")} ({String(item.supplier ?? "-")})
                                         {item.supplier_code ? ` [${String(item.supplier_code)}]` : ""}
                                         {quantityMode === "with_qty"
-                                          ? ` - ${String(item.qty_total ?? "-")} ${String(item.unit ?? "-")}`
+                                          ? ` - ${formatDisplayNumber(lang, item.qty_total ?? "-")} ${String(item.unit ?? "-")}`
                                           : ""}
                                         {" "}
                                         {renderSourceBadge(item)}
