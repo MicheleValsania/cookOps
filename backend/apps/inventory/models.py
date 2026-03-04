@@ -72,6 +72,13 @@ class Lot(models.Model):
 
 class InventoryMovement(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.PROTECT,
+        related_name="inventory_movements",
+        blank=True,
+        null=True,
+    )
     lot = models.ForeignKey(
         Lot,
         on_delete=models.SET_NULL,
@@ -86,6 +93,8 @@ class InventoryMovement(models.Model):
         blank=True,
         null=True,
     )
+    supplier_code = models.CharField(max_length=128, blank=True, null=True)
+    raw_product_name = models.CharField(max_length=255, blank=True, null=True)
     movement_type = models.CharField(max_length=16, choices=MovementType.choices)
     qty_value = models.DecimalField(max_digits=12, decimal_places=3)
     qty_unit = models.CharField(max_length=8, choices=QtyUnit.choices)

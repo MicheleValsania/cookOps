@@ -37,6 +37,7 @@ class GoodsReceiptLineSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "supplier_product",
+            "supplier_code",
             "raw_product_name",
             "supplier_lot_code",
             "dlc_date",
@@ -109,6 +110,7 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
             "id",
             "goods_receipt_line",
             "supplier_product",
+            "supplier_code",
             "raw_product_name",
             "qty_value",
             "qty_unit",

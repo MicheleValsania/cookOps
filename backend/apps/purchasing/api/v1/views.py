@@ -14,9 +14,16 @@ from apps.purchasing.models import GoodsReceipt, Invoice, InvoiceGoodsReceiptMat
 from apps.purchasing.services.reconciliation_auto_match import auto_match_invoice_lines
 
 
-class GoodsReceiptViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
-    queryset = GoodsReceipt.objects.all()
+class GoodsReceiptViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+    queryset = GoodsReceipt.objects.select_related("site", "supplier").prefetch_related("lines").all()
     serializer_class = GoodsReceiptSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        site_id = (self.request.query_params.get("site") or "").strip()
+        if site_id:
+            queryset = queryset.filter(site_id=site_id)
+        return queryset.order_by("-received_at", "-created_at")
 
     def create(self, request, *args, **kwargs):
         source = "api"
@@ -48,9 +55,16 @@ class GoodsReceiptViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             raise
 
 
-class InvoiceViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
-    queryset = Invoice.objects.all()
+class InvoiceViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+    queryset = Invoice.objects.select_related("site", "supplier").prefetch_related("lines").all()
     serializer_class = InvoiceSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        site_id = (self.request.query_params.get("site") or "").strip()
+        if site_id:
+            queryset = queryset.filter(site_id=site_id)
+        return queryset.order_by("-invoice_date", "-created_at")
 
     def create(self, request, *args, **kwargs):
         source = "api"
@@ -82,8 +96,11 @@ class InvoiceViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             raise
 
 
-class InvoiceGoodsReceiptMatchViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
-    queryset = InvoiceGoodsReceiptMatch.objects.all()
+class InvoiceGoodsReceiptMatchViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+    queryset = InvoiceGoodsReceiptMatch.objects.select_related(
+        "invoice_line__invoice",
+        "goods_receipt_line__receipt",
+    ).all()
     serializer_class = InvoiceGoodsReceiptMatchSerializer
 
 

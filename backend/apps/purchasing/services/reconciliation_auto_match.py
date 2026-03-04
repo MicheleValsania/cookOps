@@ -22,9 +22,10 @@ def _line_fingerprint(line: InvoiceLine | GoodsReceiptLine) -> str:
     supplier_product_id = ""
     if getattr(line, "supplier_product_id", None):
         supplier_product_id = str(line.supplier_product_id)
+    supplier_code = _norm_text(getattr(line, "supplier_code", ""))
     raw_name = _norm_text(getattr(line, "raw_product_name", ""))
     qty_unit = str(getattr(line, "qty_unit", "") or "").strip().lower()
-    return f"{supplier_product_id}|{raw_name}|{qty_unit}"
+    return f"{supplier_product_id}|{supplier_code}|{raw_name}|{qty_unit}"
 
 
 def _match_score(inv_line: InvoiceLine, gr_line: GoodsReceiptLine, qty_tolerance_ratio: Decimal) -> tuple[int, str]:
@@ -34,6 +35,16 @@ def _match_score(inv_line: InvoiceLine, gr_line: GoodsReceiptLine, qty_tolerance
     if inv_line.supplier_product_id and inv_line.supplier_product_id == gr_line.supplier_product_id:
         score += 70
         reasons.append("supplier_product_exact")
+
+    inv_code = _norm_text(getattr(inv_line, "supplier_code", ""))
+    gr_code = _norm_text(getattr(gr_line, "supplier_code", ""))
+    if inv_code and gr_code:
+        if inv_code == gr_code:
+            score += 55
+            reasons.append("supplier_code_exact")
+        elif inv_code in gr_code or gr_code in inv_code:
+            score += 20
+            reasons.append("supplier_code_partial")
 
     inv_name = _norm_text(inv_line.raw_product_name)
     gr_name = _norm_text(gr_line.raw_product_name)

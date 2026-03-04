@@ -5,6 +5,7 @@ import { getInitialLang, LANG_STORAGE_KEY, t as translate, type Lang } from "./i
 type NavKey =
   | "dashboard"
   | "inventario"
+  | "inventari"
   | "acquisti"
   | "fornitori"
   | "ricette"
@@ -18,6 +19,9 @@ type DocumentItem = {
   document_type: "goods_receipt" | "invoice";
   status: string;
   site: string;
+  created_at?: string;
+  updated_at?: string;
+  metadata?: Record<string, unknown> | null;
   file?: string | null;
   storage_path?: string | null;
 };
@@ -33,6 +37,28 @@ type SiteItem = {
   name: string;
   code: string;
   is_active: boolean;
+};
+
+type InventoryMovementItem = {
+  id: string;
+  movement_type: "IN" | "OUT" | "ADJUST" | "TRANSFER";
+  qty_value: string;
+  qty_unit: string;
+  happened_at: string;
+  ref_type?: string | null;
+  ref_id?: string | null;
+  supplier_product_name?: string | null;
+  supplier_code?: string | null;
+  raw_product_name?: string | null;
+};
+
+type StockSummaryItem = {
+  product_key: string;
+  product_label: string;
+  qty_unit: string;
+  total_in: string;
+  total_out: string;
+  current_stock: string;
 };
 
 type EntryScheduleMode = "permanent" | "date_specific" | "recurring_weekly";
@@ -67,6 +93,7 @@ type MenuSpace = {
 const NAV_ITEMS: Array<{ key: NavKey; labelKey: string; helpKey: string }> = [
   { key: "dashboard", labelKey: "nav.dashboard", helpKey: "nav.dashboardHelp" },
   { key: "inventario", labelKey: "nav.inventory", helpKey: "nav.inventoryHelp" },
+  { key: "inventari", labelKey: "nav.inventories", helpKey: "nav.inventoriesHelp" },
   { key: "acquisti", labelKey: "nav.purchases", helpKey: "nav.purchasesHelp" },
   { key: "fornitori", labelKey: "nav.suppliers", helpKey: "nav.suppliersHelp" },
   { key: "ricette", labelKey: "nav.recipes", helpKey: "nav.recipesHelp" },
@@ -249,6 +276,12 @@ function App() {
   const [salesDate, setSalesDate] = useState(getTodayIsoDate());
   const [posSourceId, setPosSourceId] = useState("");
   const [salesLines, setSalesLines] = useState('[{"pos_name":"Pizza Margherita","qty":12}]');
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovementItem[]>([]);
+  const [stockSummaryRows, setStockSummaryRows] = useState<StockSummaryItem[]>([]);
+  const [isInventoryLoading, setIsInventoryLoading] = useState(false);
+  const [isApplyingInventory, setIsApplyingInventory] = useState(false);
+  const [inventoryScope, setInventoryScope] = useState("total");
+  const [inventoryLinesJson, setInventoryLinesJson] = useState('[{"supplier_code":"82233","raw_product_name":"LIEU NOIR VDK 2/4 A.N.E","qty_unit":"kg","qty_value":"40.000"}]');
 
   const [serviceDate, setServiceDate] = useState(getTodayIsoDate());
   const [comandaDateFrom, setComandaDateFrom] = useState(getTodayIsoDate());
@@ -326,6 +359,12 @@ function App() {
     if (nav !== "acquisti") return;
     void loadDocuments();
   }, [nav]);
+
+  useEffect(() => {
+    if (nav !== "inventario" && nav !== "inventari") return;
+    if (!siteId) return;
+    void loadStockSummary();
+  }, [nav, siteId]);
 
   useEffect(() => {
     const selected = documents.find((doc) => doc.id === selectedDocId) ?? null;
@@ -1325,6 +1364,84 @@ function App() {
     setNotice(t("notice.salesImported", { id: body.id }));
   }
 
+  async function loadInventoryMovements() {
+    if (!siteId) return;
+    setIsInventoryLoading(true);
+    try {
+      const res = await apiFetch(`/inventory/movements/?site=${encodeURIComponent(siteId)}&limit=300`);
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      const rows = Array.isArray(body) ? (body as InventoryMovementItem[]) : [];
+      setInventoryMovements(rows);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  }
+
+  async function loadStockSummary() {
+    if (!siteId) return;
+    setIsInventoryLoading(true);
+    try {
+      const res = await apiFetch(`/inventory/stock-summary/?site=${encodeURIComponent(siteId)}`);
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      const rows = Array.isArray(body?.results) ? (body.results as StockSummaryItem[]) : [];
+      setStockSummaryRows(rows);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  }
+
+  async function onApplyInventorySnapshot(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId) return;
+    let parsedLines: unknown;
+    try {
+      parsedLines = JSON.parse(inventoryLinesJson);
+    } catch {
+      setNotice(t("validation.invalidExtractionJson"));
+      return;
+    }
+    if (!Array.isArray(parsedLines) || parsedLines.length === 0) {
+      setNotice("Inventaire vide.");
+      return;
+    }
+    setIsApplyingInventory(true);
+    try {
+      const res = await apiFetch("/inventory/inventories/apply/", {
+        method: "POST",
+        body: JSON.stringify({
+          site: siteId,
+          scope: inventoryScope,
+          happened_at: new Date().toISOString(),
+          lines: parsedLines,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Inventaire applique. Ajustements: ${Number(body.applied_count ?? 0)}.`);
+      await loadStockSummary();
+      await loadInventoryMovements();
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsApplyingInventory(false);
+    }
+  }
+
   function onSubmitMenuEntry(e: FormEvent) {
     e.preventDefault();
     const title = entryTitle.trim();
@@ -1666,20 +1783,29 @@ function App() {
   );
 
   const activeSite = sites.find((site) => site.id === siteId);
-  const selectedDocument = useMemo(
-    () => documents.find((doc) => doc.id === selectedDocId) ?? null,
-    [documents, selectedDocId]
-  );
-  const originalDocumentUrl = useMemo(() => {
-    if (!selectedDocument) return "";
-    const raw = String(selectedDocument.file || selectedDocument.storage_path || "").trim();
+  const getDocumentFileUrl = (doc: DocumentItem | null): string => {
+    if (!doc) return "";
+    const raw = String(doc.file || doc.storage_path || "").trim();
     if (!raw) return "";
     if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
     const apiBase = getApiBase();
     const root = apiBase.replace(/\/api\/v1\/?$/, "");
     if (raw.startsWith("/")) return `${root}${raw}`;
     return `${root}/media/${raw.replace(/^media\//, "")}`;
-  }, [selectedDocument]);
+  };
+  const selectedDocument = useMemo(
+    () => documents.find((doc) => doc.id === selectedDocId) ?? null,
+    [documents, selectedDocId]
+  );
+  const originalDocumentUrl = useMemo(() => getDocumentFileUrl(selectedDocument), [selectedDocument]);
+  const archivedDeliveryNotes = useMemo(
+    () => documents.filter((doc) => doc.document_type === "goods_receipt"),
+    [documents]
+  );
+  const archivedInvoices = useMemo(
+    () => documents.filter((doc) => doc.document_type === "invoice"),
+    [documents]
+  );
   const previewDocumentUrl = originalDocumentBlobUrl;
   const supplierOrderGroups = useMemo(() => {
     if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
@@ -1773,6 +1899,19 @@ function App() {
         PR: {sourceRecipeTitle || t("orders.internalPrep")}
       </span>
     );
+  }
+
+  function flowLabelForDocument(doc: DocumentItem): string {
+    const metadata = asRecord(doc.metadata);
+    const ingest = asRecord(metadata.ingest);
+    const flowType = String(ingest.flow_type ?? "");
+    if (!flowType) {
+      return doc.status === "extracted" ? "Extrait, en attente de validation" : "Upload/OCR en cours";
+    }
+    if (flowType === "delivery_note_to_stock") return "BL -> Extrait -> Valide -> Stock ajoute";
+    if (flowType === "invoice_direct_to_stock") return "Facture immediate -> Extrait -> Valide -> Stock ajoute";
+    if (flowType === "invoice_after_delivery_note") return "Facture differee -> Extrait -> Valide -> Rapprochee BL";
+    return flowType;
   }
 
   function escapeHtml(text: string): string {
@@ -1959,7 +2098,7 @@ function App() {
         </aside>
 
         <main className="content">
-          {nav !== "ricette" && nav !== "comande" && nav !== "acquisti" ? (
+          {nav !== "ricette" && nav !== "comande" && nav !== "acquisti" && nav !== "inventario" && nav !== "inventari" ? (
             <section className="panel page-head">
               <h2>{t(NAV_ITEMS.find((item) => item.key === nav)?.labelKey ?? "")}</h2>
               <p>{t("app.pageHead", { site: activeSite?.name ?? t("app.siteNotSelected"), api: getApiBase() })}</p>
@@ -2490,6 +2629,104 @@ function App() {
                   </div>
                 </section>
               </div>
+
+              <div className="grid grid-2">
+                <section className="panel">
+                  <h3>Bons de livraison archives</h3>
+                  {archivedDeliveryNotes.length === 0 ? (
+                    <p className="muted">Aucun bon archive.</p>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date import</th>
+                          <th>Document</th>
+                          <th>Flux</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {archivedDeliveryNotes.map((doc) => {
+                          const url = getDocumentFileUrl(doc);
+                          return (
+                            <tr key={doc.id}>
+                              <td>{String(doc.created_at ?? "").slice(0, 10) || "-"}</td>
+                              <td>{doc.filename}</td>
+                              <td>{flowLabelForDocument(doc)}</td>
+                              <td>
+                                <div className="entry-actions">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedDocId(doc.id);
+                                      setSelectedDocType(doc.document_type);
+                                    }}
+                                  >
+                                    Ouvrir
+                                  </button>
+                                  {url ? (
+                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                      PDF
+                                    </a>
+                                  ) : null}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+
+                <section className="panel">
+                  <h3>Factures archives</h3>
+                  {archivedInvoices.length === 0 ? (
+                    <p className="muted">Aucune facture archivee.</p>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date import</th>
+                          <th>Document</th>
+                          <th>Flux</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {archivedInvoices.map((doc) => {
+                          const url = getDocumentFileUrl(doc);
+                          return (
+                            <tr key={doc.id}>
+                              <td>{String(doc.created_at ?? "").slice(0, 10) || "-"}</td>
+                              <td>{doc.filename}</td>
+                              <td>{flowLabelForDocument(doc)}</td>
+                              <td>
+                                <div className="entry-actions">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedDocId(doc.id);
+                                      setSelectedDocType(doc.document_type);
+                                    }}
+                                  >
+                                    Ouvrir
+                                  </button>
+                                  {url ? (
+                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                      PDF
+                                    </a>
+                                  ) : null}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+              </div>
             </div>
           )}
 
@@ -2520,18 +2757,96 @@ function App() {
           )}
 
           {nav === "inventario" && (
+            <section className="panel">
+              <div className="doc-preview__head">
+                <h2>Stock - resultats entrees/sorties</h2>
+                <button type="button" onClick={loadStockSummary} disabled={!siteId || isInventoryLoading}>
+                  {isInventoryLoading ? t("purchases.processing") : t("suppliers.refreshList")}
+                </button>
+              </div>
+              {stockSummaryRows.length === 0 ? (
+                <p className="muted">Aucun resultat de stock pour ce site.</p>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Code fournisseur / Produit</th>
+                      <th>{t("table.unit")}</th>
+                      <th>Entrees</th>
+                      <th>Sorties</th>
+                      <th>Stock actuel</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stockSummaryRows.map((row) => (
+                      <tr key={`${row.product_key}-${row.qty_unit}`}>
+                        <td>{row.product_label}</td>
+                        <td>{row.qty_unit}</td>
+                        <td>{row.total_in}</td>
+                        <td>{row.total_out}</td>
+                        <td>{row.current_stock}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          )}
+
+          {nav === "inventari" && (
             <div className="grid">
               <section className="panel">
-                <h2>{t("inventory.stockLots")}</h2>
-                <ul className="clean-list">
-                  <li>{t("inventory.item1")}</li>
-                  <li>{t("inventory.item2")}</li>
-                  <li>{t("inventory.item3")}</li>
-                </ul>
+                <h2>Inventaires</h2>
+                <form onSubmit={onApplyInventorySnapshot}>
+                  <label>Portee inventaire</label>
+                  <select value={inventoryScope} onChange={(e) => setInventoryScope(e.target.value)}>
+                    <option value="total">Total site</option>
+                    <option value="category">Par categorie</option>
+                    <option value="sector">Par secteur</option>
+                  </select>
+                  <label>Lignes inventaire (JSON)</label>
+                  <textarea value={inventoryLinesJson} onChange={(e) => setInventoryLinesJson(e.target.value)} rows={10} />
+                  <button type="submit" disabled={!siteId || isApplyingInventory}>
+                    {isApplyingInventory ? t("purchases.processing") : "Deposer inventaire"}
+                  </button>
+                </form>
               </section>
               <section className="panel">
-                <h2>{t("inventory.alerts")}</h2>
-                <p className="muted">{t("inventory.alertsDesc")}</p>
+                <h2>Derniers mouvements inventaire</h2>
+                <button type="button" onClick={loadInventoryMovements} disabled={!siteId || isInventoryLoading}>
+                  {isInventoryLoading ? t("purchases.processing") : t("suppliers.refreshList")}
+                </button>
+                {inventoryMovements.filter((m) => String(m.ref_type || "").includes("inventory")).length === 0 ? (
+                  <p className="muted">Aucun ajustement inventaire.</p>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Code</th>
+                        <th>{t("table.ingredient")}</th>
+                        <th>{t("table.qty")}</th>
+                        <th>{t("table.unit")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {inventoryMovements
+                        .filter((m) => String(m.ref_type || "").includes("inventory"))
+                        .slice(0, 50)
+                        .map((m) => (
+                          <tr key={m.id}>
+                            <td>{String(m.happened_at ?? "-").replace("T", " ").slice(0, 19)}</td>
+                            <td>{m.movement_type}</td>
+                            <td>{m.supplier_code || "-"}</td>
+                            <td>{m.raw_product_name || m.supplier_product_name || "-"}</td>
+                            <td>{m.qty_value}</td>
+                            <td>{m.qty_unit}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                )}
               </section>
             </div>
           )}

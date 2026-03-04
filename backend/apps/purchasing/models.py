@@ -52,6 +52,7 @@ class GoodsReceiptLine(models.Model):
         null=True,
     )
     raw_product_name = models.CharField(max_length=255, blank=True, null=True)
+    supplier_code = models.CharField(max_length=128, blank=True, null=True)
     supplier_lot_code = models.CharField(max_length=128, blank=True, null=True)
     dlc_date = models.DateField(blank=True, null=True)
     qty_value = models.DecimalField(
@@ -115,6 +116,7 @@ class InvoiceLine(models.Model):
         null=True,
     )
     raw_product_name = models.CharField(max_length=255, blank=True, null=True)
+    supplier_code = models.CharField(max_length=128, blank=True, null=True)
     qty_value = models.DecimalField(
         max_digits=12,
         decimal_places=3,

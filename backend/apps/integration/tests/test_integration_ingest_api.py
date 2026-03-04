@@ -154,3 +154,42 @@ class IntegrationIngestApiTests(APITestCase):
         line = Invoice.objects.first().lines.first()
         self.assertEqual(str(line.qty_value), "2.500")
         self.assertEqual(line.qty_unit, "kg")
+
+    def test_ingest_auto_resolves_supplier_from_extraction_name_and_vat(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="goods_receipt",
+            source="api",
+            filename="bl-ocr-auto-supplier.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": None,
+                "supplier_name": "Auto Supplier OCR",
+                "supplier_vat": "FR12 345 678 901",
+                "delivery_note_number": "BL-AUTO-001",
+                "received_at": "2026-03-03T10:00:00Z",
+                "lines": [{"raw_product_name": "Milk", "qty_value": "1.000", "qty_unit": "l"}],
+            },
+        )
+
+        payload = {
+            "extraction_id": str(extraction.id),
+            "idempotency_key": "ocr-gr-auto-supplier-001",
+            "target": "goods_receipt",
+        }
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        receipt = GoodsReceipt.objects.get(delivery_note_number="BL-AUTO-001")
+        self.assertEqual(receipt.supplier.name, "Auto Supplier OCR")

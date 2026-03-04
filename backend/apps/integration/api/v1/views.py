@@ -5,12 +5,14 @@ import json
 from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 
+from django.db import IntegrityError
 from django.utils.dateparse import parse_date, parse_datetime
 
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.catalog.models import Supplier
 from apps.integration.api.v1.serializers import (
     ClaudeExtractSerializer,
     DocumentExtractionSerializer,
@@ -26,7 +28,10 @@ from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
 from apps.integration.models import DocumentExtraction, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
+from apps.inventory.models import InventoryMovement, MovementType
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
+from apps.purchasing.models import GoodsReceipt, Invoice
+from apps.purchasing.services.reconciliation_auto_match import auto_match_invoice_lines
 
 
 def _as_dict(value):
@@ -161,6 +166,7 @@ def _normalize_lines(lines, target: str):
         line = _as_dict(raw)
         row = {
             "supplier_product": _pick_first(line, "supplier_product", "supplier_product_id"),
+            "supplier_code": _pick_first(line, "supplier_code", "supplier_sku", "code", "sku", "article_code"),
             "raw_product_name": _pick_first(
                 line, "raw_product_name", "description", "name", "product_name", "ingredient"
             ),
@@ -228,10 +234,53 @@ def _build_metadata(payload: dict, target: str):
     return metadata
 
 
+def _clean_vat(value):
+    if value is None:
+        return ""
+    return "".join(ch for ch in str(value).upper() if ch.isalnum())
+
+
+def _resolve_supplier_id(source: dict, supplier_id):
+    if supplier_id:
+        return supplier_id
+
+    metadata = _as_dict(source.get("metadata"))
+    supplier_name = str(_pick_first(source, "supplier_name", default=metadata.get("supplier_name")) or "").strip()
+    supplier_vat_raw = _pick_first(source, "supplier_vat", default=metadata.get("supplier_vat"))
+    supplier_vat = _clean_vat(supplier_vat_raw)
+
+    if supplier_vat:
+        for candidate in Supplier.objects.exclude(vat_number__isnull=True).exclude(vat_number=""):
+            if _clean_vat(candidate.vat_number) == supplier_vat:
+                return str(candidate.id)
+
+    if supplier_name:
+        existing = Supplier.objects.filter(name__iexact=supplier_name).first()
+        if existing:
+            if supplier_vat and not existing.vat_number:
+                existing.vat_number = supplier_vat
+                existing.save(update_fields=["vat_number", "updated_at"])
+            return str(existing.id)
+
+        try:
+            created = Supplier.objects.create(
+                name=supplier_name[:255],
+                vat_number=(supplier_vat or None),
+                metadata={"source": "claude_auto"},
+            )
+            return str(created.id)
+        except IntegrityError:
+            fallback = Supplier.objects.filter(name__iexact=supplier_name[:255]).first()
+            if fallback:
+                return str(fallback.id)
+
+    return None
+
+
 def _normalize_payload_for_ingest(payload: dict, target: str, document: IntegrationDocument):
     source = _as_dict(payload)
     site_id = _pick_first(source, "site", default=str(document.site_id))
-    supplier_id = _pick_first(source, "supplier")
+    supplier_id = _resolve_supplier_id(source, _pick_first(source, "supplier"))
     lines = _normalize_lines(source.get("lines"), target)
 
     if target == "goods_receipt":
@@ -268,6 +317,66 @@ def _normalize_payload_for_ingest(payload: dict, target: str, document: Integrat
     if due_date:
         normalized["due_date"] = due_date
     return normalized
+
+
+def _ensure_goods_receipt_stock_movements(receipt: GoodsReceipt):
+    created = 0
+    for line in receipt.lines.all():
+        ref_id = str(line.id)
+        if InventoryMovement.objects.filter(ref_type="goods_receipt_line", ref_id=ref_id).exists():
+            continue
+        InventoryMovement.objects.create(
+            site=receipt.site,
+            lot=None,
+            supplier_product=line.supplier_product,
+            supplier_code=line.supplier_code,
+            raw_product_name=line.raw_product_name,
+            movement_type=MovementType.IN,
+            qty_value=line.qty_value,
+            qty_unit=line.qty_unit,
+            happened_at=receipt.received_at,
+            ref_type="goods_receipt_line",
+            ref_id=ref_id,
+        )
+        created += 1
+    return {
+        "flow_type": "delivery_note_to_stock",
+        "created_stock_movements": created,
+        "matched_invoice_lines": 0,
+        "fallback_invoice_lines": 0,
+    }
+
+
+def _ensure_invoice_fallback_movements(invoice: Invoice):
+    outcome = auto_match_invoice_lines(invoice, qty_tolerance_ratio=Decimal("0.0500"))
+    created = 0
+    for line in invoice.lines.all():
+        if line.goods_receipt_line_id:
+            continue
+        ref_id = str(line.id)
+        if InventoryMovement.objects.filter(ref_type="invoice_line_fallback", ref_id=ref_id).exists():
+            continue
+        happened_at = datetime.combine(invoice.invoice_date, time.min, tzinfo=timezone.utc)
+        InventoryMovement.objects.create(
+            site=invoice.site,
+            lot=None,
+            supplier_product=line.supplier_product,
+            supplier_code=line.supplier_code,
+            raw_product_name=line.raw_product_name,
+            movement_type=MovementType.IN,
+            qty_value=line.qty_value,
+            qty_unit=line.qty_unit,
+            happened_at=happened_at,
+            ref_type="invoice_line_fallback",
+            ref_id=ref_id,
+        )
+        created += 1
+    return {
+        "flow_type": "invoice_after_delivery_note" if outcome.created_matches > 0 else "invoice_direct_to_stock",
+        "created_stock_movements": created,
+        "matched_invoice_lines": outcome.created_matches,
+        "fallback_invoice_lines": created,
+    }
 
 
 class IntegrationDocumentViewSet(
@@ -334,6 +443,21 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             import_serializer = import_serializer_class(data=payload)
             import_serializer.is_valid(raise_exception=True)
             instance = import_serializer.save()
+            flow_summary = {}
+            if target == "goods_receipt":
+                flow_summary = _ensure_goods_receipt_stock_movements(instance)
+            else:
+                flow_summary = _ensure_invoice_fallback_movements(instance)
+            metadata = document.metadata if isinstance(document.metadata, dict) else {}
+            metadata["ingest"] = {
+                "status": "completed",
+                "target": target,
+                "record_id": str(getattr(instance, "id", "")),
+                "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                **flow_summary,
+            }
+            document.metadata = metadata
+            document.save(update_fields=["metadata", "updated_at"])
             data = import_serializer_class(instance).data
             complete_batch(batch, status.HTTP_201_CREATED, data)
             return Response(data, status=status.HTTP_201_CREATED)

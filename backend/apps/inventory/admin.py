@@ -12,6 +12,6 @@ class LotAdmin(admin.ModelAdmin):
 
 @admin.register(InventoryMovement)
 class InventoryMovementAdmin(admin.ModelAdmin):
-    list_display = ("movement_type", "qty_value", "qty_unit", "happened_at", "lot", "supplier_product")
+    list_display = ("movement_type", "qty_value", "qty_unit", "happened_at", "site", "supplier_product", "raw_product_name", "lot")
     search_fields = ("ref_type", "ref_id")
     list_filter = ("movement_type", "qty_unit")
