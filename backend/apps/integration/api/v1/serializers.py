@@ -125,3 +125,34 @@ class FicheCatalogImportSerializer(serializers.Serializer):
 class FicheSnapshotEnvelopeImportSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(required=False, allow_blank=True, default="")
     envelope = serializers.JSONField(required=False)
+
+
+class HaccpOcrValidationSerializer(serializers.Serializer):
+    extraction_id = serializers.UUIDField(required=False)
+    corrected_payload = serializers.JSONField(required=False)
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    status = serializers.ChoiceField(choices=("pending", "validated", "rejected"), required=False, default="validated")
+
+
+class HaccpScheduleSerializer(serializers.Serializer):
+    id = serializers.UUIDField(required=False)
+    site = serializers.UUIDField()
+    task_type = serializers.ChoiceField(choices=("label_print", "temperature_register", "cleaning"))
+    title = serializers.CharField(max_length=255)
+    area = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=128)
+    sector = serializers.UUIDField(required=False, allow_null=True)
+    cold_point = serializers.UUIDField(required=False, allow_null=True)
+    sector_code = serializers.CharField(required=False, allow_blank=True, default="")
+    sector_label = serializers.CharField(required=False, allow_blank=True, default="")
+    cold_point_code = serializers.CharField(required=False, allow_blank=True, default="")
+    cold_point_label = serializers.CharField(required=False, allow_blank=True, default="")
+    equipment_type = serializers.ChoiceField(
+        choices=("FRIDGE", "FREEZER", "COLD_ROOM", "OTHER"),
+        required=False,
+        allow_blank=True,
+    )
+    starts_at = serializers.DateTimeField()
+    ends_at = serializers.DateTimeField(required=False, allow_null=True)
+    recurrence_rule = serializers.JSONField(required=False)
+    status = serializers.ChoiceField(choices=("planned", "done", "skipped", "cancelled"), required=False, default="planned")
+    metadata = serializers.JSONField(required=False)

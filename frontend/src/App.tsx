@@ -1,5 +1,6 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch, getApiBase, getDefaultApiKey, setDefaultApiKey } from "./api/client";
+import { HaccpWorkspace } from "./components/HaccpWorkspace";
 import { getInitialLang, LANG_STORAGE_KEY, t as translate, type Lang } from "./i18n";
 
 type NavKey =
@@ -11,6 +12,7 @@ type NavKey =
   | "ricette"
   | "comande"
   | "riconciliazioni"
+  | "haccp"
   | "report";
 
 type DocumentItem = {
@@ -58,8 +60,155 @@ type StockSummaryItem = {
   qty_unit: string;
   total_in: string;
   total_out: string;
+  in_from_docs?: string;
+  in_from_invoice_fallback?: string;
+  out_from_inventory?: string;
+  out_other?: string;
   current_stock: string;
+  last_movement_at?: string | null;
 };
+
+type HaccpOcrQueueItem = {
+  document_id: string;
+  filename: string;
+  document_type: "goods_receipt" | "invoice";
+  document_status: string;
+  validation_status: string;
+  validation_notes?: string;
+  created_at?: string;
+  updated_at?: string;
+  extraction?: {
+    id?: string | null;
+    status?: string | null;
+    confidence?: string | null;
+    normalized_payload?: Record<string, unknown>;
+    created_at?: string | null;
+  } | null;
+};
+
+type HaccpLifecycleEvent = {
+  event_id: string;
+  event_type: string;
+  happened_at: string;
+  qty_value: string;
+  qty_unit: string;
+  product_label: string;
+  supplier_code?: string | null;
+  ref_type?: string | null;
+  ref_id?: string | null;
+  lot?: {
+    id?: string | null;
+    internal_lot_code?: string | null;
+    supplier_lot_code?: string | null;
+    status?: string | null;
+    dlc_date?: string | null;
+  } | null;
+};
+
+type HaccpScheduleItem = {
+  id: string;
+  site: string;
+  task_type: "label_print" | "temperature_register" | "cleaning";
+  title: string;
+  area?: string | null;
+  sector?: string | null;
+  sector_code?: string | null;
+  sector_label?: string | null;
+  cold_point?: string | null;
+  cold_point_code?: string | null;
+  cold_point_label?: string | null;
+  equipment_type?: "FRIDGE" | "FREEZER" | "COLD_ROOM" | "OTHER" | "" | null;
+  starts_at: string;
+  ends_at?: string | null;
+  status: "planned" | "done" | "skipped" | "cancelled";
+};
+
+type HaccpSectorItem = {
+  id: string;
+  external_id?: string | null;
+  external_code?: string | null;
+  name: string;
+  sort_order?: number;
+  is_active?: boolean;
+};
+
+type HaccpColdPointItem = {
+  id: string;
+  external_id?: string | null;
+  external_code?: string | null;
+  sector?: string | null;
+  sector_code?: string | null;
+  sector_label?: string | null;
+  name: string;
+  cold_point_label?: string | null;
+  equipment_type?: "FRIDGE" | "FREEZER" | "COLD_ROOM" | "OTHER" | "" | null;
+  sort_order?: number;
+  is_active?: boolean;
+};
+
+type HaccpReconciliationRow = {
+  event_id: string;
+  event_type: string;
+  happened_at: string;
+  product_label: string;
+  supplier_code?: string | null;
+  qty_value: string;
+  qty_unit: string;
+  reconcile_status: "reconciled" | "documents_found" | "goods_receipt_only" | "invoice_only" | "missing";
+  lot?: {
+    internal_lot_code?: string | null;
+    supplier_lot_code?: string | null;
+    status?: string | null;
+    dlc_date?: string | null;
+  } | null;
+  goods_receipts: Array<{
+    id: string;
+    delivery_note_number: string;
+    received_at?: string | null;
+  }>;
+  invoices: Array<{
+    id: string;
+    invoice_number: string;
+    invoice_date?: string | null;
+  }>;
+  matches: Array<{
+    id: string;
+    status: string;
+  }>;
+  alerts: string[];
+};
+
+type HaccpReconciliationOverview = {
+  summary: {
+    lifecycle_events: number;
+    goods_receipt_lines: number;
+    invoice_lines: number;
+    matches: number;
+    reconciled_events: number;
+    goods_receipt_only_events: number;
+    invoice_only_events: number;
+    missing_events: number;
+    documents_found_events: number;
+    label_tasks_planned: number;
+    label_tasks_done: number;
+  };
+  label_schedule_summary: {
+    planned: number;
+    done: number;
+    skipped: number;
+    cancelled: number;
+  };
+  results: HaccpReconciliationRow[];
+};
+
+type HaccpViewKey =
+  | "reports"
+  | "validation"
+  | "temperature"
+  | "labels"
+  | "lifecycle"
+  | "anomalies"
+  | "cleaning";
 
 type EntryScheduleMode = "permanent" | "date_specific" | "recurring_weekly";
 
@@ -99,11 +248,14 @@ const NAV_ITEMS: Array<{ key: NavKey; labelKey: string; helpKey: string }> = [
   { key: "ricette", labelKey: "nav.recipes", helpKey: "nav.recipesHelp" },
   { key: "comande", labelKey: "nav.orders", helpKey: "nav.ordersHelp" },
   { key: "riconciliazioni", labelKey: "nav.reconciliations", helpKey: "nav.reconciliationsHelp" },
+  { key: "haccp", labelKey: "nav.haccp", helpKey: "nav.haccpHelp" },
   { key: "report", labelKey: "nav.reports", helpKey: "nav.reportsHelp" },
 ];
 
 const MENU_SPACES_STORAGE_KEY = "cookops_menu_spaces_v1";
+const MENU_SPACES_CACHE_STORAGE_KEY = "cookops_menu_spaces_cache_v1";
 const MENU_ADVANCED_STORAGE_KEY = "cookops_menu_advanced_v1";
+const SELECTED_SITE_STORAGE_KEY = "cookops_selected_site_v1";
 
 const FICHE_RECIPE_SUGGESTIONS = [
   "Focaccia Bresaola",
@@ -172,6 +324,30 @@ function inferScheduleModeFromSpaceId(spaceId: string): EntryScheduleMode {
   return "date_specific";
 }
 
+function getMenuSpacesCacheContextKey(siteId: string, serviceDate: string): string {
+  return `${siteId}::${serviceDate}`;
+}
+
+function getHaccpLocalSchedulesContextKey(siteId: string): string {
+  return siteId;
+}
+
+function readMenuSpacesCache(): Record<string, MenuSpace[]> {
+  const raw = localStorage.getItem(MENU_SPACES_CACHE_STORAGE_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, MenuSpace[]>;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeMenuSpacesCache(cache: Record<string, MenuSpace[]>) {
+  localStorage.setItem(MENU_SPACES_CACHE_STORAGE_KEY, JSON.stringify(cache));
+}
+
+
 function normalizeWeekdays(rawValue: unknown): number[] {
   if (!Array.isArray(rawValue)) return [];
   const normalized = new Set<number>();
@@ -225,12 +401,199 @@ function asArray(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value) ? value.map((item) => asRecord(item)) : [];
 }
 
+function recipeSuggestionKey(item: RecipeTitleSuggestion): string {
+  const fiche = String(item.fiche_product_id || "").trim();
+  if (fiche) return `fiche:${fiche}`;
+  return `title:${String(item.title || "").trim().toLowerCase()}`;
+}
+
 function getTodayIsoDate() {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function normalizeHaccpOcrQueueRows(body: unknown): HaccpOcrQueueItem[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  return results.map((row) => {
+    const extraction = asRecord(row.extraction);
+    return {
+      document_id: String(row.document_id ?? row.id ?? row.ocr_result_id ?? ""),
+      filename: String(row.filename ?? row.label ?? row.document_name ?? "N/A"),
+      document_type: String(row.document_type ?? "goods_receipt") as "goods_receipt" | "invoice",
+      document_status: String(row.document_status ?? row.status ?? "-"),
+      validation_status: String(row.validation_status ?? row.validation_state ?? "pending"),
+      validation_notes: String(row.validation_notes ?? ""),
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? ""),
+      extraction: {
+        id: String(extraction.id ?? row.extraction_id ?? ""),
+        status: String(extraction.status ?? row.extraction_status ?? row.status ?? ""),
+        confidence: String(extraction.confidence ?? row.confidence ?? ""),
+        normalized_payload: asRecord(extraction.normalized_payload ?? row.normalized_payload),
+        created_at: String(extraction.created_at ?? ""),
+      },
+    };
+  }).filter((row) => row.document_id.trim().length > 0);
+}
+
+function normalizeHaccpLifecycleRows(body: unknown): HaccpLifecycleEvent[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  return results.map((row) => {
+    const lot = asRecord(row.lot);
+    return {
+      event_id: String(row.event_id ?? row.id ?? ""),
+      event_type: String(row.event_type ?? row.type ?? "movement"),
+      happened_at: String(row.happened_at ?? row.created_at ?? ""),
+      qty_value: String(row.qty_value ?? row.quantity ?? "0"),
+      qty_unit: String(row.qty_unit ?? row.unit ?? "pc"),
+      product_label: String(row.product_label ?? row.product_name ?? row.label ?? "-"),
+      supplier_code: String(row.supplier_code ?? ""),
+      ref_type: String(row.ref_type ?? ""),
+      ref_id: String(row.ref_id ?? ""),
+      lot: {
+        id: String(lot.id ?? row.lot_id ?? ""),
+        internal_lot_code: String(lot.internal_lot_code ?? lot.code ?? row.internal_lot_code ?? ""),
+        supplier_lot_code: String(lot.supplier_lot_code ?? ""),
+        status: String(lot.status ?? ""),
+        dlc_date: String(lot.dlc_date ?? ""),
+      },
+    };
+  }).filter((row) => row.event_id.trim().length > 0);
+}
+
+function normalizeHaccpScheduleRows(body: unknown): HaccpScheduleItem[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  return results.map((row) => ({
+    id: String(row.id ?? ""),
+    site: String(row.site ?? ""),
+    task_type: String(row.task_type ?? "label_print") as "label_print" | "temperature_register" | "cleaning",
+    title: String(row.title ?? row.name ?? "Task"),
+    area: String(row.area ?? ""),
+    sector: row.sector ? String(row.sector) : null,
+    sector_code: row.sector_code ? String(row.sector_code) : null,
+    sector_label: row.sector_label ? String(row.sector_label) : null,
+    cold_point: row.cold_point ? String(row.cold_point) : null,
+    cold_point_code: row.cold_point_code ? String(row.cold_point_code) : null,
+    cold_point_label: row.cold_point_label ? String(row.cold_point_label) : null,
+    equipment_type: row.equipment_type ? String(row.equipment_type) as HaccpScheduleItem["equipment_type"] : null,
+    starts_at: String(row.starts_at ?? row.start_at ?? row.scheduled_for ?? ""),
+    ends_at: String(row.ends_at ?? row.end_at ?? ""),
+    status: String(row.status ?? "planned") as "planned" | "done" | "skipped" | "cancelled",
+  })).filter((row) => row.id.trim().length > 0);
+}
+
+function normalizeHaccpSectorRows(body: unknown): HaccpSectorItem[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  return results
+    .map((row) => ({
+      id: String(row.external_id ?? row.id ?? ""),
+      external_id: row.external_id ? String(row.external_id) : null,
+      external_code: row.external_code ? String(row.external_code) : null,
+      name: String(row.name ?? row.sector_label ?? ""),
+      sort_order: Number(row.sort_order ?? 0),
+      is_active: row.is_active !== false,
+    }))
+    .filter((row) => row.id.trim().length > 0 && row.name.trim().length > 0);
+}
+
+function normalizeHaccpColdPointRows(body: unknown): HaccpColdPointItem[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  return results
+    .map((row) => ({
+      id: String(row.external_id ?? row.id ?? ""),
+      external_id: row.external_id ? String(row.external_id) : null,
+      external_code: row.external_code ? String(row.external_code) : null,
+      sector: row.sector ? String(row.sector) : null,
+      sector_code: row.sector_code ? String(row.sector_code) : null,
+      sector_label: row.sector_label ? String(row.sector_label) : null,
+      name: String(row.name ?? row.cold_point_label ?? ""),
+      cold_point_label: row.cold_point_label ? String(row.cold_point_label) : null,
+      equipment_type: row.equipment_type ? String(row.equipment_type) as HaccpColdPointItem["equipment_type"] : null,
+      sort_order: Number(row.sort_order ?? 0),
+      is_active: row.is_active !== false,
+    }))
+    .filter((row) => row.id.trim().length > 0 && row.name.trim().length > 0);
+}
+
+function createClientUuid() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `haccp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeHaccpReconciliationOverview(body: unknown): HaccpReconciliationOverview {
+  const record = asRecord(body);
+  const summary = asRecord(record.summary);
+  const labelScheduleSummary = asRecord(record.label_schedule_summary);
+  const results = asArray(record.results);
+  return {
+    summary: {
+      lifecycle_events: Number(summary.lifecycle_events ?? 0),
+      goods_receipt_lines: Number(summary.goods_receipt_lines ?? 0),
+      invoice_lines: Number(summary.invoice_lines ?? 0),
+      matches: Number(summary.matches ?? 0),
+      reconciled_events: Number(summary.reconciled_events ?? 0),
+      goods_receipt_only_events: Number(summary.goods_receipt_only_events ?? 0),
+      invoice_only_events: Number(summary.invoice_only_events ?? 0),
+      missing_events: Number(summary.missing_events ?? 0),
+      documents_found_events: Number(summary.documents_found_events ?? 0),
+      label_tasks_planned: Number(summary.label_tasks_planned ?? 0),
+      label_tasks_done: Number(summary.label_tasks_done ?? 0),
+    },
+    label_schedule_summary: {
+      planned: Number(labelScheduleSummary.planned ?? 0),
+      done: Number(labelScheduleSummary.done ?? 0),
+      skipped: Number(labelScheduleSummary.skipped ?? 0),
+      cancelled: Number(labelScheduleSummary.cancelled ?? 0),
+    },
+    results: results.map((row) => {
+      const lot = asRecord(row.lot);
+      return {
+        event_id: String(row.event_id ?? row.id ?? ""),
+        event_type: String(row.event_type ?? row.type ?? "movement"),
+        happened_at: String(row.happened_at ?? ""),
+        product_label: String(row.product_label ?? row.product_name ?? row.label ?? "-"),
+        supplier_code: String(row.supplier_code ?? ""),
+        qty_value: String(row.qty_value ?? "0"),
+        qty_unit: String(row.qty_unit ?? ""),
+        reconcile_status: String(row.reconcile_status ?? "missing") as HaccpReconciliationRow["reconcile_status"],
+        lot: {
+          internal_lot_code: String(lot.internal_lot_code ?? ""),
+          supplier_lot_code: String(lot.supplier_lot_code ?? ""),
+          status: String(lot.status ?? ""),
+          dlc_date: String(lot.dlc_date ?? ""),
+        },
+        goods_receipts: asArray(row.goods_receipts).map((item) => {
+          const value = asRecord(item);
+          return {
+            id: String(value.id ?? ""),
+            delivery_note_number: String(value.delivery_note_number ?? "-"),
+            received_at: String(value.received_at ?? ""),
+          };
+        }),
+        invoices: asArray(row.invoices).map((item) => {
+          const value = asRecord(item);
+          return {
+            id: String(value.id ?? ""),
+            invoice_number: String(value.invoice_number ?? "-"),
+            invoice_date: String(value.invoice_date ?? ""),
+          };
+        }),
+        matches: asArray(row.matches).map((item) => {
+          const value = asRecord(item);
+          return {
+            id: String(value.id ?? ""),
+            status: String(value.status ?? "-"),
+          };
+        }),
+        alerts: asArray(row.alerts).map((item) => String(item ?? "")).filter((item) => item.trim().length > 0),
+      };
+    }).filter((row) => row.event_id.trim().length > 0),
+  };
 }
 
 function App() {
@@ -240,7 +603,7 @@ function App() {
   const [isSidebarOpenMobile, setIsSidebarOpenMobile] = useState(false);
   const [apiKey, setApiKey] = useState(getDefaultApiKey());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [siteId, setSiteId] = useState("");
+  const [siteId, setSiteId] = useState(() => localStorage.getItem(SELECTED_SITE_STORAGE_KEY) ?? "");
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [newSiteName, setNewSiteName] = useState("");
   const [newSiteCode, setNewSiteCode] = useState("");
@@ -282,6 +645,28 @@ function App() {
   const [isApplyingInventory, setIsApplyingInventory] = useState(false);
   const [inventoryScope, setInventoryScope] = useState("total");
   const [inventoryLinesJson, setInventoryLinesJson] = useState('[{"supplier_code":"82233","raw_product_name":"LIEU NOIR VDK 2/4 A.N.E","qty_unit":"kg","qty_value":"40.000"}]');
+  const [stockSearch, setStockSearch] = useState("");
+  const [lastInventoryApplied, setLastInventoryApplied] = useState<Array<Record<string, unknown>>>([]);
+  const [haccpOcrQueue, setHaccpOcrQueue] = useState<HaccpOcrQueueItem[]>([]);
+  const [haccpLifecycleEvents, setHaccpLifecycleEvents] = useState<HaccpLifecycleEvent[]>([]);
+  const [haccpSchedules, setHaccpSchedules] = useState<HaccpScheduleItem[]>([]);
+  const [haccpSectors, setHaccpSectors] = useState<HaccpSectorItem[]>([]);
+  const [haccpColdPoints, setHaccpColdPoints] = useState<HaccpColdPointItem[]>([]);
+  const [haccpReconciliationOverview, setHaccpReconciliationOverview] = useState<HaccpReconciliationOverview | null>(null);
+  const [isHaccpLoading, setIsHaccpLoading] = useState(false);
+  const [isHaccpSaving, setIsHaccpSaving] = useState(false);
+  const [haccpView, setHaccpView] = useState<HaccpViewKey>("reports");
+  const [selectedHaccpDocumentId, setSelectedHaccpDocumentId] = useState("");
+  const [newHaccpTaskType, setNewHaccpTaskType] = useState<"label_print" | "temperature_register" | "cleaning">("label_print");
+  const [newHaccpTitle, setNewHaccpTitle] = useState("");
+  const [newHaccpArea, setNewHaccpArea] = useState("");
+  const [selectedHaccpSectorId, setSelectedHaccpSectorId] = useState("");
+  const [selectedHaccpColdPointId, setSelectedHaccpColdPointId] = useState("");
+  const [newHaccpSectorName, setNewHaccpSectorName] = useState("");
+  const [newHaccpColdPointName, setNewHaccpColdPointName] = useState("");
+  const [newHaccpColdPointEquipmentType, setNewHaccpColdPointEquipmentType] = useState<"FRIDGE" | "FREEZER" | "COLD_ROOM" | "OTHER">("FRIDGE");
+  const [newHaccpStartsAt, setNewHaccpStartsAt] = useState("");
+  const [newHaccpEndsAt, setNewHaccpEndsAt] = useState("");
 
   const [serviceDate, setServiceDate] = useState(getTodayIsoDate());
   const [comandaDateFrom, setComandaDateFrom] = useState(getTodayIsoDate());
@@ -307,6 +692,8 @@ function App() {
   const [recipeTitleSuggestions, setRecipeTitleSuggestions] = useState<RecipeTitleSuggestion[]>(
     FICHE_RECIPE_SUGGESTIONS.map((title) => ({ fiche_product_id: "", title }))
   );
+  const [recipePickerSearch, setRecipePickerSearch] = useState("");
+  const [selectedRecipeKeys, setSelectedRecipeKeys] = useState<string[]>([]);
   const [supplierProductSuggestions, setSupplierProductSuggestions] = useState<string[]>([]);
   const [ingredientsView, setIngredientsView] = useState<ChecklistView>("supplier");
   const [quantityMode, setQuantityMode] = useState<QuantityMode>("with_qty");
@@ -319,6 +706,7 @@ function App() {
   const [sectorSearch, setSectorSearch] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
   const [isChecklistLoading, setIsChecklistLoading] = useState(false);
+  const previousNavRef = useRef<NavKey>("dashboard");
 
   const canUpload = useMemo(() => siteId.trim().length > 0 && uploadFile !== null, [siteId, uploadFile]);
   const t = (key: string, vars?: Record<string, string | number>) => translate(lang, key, vars);
@@ -335,6 +723,14 @@ function App() {
   const normalizedMeta = useMemo(() => asRecord(normalizedData.metadata), [normalizedData]);
 
   const previewLines = useMemo(() => asArray(normalizedData.lines), [normalizedData]);
+  const filteredHaccpColdPoints = useMemo(
+    () =>
+      haccpColdPoints.filter((item) => {
+        if (!selectedHaccpSectorId) return true;
+        return item.sector === selectedHaccpSectorId;
+      }),
+    [haccpColdPoints, selectedHaccpSectorId]
+  );
 
   useEffect(() => {
     setDefaultApiKey(apiKey);
@@ -343,6 +739,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem(LANG_STORAGE_KEY, lang);
   }, [lang]);
+
+  useEffect(() => {
+    if (siteId) {
+      localStorage.setItem(SELECTED_SITE_STORAGE_KEY, siteId);
+    } else {
+      localStorage.removeItem(SELECTED_SITE_STORAGE_KEY);
+    }
+  }, [siteId]);
 
   useEffect(() => {
     void loadSites();
@@ -365,6 +769,45 @@ function App() {
     if (!siteId) return;
     void loadStockSummary();
   }, [nav, siteId]);
+
+  useEffect(() => {
+    if (nav !== "haccp") return;
+    if (!siteId) return;
+    void loadHaccpData();
+  }, [nav, siteId]);
+
+  useEffect(() => {
+    if (!haccpOcrQueue.length) {
+      setSelectedHaccpDocumentId("");
+      return;
+    }
+    if (selectedHaccpDocumentId && haccpOcrQueue.some((item) => item.document_id === selectedHaccpDocumentId)) {
+      return;
+    }
+    setSelectedHaccpDocumentId(haccpOcrQueue[0].document_id);
+  }, [haccpOcrQueue, selectedHaccpDocumentId]);
+
+  useEffect(() => {
+    if (!haccpSectors.length) {
+      setSelectedHaccpSectorId("");
+      return;
+    }
+    if (selectedHaccpSectorId && haccpSectors.some((item) => item.id === selectedHaccpSectorId)) {
+      return;
+    }
+    setSelectedHaccpSectorId(haccpSectors[0].id);
+  }, [haccpSectors, selectedHaccpSectorId]);
+
+  useEffect(() => {
+    if (!filteredHaccpColdPoints.length) {
+      setSelectedHaccpColdPointId("");
+      return;
+    }
+    if (selectedHaccpColdPointId && filteredHaccpColdPoints.some((item) => item.id === selectedHaccpColdPointId)) {
+      return;
+    }
+    setSelectedHaccpColdPointId(filteredHaccpColdPoints[0].id);
+  }, [filteredHaccpColdPoints, selectedHaccpColdPointId]);
 
   useEffect(() => {
     const selected = documents.find((doc) => doc.id === selectedDocId) ?? null;
@@ -447,15 +890,22 @@ function App() {
   }, [menuSpaces]);
 
   useEffect(() => {
+    if (!siteId || !serviceDate) return;
+    const cache = readMenuSpacesCache();
+    cache[getMenuSpacesCacheContextKey(siteId, serviceDate)] = menuSpaces;
+    writeMenuSpacesCache(cache);
+  }, [menuSpaces, siteId, serviceDate]);
+
+  useEffect(() => {
     localStorage.setItem(MENU_ADVANCED_STORAGE_KEY, isMenuAdvancedMode ? "1" : "0");
   }, [isMenuAdvancedMode]);
 
   useEffect(() => {
     if (!isMenuEditorOpen) return;
     if (entryKind === "product") return;
-    const search = entryTitle.trim();
+    const search = recipePickerSearch.trim();
     void loadRecipeTitleSuggestions(search);
-  }, [isMenuEditorOpen, entryKind, entryTitle]);
+  }, [isMenuEditorOpen, entryKind, recipePickerSearch]);
 
   useEffect(() => {
     if (!isMenuEditorOpen) return;
@@ -470,13 +920,17 @@ function App() {
 
   useEffect(() => {
     if (!isMenuEditorOpen || entryKind !== "recipe") return;
-    const normalized = entryTitle.trim().toLowerCase();
-    if (!normalized) {
+    if (selectedRecipeKeys.length === 0) {
+      if (!editingEntryId) {
+        setEntryTitle("");
+      }
       setEntryFicheProductId(null);
       return;
     }
-    const match = recipeTitleSuggestions.find((item) => item.title.trim().toLowerCase() === normalized);
+    const selectedSet = new Set(selectedRecipeKeys);
+    const match = recipeTitleSuggestions.find((item) => selectedSet.has(recipeSuggestionKey(item)));
     if (match) {
+      setEntryTitle(match.title ?? "");
       setEntryFicheProductId(match.fiche_product_id || null);
       if (!editingEntryId) {
         const portions = Number.parseFloat(String(match.portions ?? ""));
@@ -490,7 +944,7 @@ function App() {
         }
       }
     }
-  }, [isMenuEditorOpen, entryKind, entryTitle, recipeTitleSuggestions, editingEntryId, entryExpectedQty, entrySection]);
+  }, [isMenuEditorOpen, entryKind, selectedRecipeKeys, recipeTitleSuggestions, editingEntryId, entryExpectedQty, entrySection]);
 
   useEffect(() => {
     if (entryKind === "product") {
@@ -499,9 +953,18 @@ function App() {
   }, [entryKind]);
 
   useEffect(() => {
+    if (nav !== "ricette") return;
     if (!siteId || !serviceDate) return;
     void loadServiceMenuEntries(siteId, serviceDate);
-  }, [siteId, serviceDate]);
+  }, [nav, siteId, serviceDate]);
+
+  useEffect(() => {
+    const previousNav = previousNavRef.current;
+    if (previousNav === "comande" && nav !== "comande") {
+      resetComandeState();
+    }
+    previousNavRef.current = nav;
+  }, [nav]);
 
   useEffect(() => {
     setIngredientsRows([]);
@@ -609,7 +1072,8 @@ function App() {
 
   async function loadRecipeTitleSuggestions(search = "") {
     try {
-      const query = search ? `?q=${encodeURIComponent(search)}&limit=30` : "?limit=30";
+      const limit = search ? 200 : 1000;
+      const query = search ? `?q=${encodeURIComponent(search)}&limit=${limit}` : `?limit=${limit}`;
       const res = await apiFetch(`/integration/fiches/recipe-titles/${query}`);
       const body = await res.json();
       if (!res.ok) {
@@ -648,13 +1112,33 @@ function App() {
     }
   }
 
-  async function loadServiceMenuEntries(targetSiteId: string, targetServiceDate: string, withNotice = false) {
+  async function loadServiceMenuEntries(
+    targetSiteId: string,
+    targetServiceDate: string,
+    withNotice = false,
+    applyToState = true
+  ) {
+    if (!targetSiteId || !targetServiceDate) {
+      if (withNotice) {
+        setNotice(t("validation.selectSiteBeforeChecklist"));
+      }
+      return false;
+    }
     try {
       const res = await apiFetch(
         `/servizio/menu-entries/sync?site=${encodeURIComponent(targetSiteId)}&date=${encodeURIComponent(targetServiceDate)}`
       );
       const body = await res.json();
       if (!res.ok) {
+        const cached = readMenuSpacesCache()[getMenuSpacesCacheContextKey(targetSiteId, targetServiceDate)];
+        if (Array.isArray(cached) && cached.length > 0) {
+          if (applyToState) {
+            setMenuSpaces(cached);
+            ensureActiveSpaceStillValid(cached);
+          }
+          setNotice(t("notice.menuLoadedFromCache", { date: targetServiceDate }));
+          return true;
+        }
         if (withNotice) {
           setNotice(errorWithDetail("error.menuLoad", body.detail ?? JSON.stringify(body)));
         }
@@ -720,10 +1204,24 @@ function App() {
           });
         });
       const nextSpaces = Array.from(spaceMap.values()).sort((a, b) => a.order - b.order);
-      setMenuSpaces(nextSpaces);
-      ensureActiveSpaceStillValid(nextSpaces);
+      if (applyToState) {
+        setMenuSpaces(nextSpaces);
+        ensureActiveSpaceStillValid(nextSpaces);
+      }
+      const cache = readMenuSpacesCache();
+      cache[getMenuSpacesCacheContextKey(targetSiteId, targetServiceDate)] = nextSpaces;
+      writeMenuSpacesCache(cache);
       return true;
     } catch {
+      const cached = readMenuSpacesCache()[getMenuSpacesCacheContextKey(targetSiteId, targetServiceDate)];
+      if (Array.isArray(cached) && cached.length > 0) {
+        if (applyToState) {
+          setMenuSpaces(cached);
+          ensureActiveSpaceStillValid(cached);
+        }
+        setNotice(t("notice.menuLoadedFromCache", { date: targetServiceDate }));
+        return true;
+      }
       if (withNotice) {
         setNotice(t("error.menuLoadBackend"));
       }
@@ -757,6 +1255,15 @@ function App() {
     setEntryScheduleMode(entry?.schedule_mode ?? space.schedule_mode ?? inferScheduleModeFromSpaceId(space.id));
     setEntryWeekdays(entry?.weekdays ?? []);
     setEditingEntryId(entry?.id ?? null);
+    setRecipePickerSearch(entry?.title ?? "");
+    if (entry?.item_kind === "recipe" && entry?.title) {
+      const selectedKey = entry.fiche_product_id
+        ? `fiche:${String(entry.fiche_product_id).trim()}`
+        : `title:${entry.title.trim().toLowerCase()}`;
+      setSelectedRecipeKeys([selectedKey]);
+    } else {
+      setSelectedRecipeKeys([]);
+    }
     setIsMenuEditorOpen(true);
   }
 
@@ -874,10 +1381,13 @@ function App() {
       }
       const data = body as SiteItem[];
       setSites(data);
-      if (!siteId && data.length > 0) {
-        setSiteId(data[0].id);
+      const activeSites = data.filter((site) => site.is_active);
+      const selectedIsActive = activeSites.some((site) => site.id === siteId);
+      if (!selectedIsActive) {
+        setSiteId(activeSites[0]?.id ?? "");
       }
       if (data.length === 0) {
+        setSiteId("");
         setNotice(t("notice.noActiveSites"));
         return;
       }
@@ -1402,6 +1912,330 @@ function App() {
     }
   }
 
+  async function loadHaccpData() {
+    if (!siteId) return;
+    setIsHaccpLoading(true);
+    try {
+      const [ocrResult, lifecycleResult, schedulesResult, overviewResult, sectorsResult, coldPointsResult] = await Promise.allSettled([
+        apiFetch(`/haccp/traccia/ocr-queue/?site=${encodeURIComponent(siteId)}&limit=80`),
+        apiFetch(`/haccp/traccia/lifecycle/?site=${encodeURIComponent(siteId)}&limit=120`),
+        apiFetch(`/haccp/schedules/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/haccp/traccia/reconciliation-overview/?site=${encodeURIComponent(siteId)}&limit=80`),
+        apiFetch(`/haccp/traccia/sectors/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/haccp/traccia/cold-points/?site=${encodeURIComponent(siteId)}`),
+      ]);
+
+      async function readSettledJson(result: PromiseSettledResult<Response>) {
+        if (result.status !== "fulfilled") {
+          return { ok: false, body: null as unknown };
+        }
+        try {
+          return { ok: result.value.ok, body: await result.value.json() };
+        } catch {
+          return { ok: result.value.ok, body: null as unknown };
+        }
+      }
+
+      const [ocr, lifecycle, schedules, overview, sectors, coldPoints] = await Promise.all([
+        readSettledJson(ocrResult),
+        readSettledJson(lifecycleResult),
+        readSettledJson(schedulesResult),
+        readSettledJson(overviewResult),
+        readSettledJson(sectorsResult),
+        readSettledJson(coldPointsResult),
+      ]);
+
+      if (ocr.ok && lifecycle.ok && schedules.ok && sectors.ok && coldPoints.ok) {
+        setHaccpOcrQueue(normalizeHaccpOcrQueueRows(ocr.body));
+        setHaccpLifecycleEvents(normalizeHaccpLifecycleRows(lifecycle.body));
+        setHaccpSchedules(normalizeHaccpScheduleRows(schedules.body));
+        setHaccpSectors(normalizeHaccpSectorRows(sectors.body));
+        setHaccpColdPoints(normalizeHaccpColdPointRows(coldPoints.body));
+        setHaccpReconciliationOverview(overview.ok ? normalizeHaccpReconciliationOverview(overview.body) : null);
+        return;
+      }
+
+      if (!ocr.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", (ocr.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(ocr.body)));
+        return;
+      }
+      if (!lifecycle.ok) {
+        setNotice(
+          errorWithDetail("error.documentsLoad", (lifecycle.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(lifecycle.body))
+        );
+        return;
+      }
+      if (!schedules.ok) {
+        setNotice(
+          errorWithDetail("error.documentsLoad", (schedules.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(schedules.body))
+        );
+        return;
+      }
+      if (!sectors.ok) {
+        setNotice(
+          errorWithDetail("error.documentsLoad", (sectors.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(sectors.body))
+        );
+        return;
+      }
+      if (!coldPoints.ok) {
+        setNotice(
+          errorWithDetail(
+            "error.documentsLoad",
+            (coldPoints.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(coldPoints.body)
+          )
+        );
+      }
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsHaccpLoading(false);
+    }
+  }
+
+  async function onCreateHaccpSector(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId) {
+      setNotice(t("validation.selectSite"));
+      return;
+    }
+    if (!newHaccpSectorName.trim()) {
+      setNotice("Inserisci un settore.");
+      return;
+    }
+    setIsHaccpSaving(true);
+    const externalId = createClientUuid();
+    try {
+      const res = await apiFetch("/haccp/traccia/sectors/sync/", {
+        method: "POST",
+        body: JSON.stringify({
+          sectors: [
+            {
+              external_id: externalId,
+              external_code: newHaccpSectorName.trim().toLowerCase().replace(/\s+/g, "-").slice(0, 64),
+              site: siteId,
+              name: newHaccpSectorName.trim(),
+              sort_order: haccpSectors.length + 1,
+              is_active: true,
+            },
+          ],
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Settore HACCP creato: ${newHaccpSectorName.trim()}`);
+      setNewHaccpSectorName("");
+      await loadHaccpData();
+      setSelectedHaccpSectorId(externalId);
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  async function onCreateHaccpColdPoint(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId) {
+      setNotice(t("validation.selectSite"));
+      return;
+    }
+    if (!selectedHaccpSectorId) {
+      setNotice("Seleziona prima un settore.");
+      return;
+    }
+    if (!newHaccpColdPointName.trim()) {
+      setNotice("Inserisci un punto freddo.");
+      return;
+    }
+    setIsHaccpSaving(true);
+    const externalId = createClientUuid();
+    try {
+      const res = await apiFetch("/haccp/traccia/cold-points/sync/", {
+        method: "POST",
+        body: JSON.stringify({
+          cold_points: [
+            {
+              external_id: externalId,
+              external_code: newHaccpColdPointName.trim().toLowerCase().replace(/\s+/g, "-").slice(0, 64),
+              site: siteId,
+              sector: selectedHaccpSectorId,
+              name: newHaccpColdPointName.trim(),
+              equipment_type: newHaccpColdPointEquipmentType,
+              sort_order: filteredHaccpColdPoints.length + 1,
+              is_active: true,
+            },
+          ],
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Punto freddo creato: ${newHaccpColdPointName.trim()}`);
+      setNewHaccpColdPointName("");
+      await loadHaccpData();
+      setSelectedHaccpColdPointId(externalId);
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  async function onValidateHaccpOcr(documentId: string, statusValue: "validated" | "rejected") {
+    const queueItem = haccpOcrQueue.find((item) => item.document_id === documentId);
+    const extractionId = String(queueItem?.extraction?.id || "").trim();
+    try {
+      const res = await apiFetch(`/haccp/traccia/ocr-queue/${documentId}/validate/`, {
+        method: "POST",
+        body: JSON.stringify({
+          extraction_id: extractionId || undefined,
+          status: statusValue,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.extractionCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Validazione OCR aggiornata: ${statusValue}.`);
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.extractionCreate"));
+    }
+  }
+
+  async function onCreateHaccpSchedule(
+    e: FormEvent,
+    forcedTaskType?: "label_print" | "temperature_register" | "cleaning"
+  ) {
+    e.preventDefault();
+    if (!siteId) {
+      setNotice(t("validation.selectSite"));
+      return;
+    }
+    if (!newHaccpTitle.trim()) {
+      setNotice(t("validation.entryTitleRequired"));
+      return;
+    }
+    if (!newHaccpStartsAt.trim()) {
+      setNotice("Inserisci data/ora inizio.");
+      return;
+    }
+    const startDate = new Date(newHaccpStartsAt);
+    if (Number.isNaN(startDate.getTime())) {
+      setNotice("Data inizio non valida.");
+      return;
+    }
+    const startsAtIso = startDate.toISOString();
+    let endsAtIso: string | null = null;
+    if (newHaccpEndsAt.trim()) {
+      const endDate = new Date(newHaccpEndsAt);
+      if (Number.isNaN(endDate.getTime())) {
+        setNotice("Data fine non valida.");
+        return;
+      }
+      endsAtIso = endDate.toISOString();
+    }
+    setIsHaccpSaving(true);
+    const taskType = forcedTaskType ?? newHaccpTaskType;
+    const selectedSector = haccpSectors.find((item) => item.id === selectedHaccpSectorId) ?? null;
+    const selectedColdPoint =
+      taskType === "temperature_register"
+        ? filteredHaccpColdPoints.find((item) => item.id === selectedHaccpColdPointId) ?? null
+        : null;
+    if ((taskType === "temperature_register" || taskType === "label_print") && !selectedSector) {
+      setNotice("Seleziona un settore HACCP.");
+      setIsHaccpSaving(false);
+      return;
+    }
+    if (taskType === "temperature_register" && !selectedColdPoint) {
+      setNotice("Seleziona un punto freddo.");
+      setIsHaccpSaving(false);
+      return;
+    }
+    const derivedArea = [selectedSector?.name || "", selectedColdPoint?.name || ""].filter(Boolean).join(" / ");
+    try {
+      const res = await apiFetch("/haccp/schedules/", {
+        method: "POST",
+        body: JSON.stringify({
+          site: siteId,
+          task_type: taskType,
+          title: newHaccpTitle.trim(),
+          area: derivedArea || newHaccpArea.trim() || null,
+          sector: selectedSector?.id || null,
+          sector_code: selectedSector?.external_code || "",
+          sector_label: selectedSector?.name || "",
+          cold_point: selectedColdPoint?.id || null,
+          cold_point_code: selectedColdPoint?.external_code || "",
+          cold_point_label: selectedColdPoint?.name || "",
+          equipment_type: selectedColdPoint?.equipment_type || "",
+          starts_at: startsAtIso,
+          ends_at: endsAtIso,
+          status: "planned",
+          recurrence_rule: {},
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Task HACCP creato: ${body.title}`);
+      setNewHaccpTitle("");
+      setNewHaccpArea("");
+      setSelectedHaccpColdPointId("");
+      setNewHaccpStartsAt("");
+      setNewHaccpEndsAt("");
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  async function onSetHaccpScheduleStatus(scheduleId: string, statusValue: "planned" | "done" | "skipped" | "cancelled") {
+    if (!siteId) return;
+    try {
+      const res = await apiFetch(`/haccp/schedules/${scheduleId}/`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: statusValue }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Task HACCP aggiornato: ${body.title ?? scheduleId}`);
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    }
+  }
+
+  async function onDeleteHaccpSchedule(scheduleId: string) {
+    if (!siteId) return;
+    try {
+      const res = await apiFetch(`/haccp/schedules/${scheduleId}/`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        setNotice(errorWithDetail("error.siteDelete", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice("Task HACCP eliminato.");
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteDelete"));
+    }
+  }
+
   async function onApplyInventorySnapshot(e: FormEvent) {
     e.preventDefault();
     if (!siteId) return;
@@ -1433,6 +2267,7 @@ function App() {
         return;
       }
       setNotice(`Inventaire applique. Ajustements: ${Number(body.applied_count ?? 0)}.`);
+      setLastInventoryApplied(Array.isArray(body.applied) ? (body.applied as Array<Record<string, unknown>>) : []);
       await loadStockSummary();
       await loadInventoryMovements();
     } catch {
@@ -1444,9 +2279,12 @@ function App() {
 
   function onSubmitMenuEntry(e: FormEvent) {
     e.preventDefault();
-    const title = entryTitle.trim();
     const qtyValue = Number.parseFloat(entryExpectedQty);
-    if (!editingSpace || !title) {
+    if (!editingSpace) {
+      setNotice(t("validation.entryTitleRequired"));
+      return;
+    }
+    if (entryKind === "product" && !entryTitle.trim()) {
       setNotice(t("validation.entryTitleRequired"));
       return;
     }
@@ -1458,33 +2296,76 @@ function App() {
       setNotice(t("validation.weeklyNeedsDay"));
       return;
     }
-    const matchedRecipe = recipeTitleSuggestions.find(
-      (item) => item.title.trim().toLowerCase() === title.toLowerCase()
-    );
-    const inferredCategory = String(matchedRecipe?.category ?? "").trim();
-    const nextEntry: MenuEntry = {
-      id: editingEntryId ?? crypto.randomUUID(),
-      title,
-      item_kind: entryKind,
-      fiche_product_id: entryKind === "recipe" ? entryFicheProductId ?? null : null,
-      expected_qty: qtyValue.toFixed(3),
-      section: entrySection.trim(),
-      recipe_category: entryKind === "recipe" ? (inferredCategory || entrySection.trim()) : "",
-      valid_from: entryValidFrom,
-      valid_to: entryValidTo,
-      schedule_mode: entryScheduleMode,
-      weekdays: [...entryWeekdays].sort((a, b) => a - b),
-    };
+    const selectedSet = new Set(selectedRecipeKeys);
+    const selectedRecipes =
+      entryKind === "recipe"
+        ? recipeTitleSuggestions
+            .filter((item) => selectedSet.has(recipeSuggestionKey(item)))
+            .filter((item) => String(item.title || "").trim().length > 0)
+        : [];
+
+    if (entryKind === "recipe" && selectedRecipes.length === 0 && !entryTitle.trim()) {
+      setNotice(t("validation.entryTitleRequired"));
+      return;
+    }
+
+    const fallbackTitle = entryTitle.trim();
+    const selectedOrFallback =
+      entryKind === "recipe" && selectedRecipes.length === 0
+        ? [
+            {
+              fiche_product_id: entryFicheProductId ?? "",
+              title: fallbackTitle,
+              portions: null,
+              category: entrySection.trim(),
+            } as RecipeTitleSuggestion,
+          ]
+        : selectedRecipes;
+
+    const entriesToApply: MenuEntry[] =
+      entryKind === "recipe"
+        ? selectedOrFallback.map((item) => {
+            const inferredCategory = String(item.category ?? "").trim();
+            return {
+              id: editingEntryId && selectedOrFallback.length === 1 ? editingEntryId : crypto.randomUUID(),
+              title: String(item.title || "").trim(),
+              item_kind: "recipe",
+              fiche_product_id: String(item.fiche_product_id || "").trim() || null,
+              expected_qty: qtyValue.toFixed(3),
+              section: entrySection.trim(),
+              recipe_category: inferredCategory || entrySection.trim(),
+              valid_from: entryValidFrom,
+              valid_to: entryValidTo,
+              schedule_mode: entryScheduleMode,
+              weekdays: [...entryWeekdays].sort((a, b) => a - b),
+            };
+          })
+        : [
+            {
+              id: editingEntryId ?? crypto.randomUUID(),
+              title: fallbackTitle,
+              item_kind: "product",
+              fiche_product_id: null,
+              expected_qty: qtyValue.toFixed(3),
+              section: entrySection.trim(),
+              recipe_category: "",
+              valid_from: entryValidFrom,
+              valid_to: entryValidTo,
+              schedule_mode: entryScheduleMode,
+              weekdays: [...entryWeekdays].sort((a, b) => a - b),
+            },
+          ];
+
     setMenuSpaces((prev) => {
       const next = prev.map((space) => {
         if (space.id !== editingSpace.id) return space;
-        if (editingEntryId) {
+        if (editingEntryId && entriesToApply.length === 1) {
           return {
             ...space,
-            entries: space.entries.map((entry) => (entry.id === editingEntryId ? nextEntry : entry)),
+            entries: space.entries.map((entry) => (entry.id === editingEntryId ? entriesToApply[0] : entry)),
           };
         }
-        return { ...space, entries: [...space.entries, nextEntry] };
+        return { ...space, entries: [...space.entries, ...entriesToApply] };
       });
       void syncServiceMenuEntries(next, false);
       return next;
@@ -1499,6 +2380,8 @@ function App() {
     setEntryValidTo("");
     setEntryScheduleMode(editingSpace.schedule_mode ?? inferScheduleModeFromSpaceId(editingSpace.id));
     setEntryWeekdays([]);
+    setRecipePickerSearch("");
+    setSelectedRecipeKeys([]);
     setNotice(editingEntryId ? t("notice.entryUpdated") : t("notice.entryAdded"));
   }
 
@@ -1536,12 +2419,40 @@ function App() {
         }))
       );
 
+    const dedupedMap = new Map<string, (typeof entries)[number]>();
+    entries.forEach((item) => {
+      const metadata =
+        item.metadata && typeof item.metadata === "object" && !Array.isArray(item.metadata)
+          ? (item.metadata as Record<string, unknown>)
+          : {};
+      const scheduleMode = String(metadata.schedule_mode ?? "").trim().toLowerCase();
+      const validFrom = String(metadata.valid_from ?? "").trim();
+      const validTo = String(metadata.valid_to ?? "").trim();
+      const weekdays = Array.isArray(metadata.weekdays)
+        ? [...new Set(metadata.weekdays.map((value) => Number(value)).filter((value) => Number.isInteger(value)))].sort(
+            (a, b) => a - b
+          )
+        : [];
+      const signature = [
+        String(item.space_key || "").trim().toLowerCase(),
+        String(item.section || "").trim().toLowerCase(),
+        String(item.title || "").trim().toLowerCase(),
+        String(item.fiche_product_id || "").trim().toLowerCase(),
+        scheduleMode,
+        validFrom,
+        validTo,
+        weekdays.join(","),
+      ].join("|");
+      dedupedMap.set(signature, item);
+    });
+    const entriesPayload = Array.from(dedupedMap.values());
+
     const res = await apiFetch("/servizio/menu-entries/sync", {
       method: "POST",
       body: JSON.stringify({
         site_id: siteId,
         service_date: serviceDate,
-        entries,
+        entries: entriesPayload,
       }),
     });
     const body = await res.json();
@@ -1612,28 +2523,8 @@ function App() {
       });
       setRecipeDerivedSections(Array.from(derivedSections).sort((a, b) => a.localeCompare(b)));
 
-      const rowSpaces = new Set<string>();
-      const rowSections = new Set<string>();
-      recipeRows.forEach((row) => {
-        const rowSpace = String(row.space ?? "").trim();
-        if (rowSpace) {
-          rowSpaces.add(rowSpace);
-        }
-        const baseSection = String(row.section ?? row.recipe_category ?? "").trim();
-        if (baseSection) {
-          rowSections.add(baseSection);
-        }
-        const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
-        ingredients.forEach((raw) => {
-          const ing = raw as Record<string, unknown>;
-          const srcCategory = String(ing.source_recipe_category ?? "").trim();
-          if (srcCategory) {
-            rowSections.add(srcCategory);
-          }
-        });
-      });
-      const allowedSpaces = new Set(selectedComandaSpaces.filter((space) => rowSpaces.has(space)));
-      const allowedSections = new Set(selectedComandaSections.filter((section) => rowSections.has(section)));
+      const selectedSpacesSet = new Set(selectedComandaSpaces);
+      const selectedSectionsSet = new Set(selectedComandaSections);
       const filteredRecipeRows = recipeRows.filter((row) => {
         const rowSpace = String(row.space ?? "");
         const rowSection = String(row.section ?? row.recipe_category ?? "").trim();
@@ -1645,12 +2536,12 @@ function App() {
           const srcCategory = String(ing.source_recipe_category ?? "").trim();
           if (srcCategory) ingredientSections.add(srcCategory);
         });
-        const passSpace = allowedSpaces.size === 0 || allowedSpaces.has(rowSpace);
+        const passSpace = selectedComandaSpaces.length === 0 || selectedSpacesSet.has(rowSpace);
         const passSection =
-          allowedSections.size === 0 ||
+          selectedComandaSections.length === 0 ||
           (ingredientSections.size === 0
-            ? allowedSections.has(t("label.noSection"))
-            : Array.from(ingredientSections).some((section) => allowedSections.has(section)));
+            ? selectedSectionsSet.has(t("label.noSection"))
+            : Array.from(ingredientSections).some((section) => selectedSectionsSet.has(section)));
         return passSpace && passSection;
       });
 
@@ -1769,12 +2660,33 @@ function App() {
   }
 
   async function onGenerateChecklist() {
-    const loaded = await loadServiceMenuEntries(siteId, comandaDateFrom);
+    if (!siteId) {
+      setNotice(t("validation.selectSiteBeforeChecklist"));
+      return;
+    }
+    const loaded = await loadServiceMenuEntries(siteId, comandaDateFrom, false, false);
     if (!loaded) {
       setNotice(t("error.menuReloadBeforeChecklist"));
       return;
     }
     await loadIngredientsChecklist(ingredientsView);
+  }
+
+  function resetComandeState() {
+    const today = getTodayIsoDate();
+    setComandaDateFrom(today);
+    setComandaDateTo(today);
+    setSelectedComandaSpaces([]);
+    setSelectedComandaSections([]);
+    setIngredientsRows([]);
+    setIngredientWarnings([]);
+    setRecipeDerivedSections([]);
+    setSupplierSearch("");
+    setSectorSearch("");
+    setRecipeSearch("");
+    setIngredientsView("supplier");
+    setQuantityMode("with_qty");
+    setIsChecklistLoading(false);
   }
 
   const vociCartaTotali = useMemo(
@@ -1798,6 +2710,15 @@ function App() {
     [documents, selectedDocId]
   );
   const originalDocumentUrl = useMemo(() => getDocumentFileUrl(selectedDocument), [selectedDocument]);
+  const selectedHaccpQueueItem = useMemo(
+    () => haccpOcrQueue.find((item) => item.document_id === selectedHaccpDocumentId) ?? haccpOcrQueue[0] ?? null,
+    [haccpOcrQueue, selectedHaccpDocumentId]
+  );
+  const selectedHaccpDocument = useMemo(
+    () => documents.find((doc) => doc.id === selectedHaccpQueueItem?.document_id) ?? null,
+    [documents, selectedHaccpQueueItem]
+  );
+  const selectedHaccpDocumentUrl = useMemo(() => getDocumentFileUrl(selectedHaccpDocument), [selectedHaccpDocument]);
   const archivedDeliveryNotes = useMemo(
     () => documents.filter((doc) => doc.document_type === "goods_receipt"),
     [documents]
@@ -1807,6 +2728,58 @@ function App() {
     [documents]
   );
   const previewDocumentUrl = originalDocumentBlobUrl;
+  const haccpAnomalyRows = useMemo(() => {
+    const rows: Array<{ id: string; happened_at: string; source: string; category: string; detail: string; severity: string }> = [];
+    haccpOcrQueue
+      .filter((item) => item.validation_status === "rejected")
+      .forEach((item) => {
+        rows.push({
+          id: `ocr-${item.document_id}`,
+          happened_at: String(item.updated_at || item.created_at || ""),
+          source: "Convalida OCR",
+          category: "Documento respinto",
+          detail: `${item.filename} richiede revisione manuale.`,
+          severity: "high",
+        });
+      });
+
+    (haccpReconciliationOverview?.results ?? [])
+      .filter((item) => item.reconcile_status !== "reconciled" || item.alerts.length > 0)
+      .forEach((item) => {
+        rows.push({
+          id: `reco-${item.event_id}`,
+          happened_at: String(item.happened_at || ""),
+          source: "Lifecycle / riconciliazione",
+          category: item.reconcile_status,
+          detail: item.alerts.join(" ") || `${item.product_label}: collegamento incompleto tra Traccia, bolle o fatture.`,
+          severity: item.reconcile_status === "missing" ? "high" : "medium",
+        });
+      });
+
+    const now = Date.now();
+    haccpSchedules
+      .filter((item) => item.status === "planned")
+      .forEach((item) => {
+        const startsAt = new Date(item.starts_at).getTime();
+        if (Number.isNaN(startsAt) || startsAt > now) return;
+        const category =
+          item.task_type === "temperature_register"
+            ? "Temperatura scaduta"
+            : item.task_type === "cleaning"
+              ? "Pulizia non validata"
+              : "Etichetta non eseguita";
+        rows.push({
+          id: `schedule-${item.id}`,
+          happened_at: String(item.starts_at || ""),
+          source: "Programmazione HACCP",
+          category,
+          detail: `${item.title} non risulta completato.`,
+          severity: item.task_type === "temperature_register" ? "high" : "medium",
+        });
+      });
+
+    return rows.sort((a, b) => String(b.happened_at).localeCompare(String(a.happened_at)));
+  }, [haccpOcrQueue, haccpReconciliationOverview, haccpSchedules]);
   const supplierOrderGroups = useMemo(() => {
     if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
@@ -1889,6 +2862,18 @@ function App() {
       });
     });
   }, [recipeChecklistGroups, recipeSearch]);
+
+  const filteredStockRows = useMemo(() => {
+    const q = stockSearch.trim().toLowerCase();
+    if (!q) return stockSummaryRows;
+    return stockSummaryRows.filter((row) => {
+      return (
+        String(row.product_label ?? "").toLowerCase().includes(q) ||
+        String(row.product_key ?? "").toLowerCase().includes(q) ||
+        String(row.qty_unit ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [stockSummaryRows, stockSearch]);
 
   function renderSourceBadge(row: Record<string, unknown>) {
     const sourceType = String(row.source_type ?? "direct");
@@ -2098,7 +3083,7 @@ function App() {
         </aside>
 
         <main className="content">
-          {nav !== "ricette" && nav !== "comande" && nav !== "acquisti" && nav !== "inventario" && nav !== "inventari" ? (
+          {nav !== "ricette" && nav !== "comande" && nav !== "acquisti" && nav !== "inventario" && nav !== "inventari" && nav !== "haccp" ? (
             <section className="panel page-head">
               <h2>{t(NAV_ITEMS.find((item) => item.key === nav)?.labelKey ?? "")}</h2>
               <p>{t("app.pageHead", { site: activeSite?.name ?? t("app.siteNotSelected"), api: getApiBase() })}</p>
@@ -2764,31 +3749,50 @@ function App() {
                   {isInventoryLoading ? t("purchases.processing") : t("suppliers.refreshList")}
                 </button>
               </div>
-              {stockSummaryRows.length === 0 ? (
+              <div className="sheet-toolbar">
+                <input
+                  value={stockSearch}
+                  onChange={(e) => setStockSearch(e.target.value)}
+                  placeholder="Rechercher par code fournisseur, produit, UM..."
+                />
+              </div>
+              {filteredStockRows.length === 0 ? (
                 <p className="muted">Aucun resultat de stock pour ce site.</p>
               ) : (
-                <table>
+                <div className="sheet-wrap">
+                <table className="sheet-table">
                   <thead>
                     <tr>
                       <th>Code fournisseur / Produit</th>
                       <th>{t("table.unit")}</th>
-                      <th>Entrees</th>
-                      <th>Sorties</th>
+                      <th>Entrees BL/Facture</th>
+                      <th>Entrees fallback facture</th>
+                      <th>Sorties inventaire</th>
+                      <th>Sorties autres</th>
+                      <th>Total entrees</th>
+                      <th>Total sorties</th>
                       <th>Stock actuel</th>
+                      <th>Dernier mouvement</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {stockSummaryRows.map((row) => (
+                    {filteredStockRows.map((row) => (
                       <tr key={`${row.product_key}-${row.qty_unit}`}>
                         <td>{row.product_label}</td>
                         <td>{row.qty_unit}</td>
+                        <td>{row.in_from_docs ?? "0.000"}</td>
+                        <td>{row.in_from_invoice_fallback ?? "0.000"}</td>
+                        <td>{row.out_from_inventory ?? "0.000"}</td>
+                        <td>{row.out_other ?? "0.000"}</td>
                         <td>{row.total_in}</td>
                         <td>{row.total_out}</td>
                         <td>{row.current_stock}</td>
+                        <td>{String(row.last_movement_at ?? "-").replace("T", " ").slice(0, 19)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </section>
           )}
@@ -2810,6 +3814,34 @@ function App() {
                     {isApplyingInventory ? t("purchases.processing") : "Deposer inventaire"}
                   </button>
                 </form>
+                {lastInventoryApplied.length > 0 ? (
+                  <div className="sheet-wrap">
+                    <table className="sheet-table">
+                      <thead>
+                        <tr>
+                          <th>Code / Produit</th>
+                          <th>UM</th>
+                          <th>Stock precedent</th>
+                          <th>Inventaire depose</th>
+                          <th>Delta</th>
+                          <th>Mouvement</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {lastInventoryApplied.map((row, idx) => (
+                          <tr key={`inv-applied-${idx}`}>
+                            <td>{String(row.product_key ?? "-")}</td>
+                            <td>{String(row.qty_unit ?? "-")}</td>
+                            <td>{String(row.current_qty ?? "-")}</td>
+                            <td>{String(row.target_qty ?? "-")}</td>
+                            <td>{String(row.delta ?? "-")}</td>
+                            <td>{String(row.movement_type ?? "-")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
               </section>
               <section className="panel">
                 <h2>Derniers mouvements inventaire</h2>
@@ -2847,6 +3879,286 @@ function App() {
                     </tbody>
                   </table>
                 )}
+              </section>
+            </div>
+          )}
+
+          {nav === "haccp" && (
+            <HaccpWorkspace
+              siteId={siteId}
+              isHaccpLoading={isHaccpLoading}
+              isHaccpSaving={isHaccpSaving}
+              haccpView={haccpView}
+              setHaccpView={setHaccpView}
+              haccpOcrQueue={haccpOcrQueue}
+              haccpLifecycleEvents={haccpLifecycleEvents}
+              haccpSchedules={haccpSchedules}
+              haccpReconciliationOverview={haccpReconciliationOverview}
+              selectedHaccpQueueItem={selectedHaccpQueueItem}
+              selectedHaccpDocumentUrl={selectedHaccpDocumentUrl}
+              selectedHaccpDocumentId={selectedHaccpDocumentId}
+              setSelectedHaccpDocumentId={setSelectedHaccpDocumentId}
+              haccpAnomalyRows={haccpAnomalyRows}
+              haccpSectors={haccpSectors}
+              haccpColdPoints={filteredHaccpColdPoints}
+              newHaccpTitle={newHaccpTitle}
+              setNewHaccpTitle={setNewHaccpTitle}
+              newHaccpArea={newHaccpArea}
+              setNewHaccpArea={setNewHaccpArea}
+              selectedHaccpSectorId={selectedHaccpSectorId}
+              setSelectedHaccpSectorId={setSelectedHaccpSectorId}
+              selectedHaccpColdPointId={selectedHaccpColdPointId}
+              setSelectedHaccpColdPointId={setSelectedHaccpColdPointId}
+              newHaccpSectorName={newHaccpSectorName}
+              setNewHaccpSectorName={setNewHaccpSectorName}
+              newHaccpColdPointName={newHaccpColdPointName}
+              setNewHaccpColdPointName={setNewHaccpColdPointName}
+              newHaccpColdPointEquipmentType={newHaccpColdPointEquipmentType}
+              setNewHaccpColdPointEquipmentType={setNewHaccpColdPointEquipmentType}
+              newHaccpStartsAt={newHaccpStartsAt}
+              setNewHaccpStartsAt={setNewHaccpStartsAt}
+              newHaccpEndsAt={newHaccpEndsAt}
+              setNewHaccpEndsAt={setNewHaccpEndsAt}
+              loadHaccpData={loadHaccpData}
+              onValidateHaccpOcr={onValidateHaccpOcr}
+              onSetHaccpScheduleStatus={onSetHaccpScheduleStatus}
+              onDeleteHaccpSchedule={onDeleteHaccpSchedule}
+              onCreateHaccpSector={onCreateHaccpSector}
+              onCreateHaccpColdPoint={onCreateHaccpColdPoint}
+              onCreateHaccpSchedule={onCreateHaccpSchedule}
+              t={t}
+            />
+          )}
+
+          {false && nav === "haccp" && (
+            <div className="grid">
+              <section className="panel">
+                <h2>{t("haccp.tracciaDataTitle")}</h2>
+                <p className="muted">{t("haccp.tracciaDataDesc")}</p>
+                <div className="entry-actions no-print">
+                  <button type="button" onClick={loadHaccpData} disabled={!siteId || isHaccpLoading}>
+                    {isHaccpLoading ? t("action.loading") : t("suppliers.refreshList")}
+                  </button>
+                </div>
+                {!siteId ? (
+                  <p className="muted">{t("validation.selectSite")}</p>
+                ) : haccpOcrQueue.length === 0 ? (
+                  <p className="muted">Nessuna estrazione OCR trovata per il sito.</p>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Documento</th>
+                        <th>Tipo</th>
+                        <th>Stato estrazione</th>
+                        <th>Validazione</th>
+                        <th>Confidenza</th>
+                        <th>Azione</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {haccpOcrQueue.slice(0, 20).map((row) => (
+                        <tr key={row.document_id}>
+                          <td>{row.filename}</td>
+                          <td>{row.document_type}</td>
+                          <td>{String(row.extraction?.status || row.document_status || "-")}</td>
+                          <td>{row.validation_status}</td>
+                          <td>{row.extraction?.confidence || "-"}</td>
+                          <td>
+                            <div className="entry-actions">
+                              <button type="button" onClick={() => onValidateHaccpOcr(row.document_id, "validated")}>
+                                Conferma
+                              </button>
+                              <button type="button" className="warning-btn" onClick={() => onValidateHaccpOcr(row.document_id, "rejected")}>
+                                Rifiuta
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </section>
+              <section className="panel">
+                <h2>{t("haccp.lifecycleTitle")}</h2>
+                <p className="muted">{t("haccp.lifecycleDesc")}</p>
+                {haccpLifecycleEvents.length === 0 ? (
+                  <p className="muted">Nessun evento lifecycle disponibile.</p>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Data</th>
+                        <th>Evento</th>
+                        <th>Prodotto</th>
+                        <th>Qta</th>
+                        <th>Lotto</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {haccpLifecycleEvents.slice(0, 30).map((event) => (
+                        <tr key={event.event_id}>
+                          <td>{String(event.happened_at).replace("T", " ").slice(0, 19)}</td>
+                          <td>{event.event_type}</td>
+                          <td>{event.product_label}</td>
+                          <td>{event.qty_value} {event.qty_unit}</td>
+                          <td>{event.lot?.internal_lot_code || event.lot?.supplier_lot_code || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </section>
+              <section className="panel">
+                <h2>Traccia vs CookOps</h2>
+                <p className="muted">Confronto tra lifecycle Traccia, programmazione etichette e documenti locali di acquisto.</p>
+                {!siteId ? (
+                  <p className="muted">{t("validation.selectSite")}</p>
+                ) : !haccpReconciliationOverview ? (
+                  <p className="muted">Overview di riconciliazione non disponibile.</p>
+                ) : (
+                  <>
+                    <div className="grid-3">
+                      <article className="panel metric-card">
+                        <strong>{haccpReconciliationOverview!.summary.reconciled_events}</strong>
+                        <span>Eventi riconciliati</span>
+                      </article>
+                      <article className="panel metric-card">
+                        <strong>{haccpReconciliationOverview!.summary.documents_found_events}</strong>
+                        <span>Documenti trovati da verificare</span>
+                      </article>
+                      <article className="panel metric-card">
+                        <strong>{haccpReconciliationOverview!.summary.missing_events}</strong>
+                        <span>Eventi senza documenti</span>
+                      </article>
+                      <article className="panel metric-card">
+                        <strong>{haccpReconciliationOverview!.summary.goods_receipt_only_events}</strong>
+                        <span>Solo bolle</span>
+                      </article>
+                      <article className="panel metric-card">
+                        <strong>{haccpReconciliationOverview!.summary.invoice_only_events}</strong>
+                        <span>Solo fatture</span>
+                      </article>
+                      <article className="panel metric-card">
+                        <strong>{haccpReconciliationOverview!.label_schedule_summary.planned}</strong>
+                        <span>Stampe etichette pianificate</span>
+                      </article>
+                    </div>
+                    {haccpReconciliationOverview!.results.length === 0 ? (
+                      <p className="muted">Nessun evento lifecycle da confrontare.</p>
+                    ) : (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Data</th>
+                            <th>Prodotto</th>
+                            <th>Lotto</th>
+                            <th>BL</th>
+                            <th>Fatture</th>
+                            <th>Match</th>
+                            <th>Stato</th>
+                            <th>Alert</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {haccpReconciliationOverview!.results.slice(0, 20).map((row) => (
+                            <tr key={row.event_id}>
+                              <td>{String(row.happened_at).replace("T", " ").slice(0, 19)}</td>
+                              <td>
+                                <strong>{row.product_label}</strong>
+                                <br />
+                                <span className="muted">{row.qty_value} {row.qty_unit}{row.supplier_code ? ` · ${row.supplier_code}` : ""}</span>
+                              </td>
+                              <td>{row.lot?.internal_lot_code || row.lot?.supplier_lot_code || "-"}</td>
+                              <td>{row.goods_receipts.map((item) => item.delivery_note_number).join(", ") || "-"}</td>
+                              <td>{row.invoices.map((item) => item.invoice_number).join(", ") || "-"}</td>
+                              <td>{row.matches.length}</td>
+                              <td>
+                                <span className={`status-chip status-chip--${row.reconcile_status}`}>{row.reconcile_status}</span>
+                              </td>
+                              <td>{row.alerts.join(" ") || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
+              </section>
+              <section className="panel">
+                <h2>{t("haccp.labelPrintTitle")}</h2>
+                <p className="muted">{t("haccp.labelPrintDesc")}</p>
+                <ul className="clean-list">
+                  {haccpSchedules
+                    .filter((item) => item.task_type === "label_print")
+                    .slice(0, 8)
+                    .map((item) => (
+                      <li key={item.id}>
+                        {item.title} - {String(item.starts_at).replace("T", " ").slice(0, 16)} [{item.status}]
+                        <span className="entry-actions">
+                          <button type="button" onClick={() => onSetHaccpScheduleStatus(item.id, "done")}>Completa</button>
+                          <button type="button" className="danger-btn" onClick={() => onDeleteHaccpSchedule(item.id)}>Elimina</button>
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              </section>
+              <section className="panel">
+                <h2>{t("haccp.temperatureTitle")}</h2>
+                <p className="muted">{t("haccp.temperatureDesc")}</p>
+                <ul className="clean-list">
+                  {haccpSchedules
+                    .filter((item) => item.task_type === "temperature_register")
+                    .slice(0, 8)
+                    .map((item) => (
+                      <li key={item.id}>
+                        {item.title} - {String(item.starts_at).replace("T", " ").slice(0, 16)} [{item.status}]
+                        <span className="entry-actions">
+                          <button type="button" onClick={() => onSetHaccpScheduleStatus(item.id, "done")}>Completa</button>
+                          <button type="button" className="danger-btn" onClick={() => onDeleteHaccpSchedule(item.id)}>Elimina</button>
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              </section>
+              <section className="panel">
+                <h2>{t("haccp.cleaningTitle")}</h2>
+                <p className="muted">{t("haccp.cleaningDesc")}</p>
+                <ul className="clean-list">
+                  {haccpSchedules
+                    .filter((item) => item.task_type === "cleaning")
+                    .slice(0, 8)
+                    .map((item) => (
+                      <li key={item.id}>
+                        {item.title} - {String(item.starts_at).replace("T", " ").slice(0, 16)} [{item.status}]
+                        <span className="entry-actions">
+                          <button type="button" onClick={() => onSetHaccpScheduleStatus(item.id, "done")}>Completa</button>
+                          <button type="button" className="danger-btn" onClick={() => onDeleteHaccpSchedule(item.id)}>Elimina</button>
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              </section>
+              <section className="panel">
+                <h2>{t("haccp.nextStepsTitle")}</h2>
+                <form onSubmit={onCreateHaccpSchedule}>
+                  <label>Tipo task</label>
+                  <select value={newHaccpTaskType} onChange={(e) => setNewHaccpTaskType(e.target.value as "label_print" | "temperature_register" | "cleaning")}>
+                    <option value="label_print">Stampa etichette</option>
+                    <option value="temperature_register">Registro temperature</option>
+                    <option value="cleaning">Pulizie</option>
+                  </select>
+                  <label>Titolo</label>
+                  <input value={newHaccpTitle} onChange={(e) => setNewHaccpTitle(e.target.value)} placeholder="Es. Giro frigo mattino" />
+                  <label>Area</label>
+                  <input value={newHaccpArea} onChange={(e) => setNewHaccpArea(e.target.value)} placeholder="Es. Cucina fredda" />
+                  <label>Inizio</label>
+                  <input type="datetime-local" value={newHaccpStartsAt} onChange={(e) => setNewHaccpStartsAt(e.target.value)} />
+                  <label>Fine</label>
+                  <input type="datetime-local" value={newHaccpEndsAt} onChange={(e) => setNewHaccpEndsAt(e.target.value)} />
+                  <button type="submit" disabled={isHaccpSaving}>{isHaccpSaving ? t("action.loading") : "Crea task HACCP"}</button>
+                </form>
               </section>
             </div>
           )}
@@ -3018,36 +4330,88 @@ function App() {
 
       {isMenuEditorOpen && editingSpace ? (
         <div className="modal-backdrop" onClick={() => setIsMenuEditorOpen(false)}>
-          <div className="modal-card modal-card--narrow" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-card modal-card--wide" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="modal-close-btn" onClick={() => setIsMenuEditorOpen(false)}>
               {t("action.close")}
             </button>
             <h2>{t("menuEditor.editSpace", { space: editingSpace.label })}</h2>
             <form onSubmit={onSubmitMenuEntry}>
-              <label>{t("menuEditor.title")}</label>
-              <input list="menu-entry-suggestions" value={entryTitle} onChange={(e) => setEntryTitle(e.target.value)} placeholder={t("menuEditor.titlePlaceholder")} />
-              <datalist id="menu-entry-suggestions">
-                {menuSuggestions.map((suggestion) => (
-                  <option key={suggestion.key} value={suggestion.value} />
-                ))}
-              </datalist>
               <label>{t("menuEditor.entryType")}</label>
               <select value={entryKind} onChange={(e) => setEntryKind(e.target.value as "recipe" | "product")}>
                 <option value="recipe">{t("menuEditor.entryTypeRecipe")}</option>
                 <option value="product">{t("menuEditor.entryTypeProduct")}</option>
               </select>
               {entryKind === "recipe" ? (
-                <p className="muted">
-                  {t("menuEditor.linkedRecipe")}: {entryFicheProductId ?? t("menuEditor.notMapped")}
-                  {" | "}
-                  {t("menuEditor.fichePortions")}:{" "}
-                  {(
-                    recipeTitleSuggestions.find(
-                      (item) => item.title.trim().toLowerCase() === entryTitle.trim().toLowerCase()
-                    )?.portions ?? "-"
-                  ).toString()}
-                </p>
-              ) : null}
+                <div className="recipe-picker">
+                  <label>{t("menuEditor.title")}</label>
+                  <input
+                    value={recipePickerSearch}
+                    onChange={(e) => setRecipePickerSearch(e.target.value)}
+                    placeholder={t("menuEditor.titlePlaceholder")}
+                  />
+                  <p className="muted">Snapshot selezionati: {selectedRecipeKeys.length}</p>
+                  <div className="sheet-wrap recipe-picker-table-wrap">
+                    <table className="sheet-table recipe-picker-table">
+                      <thead>
+                        <tr>
+                          <th>{t("action.select")}</th>
+                          <th>{t("menuEditor.title")}</th>
+                          <th>{t("menuEditor.section")}</th>
+                          <th>{t("menuEditor.fichePortions")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recipeTitleSuggestions.map((item) => {
+                          const key = recipeSuggestionKey(item);
+                          const checked = selectedRecipeKeys.includes(key);
+                          const disabled = !String(item.fiche_product_id || "").trim();
+                          return (
+                            <tr key={key}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={disabled}
+                                  onChange={(e) => {
+                                    const currentKey = recipeSuggestionKey(item);
+                                    setSelectedRecipeKeys((prev) => {
+                                      if (editingEntryId) {
+                                        return e.target.checked ? [currentKey] : [];
+                                      }
+                                      if (e.target.checked) {
+                                        return [...new Set([...prev, currentKey])];
+                                      }
+                                      return prev.filter((x) => x !== currentKey);
+                                    });
+                                  }}
+                                />
+                              </td>
+                              <td>{item.title}</td>
+                              <td>{String(item.category ?? "-") || "-"}</td>
+                              <td>{String(item.portions ?? "-")}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <label>{t("menuEditor.title")}</label>
+                  <input
+                    list="menu-entry-suggestions"
+                    value={entryTitle}
+                    onChange={(e) => setEntryTitle(e.target.value)}
+                    placeholder={t("menuEditor.titlePlaceholder")}
+                  />
+                  <datalist id="menu-entry-suggestions">
+                    {menuSuggestions.map((suggestion) => (
+                      <option key={suggestion.key} value={suggestion.value} />
+                    ))}
+                  </datalist>
+                </>
+              )}
               <label>{t("menuEditor.targetPortions")}</label>
               <input
                 type="number"
