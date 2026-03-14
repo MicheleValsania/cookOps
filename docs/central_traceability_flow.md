@@ -1,0 +1,46 @@
+# Central Traceability Flow
+
+## Target role of CookOps
+
+CookOps is the central backoffice for traceability governance.
+
+It is responsible for:
+- Drive photo import
+- OCR extraction and validation
+- manual upload of delivery notes and invoices
+- document reconciliation
+- central lot creation
+- HACCP planning
+- label profile management
+- structure governance for sites, sectors and cold points
+- distribution of central lots to units
+
+## Target role of Traccia
+
+Traccia remains the local operational app for each point of sale.
+
+It is responsible for:
+- continuous camera capture
+- local temperature execution
+- local label execution
+- local cleaning execution
+- use of precompiled label profiles managed in CookOps
+- insertion or confirmation of source lot in label workflows
+
+## Current strategic choices
+
+- All incoming traceability data enters as central.
+- Invoices and delivery notes are uploaded manually in CookOps for now.
+- Data extraction from immediate single-photo camera workflows is not a target flow.
+- The standalone lifecycle section in Traccia is deprecated.
+- Lifecycle logic stays operationally available inside the label workflow.
+
+## Target central flow
+
+1. Continuous camera captures images.
+2. Images are imported into CookOps from Drive.
+3. OCR extraction runs centrally.
+4. A central operator validates and corrects extracted data.
+5. Delivery notes and invoices are attached manually.
+6. CookOps creates the central lot.
+7. Local units execute operations through Traccia.
