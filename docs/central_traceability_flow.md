@@ -38,9 +38,10 @@ It is responsible for:
 ## Target central flow
 
 1. Continuous camera captures images.
-2. Images are imported into CookOps from Drive.
-3. OCR extraction runs centrally.
-4. A central operator validates and corrects extracted data.
-5. Delivery notes and invoices are attached manually.
-6. CookOps creates the central lot.
-7. Local units execute operations through Traccia.
+2. Traccia uploads the images to Drive and stores only a local asset reference.
+3. Images are imported into CookOps from Drive.
+4. OCR extraction runs centrally.
+5. A central operator validates and corrects extracted data.
+6. Delivery notes and invoices are attached manually.
+7. CookOps creates the central lot.
+8. Local units execute operations through Traccia.
