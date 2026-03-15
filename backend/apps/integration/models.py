@@ -92,12 +92,14 @@ class RecipeIngredientLink(models.Model):
 class DocumentType(models.TextChoices):
     GOODS_RECEIPT = "goods_receipt", "goods_receipt"
     INVOICE = "invoice", "invoice"
+    LABEL_CAPTURE = "label_capture", "label_capture"
 
 
 class DocumentSource(models.TextChoices):
     UPLOAD = "upload", "upload"
     EMAIL = "email", "email"
     API = "api", "api"
+    DRIVE = "drive", "drive"
 
 
 class DocumentStatus(models.TextChoices):

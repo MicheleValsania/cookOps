@@ -112,6 +112,17 @@ class ClaudeExtractSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
 
 
+class TracciaAssetImportSerializer(serializers.Serializer):
+    site = serializers.UUIDField()
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=500, default=80)
+    asset_type = serializers.ChoiceField(
+        choices=("PHOTO_LABEL", "PHOTO_PRODUCT", "DELIVERY_NOTE", "INVOICE"),
+        required=False,
+        default="PHOTO_LABEL",
+    )
+    idempotency_key = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)
+
+
 class FicheSnapshotImportSerializer(serializers.Serializer):
     query = serializers.CharField(required=False, allow_blank=True, default="")
     limit = serializers.IntegerField(required=False, min_value=1, max_value=5000, default=500)
@@ -156,3 +167,49 @@ class HaccpScheduleSerializer(serializers.Serializer):
     recurrence_rule = serializers.JSONField(required=False)
     status = serializers.ChoiceField(choices=("planned", "done", "skipped", "cancelled"), required=False, default="planned")
     metadata = serializers.JSONField(required=False)
+
+
+class HaccpSectorSerializer(serializers.Serializer):
+    site = serializers.UUIDField(required=False)
+    name = serializers.CharField(max_length=120, required=False)
+    external_code = serializers.CharField(required=False, allow_blank=True, default="", max_length=64)
+    sort_order = serializers.IntegerField(required=False, min_value=0)
+    is_active = serializers.BooleanField(required=False)
+
+
+class HaccpColdPointSerializer(serializers.Serializer):
+    site = serializers.UUIDField(required=False)
+    sector = serializers.UUIDField(required=False, allow_null=True)
+    name = serializers.CharField(max_length=120, required=False)
+    external_code = serializers.CharField(required=False, allow_blank=True, default="", max_length=64)
+    equipment_type = serializers.ChoiceField(
+        choices=("FRIDGE", "FREEZER", "COLD_ROOM", "OTHER"),
+        required=False,
+        allow_blank=True,
+    )
+    sort_order = serializers.IntegerField(required=False, min_value=0)
+    min_temp_celsius = serializers.DecimalField(max_digits=6, decimal_places=2, required=False, allow_null=True)
+    max_temp_celsius = serializers.DecimalField(max_digits=6, decimal_places=2, required=False, allow_null=True)
+    is_active = serializers.BooleanField(required=False)
+
+
+class HaccpLabelProfileSerializer(serializers.Serializer):
+    site = serializers.UUIDField()
+    name = serializers.CharField(max_length=255)
+    category = serializers.CharField(required=False, allow_blank=True, default="", max_length=120)
+    template_type = serializers.ChoiceField(choices=("PREPARATION", "RAW_MATERIAL", "TRANSFORMATION"))
+    shelf_life_value = serializers.IntegerField(required=False, allow_null=True)
+    shelf_life_unit = serializers.ChoiceField(choices=("hours", "days", "months"), required=False, default="days")
+    packaging = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)
+    storage_hint = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)
+    allergens_text = serializers.CharField(required=False, allow_blank=True, default="")
+    is_active = serializers.BooleanField(required=False, default=True)
+
+
+class HaccpLabelSessionSerializer(serializers.Serializer):
+    site = serializers.UUIDField()
+    profile_id = serializers.UUIDField()
+    planned_schedule_id = serializers.UUIDField(required=False, allow_null=True)
+    source_lot_code = serializers.CharField(required=False, allow_blank=True, default="", max_length=128)
+    quantity = serializers.IntegerField(min_value=1)
+    status = serializers.ChoiceField(choices=("planned", "done", "cancelled"), required=False, default="planned")

@@ -5,6 +5,7 @@ import json
 from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 
+from django.core.files.base import ContentFile
 from django.db import IntegrityError
 from django.utils.dateparse import parse_date, parse_datetime
 
@@ -13,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.catalog.models import Supplier
+from apps.core.models import Site
 from apps.integration.api.v1.serializers import (
     ClaudeExtractSerializer,
     DocumentExtractionSerializer,
@@ -21,13 +23,15 @@ from apps.integration.api.v1.serializers import (
     FicheSnapshotEnvelopeImportSerializer,
     FicheSnapshotImportSerializer,
     IntegrationDocumentSerializer,
+    TracciaAssetImportSerializer,
 )
 from apps.integration.fiches_catalog import import_supplier_catalog_from_fiches
 from apps.integration.fiches_snapshots import import_recipe_snapshots, import_recipe_snapshots_from_v11_envelope
 from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
-from apps.integration.models import DocumentExtraction, IntegrationDocument
+from apps.integration.models import DocumentExtraction, DocumentSource, DocumentType, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
+from apps.integration.services.traccia_client import TracciaClient, TracciaClientError
 from apps.inventory.models import InventoryMovement, MovementType
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
 from apps.purchasing.models import GoodsReceipt, Invoice
@@ -115,6 +119,23 @@ def _normalize_unit(value):
         "pièces": "pc",
     }
     return mapping.get(normalized, None)
+
+
+def _document_type_from_traccia_asset(asset_type: str) -> str:
+    normalized = str(asset_type or "").strip().upper()
+    if normalized == "INVOICE":
+        return DocumentType.INVOICE
+    if normalized == "DELIVERY_NOTE":
+        return DocumentType.GOODS_RECEIPT
+    return DocumentType.LABEL_CAPTURE
+
+
+def _document_exists_for_drive_file(site: Site, drive_file_id: str) -> bool:
+    return IntegrationDocument.objects.filter(
+        site=site,
+        source=DocumentSource.DRIVE,
+        metadata__drive_file_id=drive_file_id,
+    ).exists()
 
 
 def _normalize_date_text(value):
@@ -388,6 +409,120 @@ class IntegrationDocumentViewSet(
     queryset = IntegrationDocument.objects.all()
     serializer_class = IntegrationDocumentSerializer
     parser_classes = (MultiPartParser, FormParser)
+
+
+class TracciaAssetImportView(APIView):
+    def post(self, request):
+        serializer = TracciaAssetImportSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+
+        site = get_object_or_404(Site, pk=serializer.validated_data["site"])
+        limit = serializer.validated_data["limit"]
+        asset_type = serializer.validated_data["asset_type"]
+        idempotency_key = (
+            serializer.validated_data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key", "")
+        )
+
+        if idempotency_key:
+            existing = find_completed_batch("traccia", "asset_import", idempotency_key)
+            if existing:
+                result = existing.result or {}
+                return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
+
+        batch = start_batch(
+            "traccia",
+            "asset_import",
+            idempotency_key,
+            {"site": str(site.id), "asset_type": asset_type, "limit": limit},
+        )
+
+        try:
+            client = TracciaClient()
+            _status_code, payload = client.request_json(
+                "GET",
+                "/api/v1/haccp/assets/",
+                params={"site": str(site.id), "asset_type": asset_type, "limit": limit},
+            )
+            rows = payload.get("results") if isinstance(payload, dict) else []
+            created = []
+            skipped_existing = 0
+            skipped_invalid = 0
+            errors = []
+
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    skipped_invalid += 1
+                    continue
+                drive_file_id = str(row.get("drive_file_id") or "").strip()
+                asset_id = str(row.get("id") or "").strip()
+                if not drive_file_id or not asset_id:
+                    skipped_invalid += 1
+                    continue
+                if _document_exists_for_drive_file(site, drive_file_id):
+                    skipped_existing += 1
+                    continue
+
+                try:
+                    _download_status, headers, binary = client.request_bytes(
+                        "GET",
+                        f"/api/v1/haccp/assets/{asset_id}/download/",
+                    )
+                    content_type = (headers.get("Content-Type") or row.get("mime_type") or "application/octet-stream").strip()
+                    filename = str(row.get("file_name") or f"{asset_id}.bin").strip() or f"{asset_id}.bin"
+                    metadata = {
+                        "traccia_asset_id": asset_id,
+                        "drive_file_id": drive_file_id,
+                        "drive_link": row.get("drive_link") or "",
+                        "traccia_asset_type": row.get("asset_type") or asset_type,
+                        "captured_at": row.get("captured_at"),
+                        "uploaded_at": row.get("uploaded_at"),
+                        "sha256": row.get("sha256") or "",
+                        "mime_type": row.get("mime_type") or content_type,
+                        "source_app": "traccia",
+                    }
+                    document = IntegrationDocument.objects.create(
+                        site=site,
+                        document_type=_document_type_from_traccia_asset(str(row.get("asset_type") or asset_type)),
+                        source=DocumentSource.DRIVE,
+                        filename=filename,
+                        content_type=content_type,
+                        file_size=len(binary),
+                        status="uploaded",
+                        metadata=metadata,
+                    )
+                    document.file.save(filename, ContentFile(binary), save=False)
+                    document.storage_path = document.file.name
+                    document.save()
+                    created.append(
+                        {
+                            "document_id": str(document.id),
+                            "asset_id": asset_id,
+                            "drive_file_id": drive_file_id,
+                            "filename": filename,
+                        }
+                    )
+                except TracciaClientError as exc:
+                    errors.append({"asset_id": asset_id, "detail": exc.payload})
+
+            result = {
+                "site": str(site.id),
+                "asset_type": asset_type,
+                "created_count": len(created),
+                "skipped_existing": skipped_existing,
+                "skipped_invalid": skipped_invalid,
+                "error_count": len(errors),
+                "created": created,
+                "errors": errors,
+            }
+            complete_batch(batch, status.HTTP_201_CREATED, result)
+            return Response(result, status=status.HTTP_201_CREATED)
+        except TracciaClientError as exc:
+            fail_batch(batch, exc.status_code, exc.payload)
+            return Response(exc.payload, status=exc.status_code)
+        except Exception as exc:
+            fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
+            raise
 
 
 class DocumentExtractionViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):

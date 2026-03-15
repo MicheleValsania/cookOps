@@ -2,13 +2,20 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from apps.integration.api.v1.haccp_views import (
+    HaccpColdPointDetailView,
     HaccpColdPointSyncView,
     HaccpColdPointListView,
+    HaccpLabelProfileDetailView,
+    HaccpLabelProfileListCreateView,
+    HaccpLabelSessionListCreateView,
     HaccpLifecycleEventListView,
     HaccpOcrQueueView,
     HaccpOcrValidateView,
+    HaccpSiteSyncView,
+    HaccpSectorDetailView,
     HaccpSectorListView,
     HaccpSectorSyncView,
+    HaccpTemperatureReadingListView,
     HaccpTracciaReconciliationOverviewView,
     HaccpScheduleDetailView,
     HaccpScheduleListCreateView,
@@ -22,6 +29,7 @@ from apps.integration.api.v1.views import (
     FicheSnapshotImportView,
     FicheRecipeTitleListView,
     IntegrationDocumentViewSet,
+    TracciaAssetImportView,
 )
 
 
@@ -48,6 +56,11 @@ urlpatterns = [
         "integration/fiches/recipe-titles/",
         FicheRecipeTitleListView.as_view(),
         name="integration-fiches-recipe-titles",
+    ),
+    path(
+        "integration/traccia-assets/import/",
+        TracciaAssetImportView.as_view(),
+        name="integration-traccia-asset-import",
     ),
     path(
         "integration/documents/<uuid:document_id>/extractions/",
@@ -85,6 +98,16 @@ urlpatterns = [
         name="haccp-traccia-sector-list",
     ),
     path(
+        "haccp/traccia/sectors/<uuid:sector_id>/",
+        HaccpSectorDetailView.as_view(),
+        name="haccp-traccia-sector-detail",
+    ),
+    path(
+        "haccp/traccia/sites/sync/",
+        HaccpSiteSyncView.as_view(),
+        name="haccp-traccia-site-sync",
+    ),
+    path(
         "haccp/traccia/sectors/sync/",
         HaccpSectorSyncView.as_view(),
         name="haccp-traccia-sector-sync",
@@ -95,9 +118,19 @@ urlpatterns = [
         name="haccp-traccia-cold-point-list",
     ),
     path(
+        "haccp/traccia/cold-points/<uuid:point_id>/",
+        HaccpColdPointDetailView.as_view(),
+        name="haccp-traccia-cold-point-detail",
+    ),
+    path(
         "haccp/traccia/cold-points/sync/",
         HaccpColdPointSyncView.as_view(),
         name="haccp-traccia-cold-point-sync",
+    ),
+    path(
+        "haccp/traccia/temperature-readings/",
+        HaccpTemperatureReadingListView.as_view(),
+        name="haccp-traccia-temperature-reading-list",
     ),
     path(
         "haccp/traccia/reconciliation-overview/",
@@ -113,6 +146,21 @@ urlpatterns = [
         "haccp/schedules/<uuid:schedule_id>/",
         HaccpScheduleDetailView.as_view(),
         name="haccp-schedule-detail",
+    ),
+    path(
+        "haccp/label-profiles/",
+        HaccpLabelProfileListCreateView.as_view(),
+        name="haccp-label-profile-list-create",
+    ),
+    path(
+        "haccp/label-profiles/<uuid:profile_id>/",
+        HaccpLabelProfileDetailView.as_view(),
+        name="haccp-label-profile-detail",
+    ),
+    path(
+        "haccp/label-sessions/",
+        HaccpLabelSessionListCreateView.as_view(),
+        name="haccp-label-session-list-create",
     ),
 ]
 
