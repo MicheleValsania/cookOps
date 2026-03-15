@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 type HaccpOcrQueueItem = {
   document_id: string;
   filename: string;
-  document_type: "goods_receipt" | "invoice";
+  document_type: "goods_receipt" | "invoice" | "label_capture";
   document_status: string;
   validation_status: string;
   extraction?: {
@@ -44,14 +44,40 @@ type HaccpScheduleItem = {
   status: "planned" | "done" | "skipped" | "cancelled";
 };
 
+type HaccpLabelProfile = {
+  id: string;
+  name: string;
+  category?: string | null;
+  template_type: "PREPARATION" | "RAW_MATERIAL" | "TRANSFORMATION";
+  shelf_life_value?: number | null;
+  shelf_life_unit?: "hours" | "days" | "months" | null;
+  packaging?: string | null;
+  storage_hint?: string | null;
+  allergens_text?: string | null;
+  is_active?: boolean;
+};
+
+type HaccpLabelSession = {
+  id: string;
+  profile_id: string;
+  profile_name?: string | null;
+  planned_schedule_id?: string | null;
+  source_lot_code?: string | null;
+  quantity: number;
+  status: "planned" | "done" | "cancelled";
+  created_at?: string | null;
+};
+
 type HaccpSectorItem = {
   id: string;
+  internal_id?: string | null;
   external_code?: string | null;
   name: string;
 };
 
 type HaccpColdPointItem = {
   id: string;
+  internal_id?: string | null;
   external_code?: string | null;
   sector?: string | null;
   name: string;
@@ -86,6 +112,21 @@ type HaccpReconciliationOverview = {
     matches: Array<{ id: string }>;
     alerts: string[];
   }>;
+};
+
+type HaccpTemperatureReadingItem = {
+  id: string;
+  register_name?: string | null;
+  cold_point_name?: string | null;
+  sector_name?: string | null;
+  device_type?: string | null;
+  device_label?: string | null;
+  reference_temperature_celsius?: string | null;
+  temperature_celsius?: string | null;
+  unit?: string | null;
+  observed_at?: string | null;
+  source?: string | null;
+  confidence?: string | null;
 };
 
 type HaccpViewKey =
@@ -125,6 +166,9 @@ type Props = {
   haccpOcrQueue: HaccpOcrQueueItem[];
   haccpLifecycleEvents: HaccpLifecycleEvent[];
   haccpSchedules: HaccpScheduleItem[];
+  haccpLabelProfiles: HaccpLabelProfile[];
+  haccpLabelSessions: HaccpLabelSession[];
+  haccpTemperatureReadings: HaccpTemperatureReadingItem[];
   haccpReconciliationOverview: HaccpReconciliationOverview | null;
   selectedHaccpQueueItem: HaccpOcrQueueItem | null;
   selectedHaccpDocumentUrl: string;
@@ -143,24 +187,61 @@ type Props = {
   setSelectedHaccpColdPointId: (value: string) => void;
   newHaccpSectorName: string;
   setNewHaccpSectorName: (value: string) => void;
+  editingHaccpSectorId: string;
   newHaccpColdPointName: string;
   setNewHaccpColdPointName: (value: string) => void;
   newHaccpColdPointEquipmentType: "FRIDGE" | "FREEZER" | "COLD_ROOM" | "OTHER";
   setNewHaccpColdPointEquipmentType: (value: "FRIDGE" | "FREEZER" | "COLD_ROOM" | "OTHER") => void;
+  editingHaccpColdPointId: string;
   newHaccpStartsAt: string;
   setNewHaccpStartsAt: (value: string) => void;
   newHaccpEndsAt: string;
   setNewHaccpEndsAt: (value: string) => void;
+  newLabelProfileName: string;
+  setNewLabelProfileName: (value: string) => void;
+  newLabelProfileCategory: string;
+  setNewLabelProfileCategory: (value: string) => void;
+  editingLabelProfileId: string;
+  newLabelTemplateType: HaccpLabelProfile["template_type"];
+  setNewLabelTemplateType: (value: HaccpLabelProfile["template_type"]) => void;
+  newLabelShelfLifeValue: string;
+  setNewLabelShelfLifeValue: (value: string) => void;
+  newLabelShelfLifeUnit: NonNullable<HaccpLabelProfile["shelf_life_unit"]>;
+  setNewLabelShelfLifeUnit: (value: NonNullable<HaccpLabelProfile["shelf_life_unit"]>) => void;
+  newLabelPackaging: string;
+  setNewLabelPackaging: (value: string) => void;
+  newLabelStorageHint: string;
+  setNewLabelStorageHint: (value: string) => void;
+  newLabelAllergensText: string;
+  setNewLabelAllergensText: (value: string) => void;
+  selectedLabelProfileId: string;
+  setSelectedLabelProfileId: (value: string) => void;
+  selectedLabelPlannedScheduleId: string;
+  setSelectedLabelPlannedScheduleId: (value: string) => void;
+  newLabelSessionQuantity: string;
+  setNewLabelSessionQuantity: (value: string) => void;
+  newLabelSessionSourceLotCode: string;
+  setNewLabelSessionSourceLotCode: (value: string) => void;
   loadHaccpData: () => void;
+  onImportHaccpAssets: () => void | Promise<void>;
+  onExtractHaccpDocument: (documentId: string) => void | Promise<void>;
   onValidateHaccpOcr: (documentId: string, statusValue: "validated" | "rejected") => void;
   onSetHaccpScheduleStatus: (scheduleId: string, statusValue: "planned" | "done" | "skipped" | "cancelled") => void;
   onDeleteHaccpSchedule: (scheduleId: string) => void;
   onCreateHaccpSector: (e: FormEvent) => void | Promise<void>;
+  onEditHaccpSector: (sectorId: string) => void;
+  onDeleteHaccpSector: (sectorId: string) => void | Promise<void>;
   onCreateHaccpColdPoint: (e: FormEvent) => void | Promise<void>;
+  onEditHaccpColdPoint: (pointId: string) => void;
+  onDeleteHaccpColdPoint: (pointId: string) => void | Promise<void>;
   onCreateHaccpSchedule: (
     e: FormEvent,
     forcedTaskType?: "label_print" | "temperature_register" | "cleaning"
   ) => void | Promise<void>;
+  onCreateHaccpLabelProfile: (e: FormEvent) => void | Promise<void>;
+  onEditHaccpLabelProfile: (profileId: string) => void;
+  onDeleteHaccpLabelProfile: (profileId: string) => void | Promise<void>;
+  onCreateHaccpLabelSession: (e: FormEvent) => void | Promise<void>;
   t: (key: string) => string;
 };
 
@@ -174,6 +255,9 @@ export function HaccpWorkspace(props: Props) {
     haccpOcrQueue,
     haccpLifecycleEvents,
     haccpSchedules,
+    haccpLabelProfiles,
+    haccpLabelSessions,
+    haccpTemperatureReadings,
     haccpReconciliationOverview,
     selectedHaccpQueueItem,
     selectedHaccpDocumentUrl,
@@ -192,23 +276,78 @@ export function HaccpWorkspace(props: Props) {
     setSelectedHaccpColdPointId,
     newHaccpSectorName,
     setNewHaccpSectorName,
+    editingHaccpSectorId,
     newHaccpColdPointName,
     setNewHaccpColdPointName,
     newHaccpColdPointEquipmentType,
     setNewHaccpColdPointEquipmentType,
+    editingHaccpColdPointId,
     newHaccpStartsAt,
     setNewHaccpStartsAt,
     newHaccpEndsAt,
     setNewHaccpEndsAt,
+    newLabelProfileName,
+    setNewLabelProfileName,
+    newLabelProfileCategory,
+    setNewLabelProfileCategory,
+    editingLabelProfileId,
+    newLabelTemplateType,
+    setNewLabelTemplateType,
+    newLabelShelfLifeValue,
+    setNewLabelShelfLifeValue,
+    newLabelShelfLifeUnit,
+    setNewLabelShelfLifeUnit,
+    newLabelPackaging,
+    setNewLabelPackaging,
+    newLabelStorageHint,
+    setNewLabelStorageHint,
+    newLabelAllergensText,
+    setNewLabelAllergensText,
+    selectedLabelProfileId,
+    setSelectedLabelProfileId,
+    selectedLabelPlannedScheduleId,
+    setSelectedLabelPlannedScheduleId,
+    newLabelSessionQuantity,
+    setNewLabelSessionQuantity,
+    newLabelSessionSourceLotCode,
+    setNewLabelSessionSourceLotCode,
     loadHaccpData,
+    onImportHaccpAssets,
+    onExtractHaccpDocument,
     onValidateHaccpOcr,
     onSetHaccpScheduleStatus,
     onDeleteHaccpSchedule,
     onCreateHaccpSector,
+    onEditHaccpSector,
+    onDeleteHaccpSector,
     onCreateHaccpColdPoint,
+    onEditHaccpColdPoint,
+    onDeleteHaccpColdPoint,
     onCreateHaccpSchedule,
+    onCreateHaccpLabelProfile,
+    onEditHaccpLabelProfile,
+    onDeleteHaccpLabelProfile,
+    onCreateHaccpLabelSession,
     t,
   } = props;
+  const labelProfileGroups = haccpLabelProfiles.reduce<Record<string, HaccpLabelProfile[]>>((acc, item) => {
+    const key = (item.category || "").trim() || "Senza categoria";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(item);
+    return acc;
+  }, {});
+  const labelProfileCategories = Object.keys(labelProfileGroups).sort((a, b) => a.localeCompare(b));
+  const labelCategoryOptions = ["Carni", "Pesci", "Formaggi", "Salse", "Pasticceria", "Verdure", "Base", "Altro"];
+  const ocrReportRows = haccpOcrQueue.map((row) => {
+    const payload = (row.extraction?.normalized_payload ?? {}) as Record<string, unknown>;
+    return {
+      row,
+      supplier: String(payload.supplier_name ?? payload.supplier ?? payload.vendor_name ?? "").trim() || "-",
+      documentNumber: String(payload.document_number ?? payload.invoice_number ?? payload.receipt_number ?? payload.reference ?? "").trim() || "-",
+      lotCode: String(payload.supplier_lot_code ?? payload.lot_code ?? payload.lot ?? "").trim() || "-",
+      totalAmount: String(payload.total_amount ?? payload.total_ttc ?? payload.total ?? payload.amount_total ?? "").trim() || "-",
+    };
+  });
 
   return (
     <div className="grid grid-single">
@@ -219,6 +358,9 @@ export function HaccpWorkspace(props: Props) {
             <p className="muted">Pilotage HACCP centralise dans CookOps, execution et tracabilite dans Traccia.</p>
           </div>
           <div className="entry-actions no-print">
+            <button type="button" onClick={() => void onImportHaccpAssets()} disabled={!siteId || isHaccpLoading || isHaccpSaving}>
+              Importer photos Traccia
+            </button>
             <button type="button" onClick={loadHaccpData} disabled={!siteId || isHaccpLoading}>
               {isHaccpLoading ? t("action.loading") : t("suppliers.refreshList")}
             </button>
@@ -251,28 +393,35 @@ export function HaccpWorkspace(props: Props) {
               <h2>1. Report estrazione dati</h2>
               <button type="button" className="no-print" onClick={() => window.print()}>Stampa</button>
             </div>
-            <p className="muted">Vue operative live delle estrazioni OCR e dello stato di convalida.</p>
+            <p className="muted">Vue operative live delle foto importate da Traccia, delle estrazioni centrali e del loro stato.</p>
             {haccpOcrQueue.length === 0 ? (
-              <p className="muted">Nessuna estrazione OCR trovata per il sito.</p>
+              <p className="muted">Nessun documento label_capture importato per il sito.</p>
             ) : (
               <table>
                 <thead>
                   <tr>
                     <th>Documento</th>
-                    <th>Tipo</th>
-                    <th>Stato estrazione</th>
+                    <th>Fornitore</th>
+                    <th>Numero</th>
+                    <th>Lotto</th>
+                    <th>Totale</th>
                     <th>Validazione</th>
                     <th>Confidenza</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {haccpOcrQueue.slice(0, 25).map((row) => (
+                  {ocrReportRows.slice(0, 40).map(({ row, supplier, documentNumber, lotCode, totalAmount }) => (
                     <tr key={row.document_id}>
-                      <td>{row.filename}</td>
-                      <td>{row.document_type}</td>
-                      <td>{String(row.extraction?.status || row.document_status || "-")}</td>
-                      <td>{row.validation_status}</td>
-                      <td>{row.extraction?.confidence || "-"}</td>
+                      <td>
+                        <strong>{row.filename}</strong>
+                        <div className="muted">{row.document_type}</div>
+                      </td>
+                      <td>{supplier}</td>
+                      <td>{documentNumber}</td>
+                      <td>{lotCode}</td>
+                      <td>{totalAmount}</td>
+                        <td>{row.validation_status}</td>
+                        <td>{row.extraction?.confidence || "-"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -284,29 +433,30 @@ export function HaccpWorkspace(props: Props) {
               <h2>1. Report temperature</h2>
               <button type="button" className="no-print" onClick={() => window.print()}>Stampa</button>
             </div>
-            <p className="muted">Vue operative live di programmazione e stato dei rilevamenti temperature.</p>
-            {haccpSchedules.filter((item) => item.task_type === "temperature_register").length === 0 ? (
-              <p className="muted">Nessun rilevamento temperature programmato.</p>
+            <p className="muted">Vue operative live delle letture temperatura registrate in Traccia.</p>
+            {haccpTemperatureReadings.length === 0 ? (
+              <p className="muted">Nessuna lettura temperatura trovata per il sito.</p>
             ) : (
               <table>
                 <thead>
                   <tr>
-                    <th>Titolo</th>
-                    <th>Area</th>
-                    <th>Inizio</th>
-                    <th>Stato</th>
+                    <th>Settore</th>
+                    <th>Punto freddo</th>
+                    <th>Temperatura</th>
+                    <th>Riferimento</th>
+                    <th>Rilevata il</th>
+                    <th>Sorgente</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {haccpSchedules
-                    .filter((item) => item.task_type === "temperature_register")
-                    .slice(0, 25)
-                    .map((item) => (
+                  {haccpTemperatureReadings.slice(0, 40).map((item) => (
                       <tr key={item.id}>
-                        <td>{item.title}</td>
-                        <td>{item.cold_point_label || item.sector_label || item.area || "-"}</td>
-                        <td>{String(item.starts_at).replace("T", " ").slice(0, 16)}</td>
-                        <td>{item.status}</td>
+                        <td>{item.sector_name || "-"}</td>
+                        <td>{item.cold_point_name || item.register_name || "-"}</td>
+                        <td>{item.temperature_celsius ?? "-"} {item.unit || "C"}</td>
+                        <td>{item.reference_temperature_celsius ?? "-"}</td>
+                        <td>{String(item.observed_at || "").replace("T", " ").slice(0, 16)}</td>
+                        <td>{item.source || item.device_type || "-"}</td>
                       </tr>
                     ))}
                 </tbody>
@@ -318,7 +468,7 @@ export function HaccpWorkspace(props: Props) {
         <div className="grid">
           <section className="panel">
             <h2>2. Visualizzazione foto e dati estratti</h2>
-            <p className="muted">Seleziona il documento da convalidare e confronta file originale con OCR e dati letti.</p>
+            <p className="muted">Seleziona il documento importato da Traccia, lancia OCR centrale e confronta file originale con dati estratti.</p>
             {haccpOcrQueue.length === 0 ? (
               <p className="muted">Nessun documento disponibile per la convalida.</p>
             ) : (
@@ -337,8 +487,8 @@ export function HaccpWorkspace(props: Props) {
                       <th>Documento</th>
                       <th>Tipo</th>
                       <th>Estrazione</th>
-                      <th>Validazione</th>
-                      <th>Azione</th>
+                       <th>Stato review</th>
+                       <th>Azione</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -347,14 +497,13 @@ export function HaccpWorkspace(props: Props) {
                         <td>{row.filename}</td>
                         <td>{row.document_type}</td>
                         <td>{String(row.extraction?.status || row.document_status || "-")}</td>
-                        <td>{row.validation_status}</td>
-                        <td>
-                          <div className="entry-actions">
-                            <button type="button" onClick={() => setSelectedHaccpDocumentId(row.document_id)}>Apri</button>
-                            <button type="button" onClick={() => onValidateHaccpOcr(row.document_id, "validated")}>Conferma</button>
-                            <button type="button" className="warning-btn" onClick={() => onValidateHaccpOcr(row.document_id, "rejected")}>Rifiuta</button>
-                          </div>
-                        </td>
+                         <td>{row.validation_status}</td>
+                         <td>
+                           <div className="entry-actions">
+                             <button type="button" onClick={() => setSelectedHaccpDocumentId(row.document_id)}>Apri</button>
+                             <button type="button" onClick={() => void onExtractHaccpDocument(row.document_id)}>Lancer OCR</button>
+                           </div>
+                         </td>
                       </tr>
                     ))}
                   </tbody>
@@ -408,24 +557,32 @@ export function HaccpWorkspace(props: Props) {
                   <button type="button" className={selectedHaccpSectorId === item.id ? "space-tab-btn space-tab-btn--active" : "space-tab-btn"} onClick={() => setSelectedHaccpSectorId(item.id)}>
                     {item.name}
                   </button>
+                  <span className="inline-icon-actions">
+                    <button type="button" className="icon-action-btn" title="Modifica settore" aria-label="Modifica settore" onClick={() => onEditHaccpSector(item.id)}>✎</button>
+                    <button type="button" className="icon-action-btn icon-action-btn--danger" title="Elimina settore" aria-label="Elimina settore" onClick={() => void onDeleteHaccpSector(item.id)}>✕</button>
+                  </span>
                 </li>
               ))}
             </ul>
             <form onSubmit={(e) => void onCreateHaccpSector(e)}>
-              <label>Nuovo settore</label>
+              <label>{editingHaccpSectorId ? "Modifica settore" : "Nuovo settore"}</label>
               <input value={newHaccpSectorName} onChange={(e) => setNewHaccpSectorName(e.target.value)} placeholder="Es. Restaurant" />
-              <button type="submit" disabled={isHaccpSaving}>{isHaccpSaving ? t("action.loading") : "Aggiungi settore"}</button>
+              <button type="submit" disabled={isHaccpSaving}>{isHaccpSaving ? t("action.loading") : editingHaccpSectorId ? "Salva settore" : "Aggiungi settore"}</button>
             </form>
             <h4>Punti freddo</h4>
             <ul className="clean-list">
               {haccpColdPoints.map((item) => (
                 <li key={item.id}>
                   {item.name}{item.equipment_type ? ` (${item.equipment_type})` : ""}
+                  <span className="inline-icon-actions">
+                    <button type="button" className="icon-action-btn" title="Modifica punto freddo" aria-label="Modifica punto freddo" onClick={() => onEditHaccpColdPoint(item.id)}>✎</button>
+                    <button type="button" className="icon-action-btn icon-action-btn--danger" title="Elimina punto freddo" aria-label="Elimina punto freddo" onClick={() => void onDeleteHaccpColdPoint(item.id)}>✕</button>
+                  </span>
                 </li>
               ))}
             </ul>
             <form onSubmit={(e) => void onCreateHaccpColdPoint(e)}>
-              <label>Nuovo punto freddo</label>
+              <label>{editingHaccpColdPointId ? "Modifica punto freddo" : "Nuovo punto freddo"}</label>
               <input value={newHaccpColdPointName} onChange={(e) => setNewHaccpColdPointName(e.target.value)} placeholder="Es. Frigo 1" />
               <label>Tipo attrezzatura</label>
               <select
@@ -438,7 +595,7 @@ export function HaccpWorkspace(props: Props) {
                 <option value="OTHER">OTHER</option>
               </select>
               <button type="submit" disabled={isHaccpSaving || !selectedHaccpSectorId}>
-                {isHaccpSaving ? t("action.loading") : "Aggiungi punto freddo"}
+                {isHaccpSaving ? t("action.loading") : editingHaccpColdPointId ? "Salva punto freddo" : "Aggiungi punto freddo"}
               </button>
             </form>
             <ul className="clean-list">
@@ -486,22 +643,45 @@ export function HaccpWorkspace(props: Props) {
       ) : haccpView === "labels" ? (
         <div className="grid">
           <section className="panel">
-            <h2>4. Creazione etichette prodotti</h2>
-            <p className="muted">Profili etichette e sessioni di stampa pilotate dal web, con esecuzione lato Traccia.</p>
-            <ul className="clean-list">
-              {haccpSchedules
-                .filter((item) => item.task_type === "label_print")
-                .slice(0, 12)
-                .map((item) => (
-                  <li key={item.id}>
-                    {item.title} - {item.sector_label || item.area || "-"} - {String(item.starts_at).replace("T", " ").slice(0, 16)} [{item.status}]
-                    <span className="entry-actions">
-                      <button type="button" onClick={() => onSetHaccpScheduleStatus(item.id, "done")}>Completa</button>
-                      <button type="button" className="danger-btn" onClick={() => onDeleteHaccpSchedule(item.id)}>Elimina</button>
-                    </span>
-                  </li>
-                ))}
-            </ul>
+            <h2>4. Profili etichette</h2>
+            <p className="muted">Configurazione centralizzata dei template etichetta, indipendente dalla singola stampa.</p>
+            {labelProfileCategories.length === 0 ? (
+              <p className="muted">Nessun profilo etichetta disponibile.</p>
+            ) : (
+              labelProfileCategories.map((category) => (
+                <div key={category} style={{ marginBottom: 16 }}>
+                  <h4>{category}</h4>
+                  <ul className="clean-list">
+                    {labelProfileGroups[category].map((item) => (
+                      <li key={item.id}>
+                        <strong>{item.name}</strong> - {item.template_type} - shelf life {item.shelf_life_value ?? "-"} {item.shelf_life_unit ?? ""}
+                        {item.storage_hint ? ` - ${item.storage_hint}` : ""} [{item.is_active === false ? "inactive" : "active"}]
+                        <span className="inline-icon-actions">
+                          <button
+                            type="button"
+                            className="icon-action-btn"
+                            title="Modifica"
+                            aria-label="Modifica"
+                            onClick={() => onEditHaccpLabelProfile(item.id)}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-action-btn icon-action-btn--danger"
+                            title="Elimina"
+                            aria-label="Elimina"
+                            onClick={() => void onDeleteHaccpLabelProfile(item.id)}
+                          >
+                            ✕
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))
+            )}
             <h4>Documenti validati</h4>
             <ul className="clean-list">
               {haccpOcrQueue.filter((item) => item.validation_status === "validated").slice(0, 10).map((item) => (
@@ -510,21 +690,79 @@ export function HaccpWorkspace(props: Props) {
             </ul>
           </section>
           <section className="panel">
-            <h2>Nuova sessione etichette</h2>
-            <form onSubmit={(e) => void onCreateHaccpSchedule(e, "label_print")}>
-              <label>Titolo</label>
-              <input value={newHaccpTitle} onChange={(e) => setNewHaccpTitle(e.target.value)} placeholder="Es. Etichette preparazioni gastronomia" />
-              <label>Settore</label>
-              <select value={selectedHaccpSectorId} onChange={(e) => setSelectedHaccpSectorId(e.target.value)}>
-                {haccpSectors.map((item) => (
-                  <option key={item.id} value={item.id}>{item.name}</option>
+            <h2>{editingLabelProfileId ? "Modifica profilo etichetta" : "Nuovo profilo etichetta"}</h2>
+            <form onSubmit={(e) => void onCreateHaccpLabelProfile(e)}>
+              <label>Nome profilo</label>
+              <input value={newLabelProfileName} onChange={(e) => setNewLabelProfileName(e.target.value)} placeholder="Es. Supreme poulet" />
+              <label>Categoria</label>
+              <select value={newLabelProfileCategory} onChange={(e) => setNewLabelProfileCategory(e.target.value)}>
+                {labelCategoryOptions.map((item) => (
+                  <option key={item} value={item}>{item}</option>
                 ))}
               </select>
-              <label>Inizio</label>
-              <input type="datetime-local" value={newHaccpStartsAt} onChange={(e) => setNewHaccpStartsAt(e.target.value)} />
-              <label>Fine</label>
-              <input type="datetime-local" value={newHaccpEndsAt} onChange={(e) => setNewHaccpEndsAt(e.target.value)} />
-              <button type="submit" disabled={isHaccpSaving}>{isHaccpSaving ? t("action.loading") : "Pianifica stampa etichette"}</button>
+              <label>Template</label>
+              <select value={newLabelTemplateType} onChange={(e) => setNewLabelTemplateType(e.target.value as HaccpLabelProfile["template_type"])}>
+                <option value="PREPARATION">Preparation</option>
+                <option value="RAW_MATERIAL">Raw material</option>
+                <option value="TRANSFORMATION">Transformation</option>
+              </select>
+              <label>Shelf life</label>
+              <div className="row-inline">
+                <input value={newLabelShelfLifeValue} onChange={(e) => setNewLabelShelfLifeValue(e.target.value)} inputMode="numeric" placeholder="3" />
+                <select value={newLabelShelfLifeUnit} onChange={(e) => setNewLabelShelfLifeUnit(e.target.value as NonNullable<HaccpLabelProfile["shelf_life_unit"]>)}>
+                  <option value="hours">hours</option>
+                  <option value="days">days</option>
+                  <option value="months">months</option>
+                </select>
+              </div>
+              <label>Packaging</label>
+              <input value={newLabelPackaging} onChange={(e) => setNewLabelPackaging(e.target.value)} placeholder="Es. sotto vuoto" />
+              <label>Storage hint</label>
+              <input value={newLabelStorageHint} onChange={(e) => setNewLabelStorageHint(e.target.value)} placeholder="Es. 0/+3 C" />
+              <label>Allergens text</label>
+              <input value={newLabelAllergensText} onChange={(e) => setNewLabelAllergensText(e.target.value)} placeholder="Es. Poisson, lait" />
+              <button type="submit" disabled={isHaccpSaving}>{isHaccpSaving ? t("action.loading") : editingLabelProfileId ? "Salva modifiche profilo" : "Crea profilo etichetta"}</button>
+            </form>
+          </section>
+          <section className="panel">
+            <h2>Sessioni di stampa</h2>
+            <p className="muted">Pianificazione operativa delle stampe da eseguire in Traccia.</p>
+            <ul className="clean-list">
+              {haccpLabelSessions.slice(0, 12).map((item) => (
+                <li key={item.id}>
+                  {item.profile_name || item.profile_id} - qty {item.quantity}
+                  {item.source_lot_code ? ` - lotto ${item.source_lot_code}` : ""}
+                  {item.created_at ? ` - ${String(item.created_at).replace("T", " ").slice(0, 16)}` : ""}
+                  [{item.status}]
+                </li>
+              ))}
+            </ul>
+          </section>
+          <section className="panel">
+            <h2>Nuova sessione etichette</h2>
+            <form onSubmit={(e) => void onCreateHaccpLabelSession(e)}>
+              <label>Profilo</label>
+              <select value={selectedLabelProfileId} onChange={(e) => setSelectedLabelProfileId(e.target.value)}>
+                {haccpLabelProfiles.map((item) => (
+                  <option key={item.id} value={item.id}>{item.category ? `${item.category} - ` : ""}{item.name}</option>
+                ))}
+              </select>
+              <label>Schedule collegato (opzionale)</label>
+              <select value={selectedLabelPlannedScheduleId} onChange={(e) => setSelectedLabelPlannedScheduleId(e.target.value)}>
+                <option value="">Nessuno</option>
+                {haccpSchedules
+                  .filter((item) => item.task_type === "label_print")
+                  .map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.title} - {String(item.starts_at).replace("T", " ").slice(0, 16)}
+                    </option>
+                  ))}
+              </select>
+              <label>Quantita</label>
+              <input value={newLabelSessionQuantity} onChange={(e) => setNewLabelSessionQuantity(e.target.value)} inputMode="numeric" placeholder="12" />
+              <label>Codice lotto sorgente</label>
+              <input value={newLabelSessionSourceLotCode} onChange={(e) => setNewLabelSessionSourceLotCode(e.target.value)} placeholder="Es. LOT-20260312-01" />
+              <button type="submit" disabled={isHaccpSaving}>{isHaccpSaving ? t("action.loading") : "Pianifica sessione etichette"}</button>
             </form>
           </section>
         </div>

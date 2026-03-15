@@ -19,6 +19,24 @@ class ClaudeExtractionResult:
 
 
 def _build_schema_hint(document_type: str) -> dict[str, Any]:
+    if document_type == DocumentType.LABEL_CAPTURE:
+        return {
+            "site": "uuid|null",
+            "product_guess": "string|null",
+            "supplier_name": "string|null",
+            "supplier_code": "string|null",
+            "supplier_lot_code": "string|null",
+            "origin_lot_code": "string|null",
+            "dlc_date": "YYYY-MM-DD|null",
+            "production_date": "YYYY-MM-DD|null",
+            "packaging": "string|null",
+            "storage_hint": "string|null",
+            "allergens_text": "string|null",
+            "weight_value": "string|null",
+            "weight_unit": "kg|g|l|ml|cl|pc|null",
+            "notes": "string|null",
+            "metadata": {},
+        }
     line_base = {
         "supplier_product": None,
         "supplier_code": None,
@@ -155,7 +173,12 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
     except ValueError:
         max_tokens = 12000
     schema_hint = _build_schema_hint(document.document_type)
-    document_label = "invoice" if document.document_type == DocumentType.INVOICE else "delivery note"
+    if document.document_type == DocumentType.INVOICE:
+        document_label = "invoice"
+    elif document.document_type == DocumentType.GOODS_RECEIPT:
+        document_label = "delivery note"
+    else:
+        document_label = "food traceability label"
     prompt = (
         "You are an OCR extraction engine for restaurant purchasing documents. "
         f"Extract data from this {document_label} and return exactly one JSON object. "

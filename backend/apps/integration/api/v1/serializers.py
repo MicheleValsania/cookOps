@@ -4,6 +4,8 @@ from apps.integration.models import DocumentExtraction, ExtractionStatus, Integr
 
 
 class IntegrationDocumentSerializer(serializers.ModelSerializer):
+    latest_extraction = serializers.SerializerMethodField()
+
     class Meta:
         model = IntegrationDocument
         fields = (
@@ -18,6 +20,7 @@ class IntegrationDocumentSerializer(serializers.ModelSerializer):
             "storage_path",
             "status",
             "metadata",
+            "latest_extraction",
             "created_at",
             "updated_at",
         )
@@ -48,6 +51,23 @@ class IntegrationDocumentSerializer(serializers.ModelSerializer):
             document.storage_path = document.file.name
             document.save(update_fields=["storage_path", "updated_at"])
         return document
+
+    def get_latest_extraction(self, obj):
+        extraction = obj.extractions.order_by("-created_at").first()
+        if not extraction:
+            return None
+        return {
+            "id": str(extraction.id),
+            "extractor_name": extraction.extractor_name,
+            "extractor_version": extraction.extractor_version,
+            "status": extraction.status,
+            "raw_payload": extraction.raw_payload,
+            "normalized_payload": extraction.normalized_payload,
+            "confidence": str(extraction.confidence) if extraction.confidence is not None else None,
+            "error_message": extraction.error_message,
+            "created_at": extraction.created_at.isoformat(),
+            "updated_at": extraction.updated_at.isoformat(),
+        }
 
 
 class DocumentExtractionSerializer(serializers.ModelSerializer):

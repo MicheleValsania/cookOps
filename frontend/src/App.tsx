@@ -18,7 +18,7 @@ type NavKey =
 type DocumentItem = {
   id: string;
   filename: string;
-  document_type: "goods_receipt" | "invoice";
+  document_type: "goods_receipt" | "invoice" | "label_capture";
   status: string;
   site: string;
   created_at?: string;
@@ -26,6 +26,18 @@ type DocumentItem = {
   metadata?: Record<string, unknown> | null;
   file?: string | null;
   storage_path?: string | null;
+  latest_extraction?: {
+    id?: string | null;
+    extractor_name?: string | null;
+    extractor_version?: string | null;
+    status?: string | null;
+    raw_payload?: Record<string, unknown> | null;
+    normalized_payload?: Record<string, unknown> | null;
+    confidence?: string | null;
+    error_message?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+  } | null;
 };
 
 type SupplierItem = {
@@ -71,7 +83,7 @@ type StockSummaryItem = {
 type HaccpOcrQueueItem = {
   document_id: string;
   filename: string;
-  document_type: "goods_receipt" | "invoice";
+  document_type: "goods_receipt" | "invoice" | "label_capture";
   document_status: string;
   validation_status: string;
   validation_notes?: string;
@@ -123,8 +135,54 @@ type HaccpScheduleItem = {
   status: "planned" | "done" | "skipped" | "cancelled";
 };
 
+type HaccpTemperatureReadingItem = {
+  id: string;
+  register_id?: string | null;
+  register_name?: string | null;
+  cold_point_id?: string | null;
+  cold_point_name?: string | null;
+  sector_id?: string | null;
+  sector_name?: string | null;
+  device_type?: string | null;
+  device_label?: string | null;
+  reference_temperature_celsius?: string | null;
+  temperature_celsius?: string | null;
+  unit?: string | null;
+  observed_at?: string | null;
+  source?: string | null;
+  confidence?: string | null;
+  created_at?: string | null;
+};
+
+type HaccpLabelProfile = {
+  id: string;
+  site: string;
+  name: string;
+  category?: string | null;
+  template_type: "PREPARATION" | "RAW_MATERIAL" | "TRANSFORMATION";
+  shelf_life_value?: number | null;
+  shelf_life_unit?: "hours" | "days" | "months" | null;
+  packaging?: string | null;
+  storage_hint?: string | null;
+  allergens_text?: string | null;
+  is_active?: boolean;
+};
+
+type HaccpLabelSession = {
+  id: string;
+  site: string;
+  profile_id: string;
+  profile_name?: string | null;
+  planned_schedule_id?: string | null;
+  source_lot_code?: string | null;
+  quantity: number;
+  status: "planned" | "done" | "cancelled";
+  created_at?: string | null;
+};
+
 type HaccpSectorItem = {
   id: string;
+  internal_id?: string | null;
   external_id?: string | null;
   external_code?: string | null;
   name: string;
@@ -134,6 +192,7 @@ type HaccpSectorItem = {
 
 type HaccpColdPointItem = {
   id: string;
+  internal_id?: string | null;
   external_id?: string | null;
   external_code?: string | null;
   sector?: string | null;
@@ -439,6 +498,40 @@ function normalizeHaccpOcrQueueRows(body: unknown): HaccpOcrQueueItem[] {
   }).filter((row) => row.document_id.trim().length > 0);
 }
 
+function normalizeHaccpOcrQueueRowsFromDocuments(documents: DocumentItem[]): HaccpOcrQueueItem[] {
+  return documents
+    .filter((doc) => doc.document_type === "label_capture")
+    .map((doc) => {
+      const extraction = asRecord(doc.latest_extraction ?? {});
+      const payload = asRecord(extraction.normalized_payload);
+      const reviewStatus = String(asRecord(doc.metadata ?? {}).review_status ?? "").trim();
+      const extractionStatus = String(extraction.status ?? "").trim();
+      let validationStatus = reviewStatus || "pending";
+      if (!reviewStatus) {
+        if (extractionStatus === "succeeded") validationStatus = "pending_review";
+        else if (extractionStatus === "failed") validationStatus = "failed";
+        else if (extractionStatus) validationStatus = extractionStatus;
+      }
+      return {
+        document_id: doc.id,
+        filename: doc.filename,
+        document_type: "label_capture",
+        document_status: doc.status,
+        validation_status: validationStatus,
+        validation_notes: "",
+        created_at: String(doc.created_at ?? ""),
+        updated_at: String(doc.updated_at ?? ""),
+        extraction: {
+          id: String(extraction.id ?? ""),
+          status: extractionStatus,
+          confidence: String(extraction.confidence ?? ""),
+          normalized_payload: payload,
+          created_at: String(extraction.created_at ?? ""),
+        },
+      };
+    });
+}
+
 function normalizeHaccpLifecycleRows(body: unknown): HaccpLifecycleEvent[] {
   const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
   return results.map((row) => {
@@ -485,11 +578,53 @@ function normalizeHaccpScheduleRows(body: unknown): HaccpScheduleItem[] {
   })).filter((row) => row.id.trim().length > 0);
 }
 
+function normalizeHaccpLabelProfileRows(body: unknown): HaccpLabelProfile[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  return results
+    .map((row) => ({
+      id: String(row.id ?? ""),
+      site: String(row.site ?? ""),
+      name: String(row.name ?? ""),
+      category: row.category ? String(row.category) : "",
+      template_type: String(row.template_type ?? "PREPARATION") as HaccpLabelProfile["template_type"],
+      shelf_life_value: row.shelf_life_value == null ? null : Number(row.shelf_life_value),
+      shelf_life_unit: row.shelf_life_unit ? String(row.shelf_life_unit) as HaccpLabelProfile["shelf_life_unit"] : null,
+      packaging: row.packaging ? String(row.packaging) : "",
+      storage_hint: row.storage_hint ? String(row.storage_hint) : "",
+      allergens_text: row.allergens_text ? String(row.allergens_text) : "",
+      is_active: row.is_active !== false,
+    }))
+    .filter((row) => row.id.trim().length > 0 && row.name.trim().length > 0);
+}
+
+function normalizeHaccpLabelSessionRows(body: unknown, profiles: HaccpLabelProfile[]): HaccpLabelSession[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  const profileById = new Map(profiles.map((item) => [item.id, item]));
+  return results
+    .map((row) => {
+      const profileId = String(row.profile_id ?? row.profile ?? "");
+      const linkedProfile = profileById.get(profileId);
+      return {
+        id: String(row.id ?? ""),
+        site: String(row.site ?? ""),
+        profile_id: profileId,
+        profile_name: String(row.profile_name ?? linkedProfile?.name ?? ""),
+        planned_schedule_id: row.planned_schedule_id ? String(row.planned_schedule_id) : null,
+        source_lot_code: row.source_lot_code ? String(row.source_lot_code) : "",
+        quantity: Number(row.quantity ?? 0),
+        status: String(row.status ?? "planned") as HaccpLabelSession["status"],
+        created_at: row.created_at ? String(row.created_at) : "",
+      };
+    })
+    .filter((row) => row.id.trim().length > 0 && row.profile_id.trim().length > 0);
+}
+
 function normalizeHaccpSectorRows(body: unknown): HaccpSectorItem[] {
   const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
   return results
     .map((row) => ({
       id: String(row.external_id ?? row.id ?? ""),
+      internal_id: row.id ? String(row.id) : null,
       external_id: row.external_id ? String(row.external_id) : null,
       external_code: row.external_code ? String(row.external_code) : null,
       name: String(row.name ?? row.sector_label ?? ""),
@@ -504,6 +639,7 @@ function normalizeHaccpColdPointRows(body: unknown): HaccpColdPointItem[] {
   return results
     .map((row) => ({
       id: String(row.external_id ?? row.id ?? ""),
+      internal_id: row.id ? String(row.id) : null,
       external_id: row.external_id ? String(row.external_id) : null,
       external_code: row.external_code ? String(row.external_code) : null,
       sector: row.sector ? String(row.sector) : null,
@@ -516,6 +652,30 @@ function normalizeHaccpColdPointRows(body: unknown): HaccpColdPointItem[] {
       is_active: row.is_active !== false,
     }))
     .filter((row) => row.id.trim().length > 0 && row.name.trim().length > 0);
+}
+
+function normalizeHaccpTemperatureReadingRows(body: unknown): HaccpTemperatureReadingItem[] {
+  const results = Array.isArray(body) ? asArray(body) : asArray(asRecord(body).results);
+  return results
+    .map((row) => ({
+      id: String(row.id ?? ""),
+      register_id: row.register_id ? String(row.register_id) : null,
+      register_name: row.register_name ? String(row.register_name) : null,
+      cold_point_id: row.cold_point_id ? String(row.cold_point_id) : null,
+      cold_point_name: row.cold_point_name ? String(row.cold_point_name) : null,
+      sector_id: row.sector_id ? String(row.sector_id) : null,
+      sector_name: row.sector_name ? String(row.sector_name) : null,
+      device_type: row.device_type ? String(row.device_type) : null,
+      device_label: row.device_label ? String(row.device_label) : null,
+      reference_temperature_celsius: row.reference_temperature_celsius != null ? String(row.reference_temperature_celsius) : null,
+      temperature_celsius: row.temperature_celsius != null ? String(row.temperature_celsius) : null,
+      unit: row.unit ? String(row.unit) : null,
+      observed_at: row.observed_at ? String(row.observed_at) : null,
+      source: row.source ? String(row.source) : null,
+      confidence: row.confidence != null ? String(row.confidence) : null,
+      created_at: row.created_at ? String(row.created_at) : null,
+    }))
+    .filter((row) => row.id.trim().length > 0);
 }
 
 function createClientUuid() {
@@ -613,7 +773,7 @@ function App() {
 
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedDocId, setSelectedDocId] = useState("");
-  const [selectedDocType, setSelectedDocType] = useState<"goods_receipt" | "invoice">("goods_receipt");
+  const [selectedDocType, setSelectedDocType] = useState<"goods_receipt" | "invoice" | "label_capture">("goods_receipt");
   const [selectedExtractionId, setSelectedExtractionId] = useState("");
   const [isClaudeExtracting, setIsClaudeExtracting] = useState(false);
   const [intakeStage, setIntakeStage] = useState<IntakeStage>("idle");
@@ -650,8 +810,11 @@ function App() {
   const [haccpOcrQueue, setHaccpOcrQueue] = useState<HaccpOcrQueueItem[]>([]);
   const [haccpLifecycleEvents, setHaccpLifecycleEvents] = useState<HaccpLifecycleEvent[]>([]);
   const [haccpSchedules, setHaccpSchedules] = useState<HaccpScheduleItem[]>([]);
+  const [haccpLabelProfiles, setHaccpLabelProfiles] = useState<HaccpLabelProfile[]>([]);
+  const [haccpLabelSessions, setHaccpLabelSessions] = useState<HaccpLabelSession[]>([]);
   const [haccpSectors, setHaccpSectors] = useState<HaccpSectorItem[]>([]);
   const [haccpColdPoints, setHaccpColdPoints] = useState<HaccpColdPointItem[]>([]);
+  const [haccpTemperatureReadings, setHaccpTemperatureReadings] = useState<HaccpTemperatureReadingItem[]>([]);
   const [haccpReconciliationOverview, setHaccpReconciliationOverview] = useState<HaccpReconciliationOverview | null>(null);
   const [isHaccpLoading, setIsHaccpLoading] = useState(false);
   const [isHaccpSaving, setIsHaccpSaving] = useState(false);
@@ -663,10 +826,25 @@ function App() {
   const [selectedHaccpSectorId, setSelectedHaccpSectorId] = useState("");
   const [selectedHaccpColdPointId, setSelectedHaccpColdPointId] = useState("");
   const [newHaccpSectorName, setNewHaccpSectorName] = useState("");
+  const [editingHaccpSectorId, setEditingHaccpSectorId] = useState("");
   const [newHaccpColdPointName, setNewHaccpColdPointName] = useState("");
   const [newHaccpColdPointEquipmentType, setNewHaccpColdPointEquipmentType] = useState<"FRIDGE" | "FREEZER" | "COLD_ROOM" | "OTHER">("FRIDGE");
+  const [editingHaccpColdPointId, setEditingHaccpColdPointId] = useState("");
   const [newHaccpStartsAt, setNewHaccpStartsAt] = useState("");
   const [newHaccpEndsAt, setNewHaccpEndsAt] = useState("");
+  const [newLabelProfileName, setNewLabelProfileName] = useState("");
+  const [newLabelProfileCategory, setNewLabelProfileCategory] = useState("Carni");
+  const [editingLabelProfileId, setEditingLabelProfileId] = useState("");
+  const [newLabelTemplateType, setNewLabelTemplateType] = useState<HaccpLabelProfile["template_type"]>("PREPARATION");
+  const [newLabelShelfLifeValue, setNewLabelShelfLifeValue] = useState("3");
+  const [newLabelShelfLifeUnit, setNewLabelShelfLifeUnit] = useState<NonNullable<HaccpLabelProfile["shelf_life_unit"]>>("days");
+  const [newLabelPackaging, setNewLabelPackaging] = useState("");
+  const [newLabelStorageHint, setNewLabelStorageHint] = useState("");
+  const [newLabelAllergensText, setNewLabelAllergensText] = useState("");
+  const [selectedLabelProfileId, setSelectedLabelProfileId] = useState("");
+  const [selectedLabelPlannedScheduleId, setSelectedLabelPlannedScheduleId] = useState("");
+  const [newLabelSessionQuantity, setNewLabelSessionQuantity] = useState("12");
+  const [newLabelSessionSourceLotCode, setNewLabelSessionSourceLotCode] = useState("");
 
   const [serviceDate, setServiceDate] = useState(getTodayIsoDate());
   const [comandaDateFrom, setComandaDateFrom] = useState(getTodayIsoDate());
@@ -731,6 +909,10 @@ function App() {
       }),
     [haccpColdPoints, selectedHaccpSectorId]
   );
+  const labelPlanningSchedules = useMemo(
+    () => haccpSchedules.filter((item) => item.task_type === "label_print"),
+    [haccpSchedules]
+  );
 
   useEffect(() => {
     setDefaultApiKey(apiKey);
@@ -760,7 +942,7 @@ function App() {
   }, [selectedDocId]);
 
   useEffect(() => {
-    if (nav !== "acquisti") return;
+    if (nav !== "acquisti" && nav !== "haccp") return;
     void loadDocuments();
   }, [nav]);
 
@@ -777,15 +959,16 @@ function App() {
   }, [nav, siteId]);
 
   useEffect(() => {
-    if (!haccpOcrQueue.length) {
+    const queue = normalizeHaccpOcrQueueRowsFromDocuments(documents);
+    if (!queue.length) {
       setSelectedHaccpDocumentId("");
       return;
     }
-    if (selectedHaccpDocumentId && haccpOcrQueue.some((item) => item.document_id === selectedHaccpDocumentId)) {
+    if (selectedHaccpDocumentId && queue.some((item) => item.document_id === selectedHaccpDocumentId)) {
       return;
     }
-    setSelectedHaccpDocumentId(haccpOcrQueue[0].document_id);
-  }, [haccpOcrQueue, selectedHaccpDocumentId]);
+    setSelectedHaccpDocumentId(queue[0].document_id);
+  }, [documents, selectedHaccpDocumentId]);
 
   useEffect(() => {
     if (!haccpSectors.length) {
@@ -808,6 +991,40 @@ function App() {
     }
     setSelectedHaccpColdPointId(filteredHaccpColdPoints[0].id);
   }, [filteredHaccpColdPoints, selectedHaccpColdPointId]);
+
+  useEffect(() => {
+    if (editingHaccpSectorId && !haccpSectors.some((item) => item.id === editingHaccpSectorId)) {
+      resetHaccpSectorForm();
+    }
+  }, [editingHaccpSectorId, haccpSectors]);
+
+  useEffect(() => {
+    if (editingHaccpColdPointId && !haccpColdPoints.some((item) => item.id === editingHaccpColdPointId)) {
+      resetHaccpColdPointForm();
+    }
+  }, [editingHaccpColdPointId, haccpColdPoints]);
+
+  useEffect(() => {
+    if (!haccpLabelProfiles.length) {
+      setSelectedLabelProfileId("");
+      return;
+    }
+    if (selectedLabelProfileId && haccpLabelProfiles.some((item) => item.id === selectedLabelProfileId)) {
+      return;
+    }
+    setSelectedLabelProfileId(haccpLabelProfiles[0].id);
+  }, [haccpLabelProfiles, selectedLabelProfileId]);
+
+  useEffect(() => {
+    if (!labelPlanningSchedules.length) {
+      setSelectedLabelPlannedScheduleId("");
+      return;
+    }
+    if (selectedLabelPlannedScheduleId && labelPlanningSchedules.some((item) => item.id === selectedLabelPlannedScheduleId)) {
+      return;
+    }
+    setSelectedLabelPlannedScheduleId(labelPlanningSchedules[0].id);
+  }, [labelPlanningSchedules, selectedLabelPlannedScheduleId]);
 
   useEffect(() => {
     const selected = documents.find((doc) => doc.id === selectedDocId) ?? null;
@@ -1397,6 +1614,32 @@ function App() {
     }
   }
 
+  async function ensureHaccpSiteSynced(targetSiteId?: string) {
+    const resolvedSiteId = (targetSiteId || siteId || "").trim();
+    if (!resolvedSiteId) return false;
+    const site = sites.find((item) => item.id === resolvedSiteId);
+    if (!site) return false;
+    const res = await apiFetch("/haccp/traccia/sites/sync/", {
+      method: "POST",
+      body: JSON.stringify({
+        sites: [
+          {
+            external_id: resolvedSiteId,
+            code: site.code,
+            name: site.name,
+            timezone: "Europe/Paris",
+          },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setNotice(errorWithDetail("error.siteCreate", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+      return false;
+    }
+    return true;
+  }
+
   async function onCreateSite(e: FormEvent) {
     e.preventDefault();
     const name = newSiteName.trim();
@@ -1602,9 +1845,13 @@ function App() {
     }
     const data = body as DocumentItem[];
     setDocuments(data);
-    if (data.length > 0) {
-      setSelectedDocId((prev) => prev || data[0].id);
-      setSelectedDocType(data[0].document_type);
+    const intakeDocs = data.filter((doc) => doc.document_type === "goods_receipt" || doc.document_type === "invoice");
+    if (intakeDocs.length > 0) {
+      setSelectedDocId((prev) => {
+        if (prev && intakeDocs.some((doc) => doc.id === prev)) return prev;
+        return intakeDocs[0].id;
+      });
+      setSelectedDocType(intakeDocs[0].document_type);
     }
     setNotice(t("notice.documentsLoaded", { count: data.length }));
   }
@@ -1916,13 +2163,18 @@ function App() {
     if (!siteId) return;
     setIsHaccpLoading(true);
     try {
-      const [ocrResult, lifecycleResult, schedulesResult, overviewResult, sectorsResult, coldPointsResult] = await Promise.allSettled([
+      const synced = await ensureHaccpSiteSynced(siteId);
+      if (!synced) return;
+      const [ocrResult, lifecycleResult, schedulesResult, profilesResult, sessionsResult, overviewResult, sectorsResult, coldPointsResult, temperatureReadingsResult] = await Promise.allSettled([
         apiFetch(`/haccp/traccia/ocr-queue/?site=${encodeURIComponent(siteId)}&limit=80`),
         apiFetch(`/haccp/traccia/lifecycle/?site=${encodeURIComponent(siteId)}&limit=120`),
         apiFetch(`/haccp/schedules/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/haccp/label-profiles/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/haccp/label-sessions/?site=${encodeURIComponent(siteId)}`),
         apiFetch(`/haccp/traccia/reconciliation-overview/?site=${encodeURIComponent(siteId)}&limit=80`),
         apiFetch(`/haccp/traccia/sectors/?site=${encodeURIComponent(siteId)}`),
         apiFetch(`/haccp/traccia/cold-points/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/haccp/traccia/temperature-readings/?site=${encodeURIComponent(siteId)}&limit=120`),
       ]);
 
       async function readSettledJson(result: PromiseSettledResult<Response>) {
@@ -1936,21 +2188,28 @@ function App() {
         }
       }
 
-      const [ocr, lifecycle, schedules, overview, sectors, coldPoints] = await Promise.all([
+      const [ocr, lifecycle, schedules, profiles, sessions, overview, sectors, coldPoints, temperatureReadings] = await Promise.all([
         readSettledJson(ocrResult),
         readSettledJson(lifecycleResult),
         readSettledJson(schedulesResult),
+        readSettledJson(profilesResult),
+        readSettledJson(sessionsResult),
         readSettledJson(overviewResult),
         readSettledJson(sectorsResult),
         readSettledJson(coldPointsResult),
+        readSettledJson(temperatureReadingsResult),
       ]);
 
-      if (ocr.ok && lifecycle.ok && schedules.ok && sectors.ok && coldPoints.ok) {
+      if (ocr.ok && lifecycle.ok && schedules.ok && profiles.ok && sessions.ok && sectors.ok && coldPoints.ok && temperatureReadings.ok) {
+        const normalizedProfiles = normalizeHaccpLabelProfileRows(profiles.body);
         setHaccpOcrQueue(normalizeHaccpOcrQueueRows(ocr.body));
         setHaccpLifecycleEvents(normalizeHaccpLifecycleRows(lifecycle.body));
         setHaccpSchedules(normalizeHaccpScheduleRows(schedules.body));
+        setHaccpLabelProfiles(normalizedProfiles);
+        setHaccpLabelSessions(normalizeHaccpLabelSessionRows(sessions.body, normalizedProfiles));
         setHaccpSectors(normalizeHaccpSectorRows(sectors.body));
         setHaccpColdPoints(normalizeHaccpColdPointRows(coldPoints.body));
+        setHaccpTemperatureReadings(normalizeHaccpTemperatureReadingRows(temperatureReadings.body));
         setHaccpReconciliationOverview(overview.ok ? normalizeHaccpReconciliationOverview(overview.body) : null);
         return;
       }
@@ -1971,6 +2230,18 @@ function App() {
         );
         return;
       }
+      if (!profiles.ok) {
+        setNotice(
+          errorWithDetail("error.documentsLoad", (profiles.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(profiles.body))
+        );
+        return;
+      }
+      if (!sessions.ok) {
+        setNotice(
+          errorWithDetail("error.documentsLoad", (sessions.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(sessions.body))
+        );
+        return;
+      }
       if (!sectors.ok) {
         setNotice(
           errorWithDetail("error.documentsLoad", (sectors.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(sectors.body))
@@ -1984,11 +2255,107 @@ function App() {
             (coldPoints.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(coldPoints.body)
           )
         );
+        return;
+      }
+      if (!temperatureReadings.ok) {
+        setNotice(
+          errorWithDetail(
+            "error.documentsLoad",
+            (temperatureReadings.body as Record<string, unknown> | null)?.detail ?? JSON.stringify(temperatureReadings.body)
+          )
+        );
       }
     } catch {
       setNotice(t("error.documentsLoad"));
     } finally {
       setIsHaccpLoading(false);
+    }
+  }
+
+  async function onImportHaccpAssets() {
+    if (!siteId) {
+      setNotice(t("validation.selectSite"));
+      return;
+    }
+    setIsHaccpSaving(true);
+    try {
+      const synced = await ensureHaccpSiteSynced(siteId);
+      if (!synced) return;
+      const res = await apiFetch("/integration/traccia-assets/import/", {
+        method: "POST",
+        body: JSON.stringify({
+          site: siteId,
+          asset_type: "PHOTO_LABEL",
+          limit: 80,
+          idempotency_key: `traccia-assets-${siteId}-${Date.now()}`,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      await loadDocuments();
+      setNotice(`Import central termine: ${body.created_count ?? 0} nouveau(x), ${body.skipped_existing ?? 0} deja presents.`);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  async function onExtractHaccpDocument(documentId: string) {
+    if (!documentId) return;
+    await onExtractWithClaude(documentId);
+    await loadDocuments();
+  }
+
+  function resetHaccpSectorForm() {
+    setEditingHaccpSectorId("");
+    setNewHaccpSectorName("");
+  }
+
+  function resetHaccpColdPointForm() {
+    setEditingHaccpColdPointId("");
+    setNewHaccpColdPointName("");
+    setNewHaccpColdPointEquipmentType("FRIDGE");
+  }
+
+  function onEditHaccpSector(sectorId: string) {
+    const sector = haccpSectors.find((item) => item.id === sectorId);
+    if (!sector) return;
+    setSelectedHaccpSectorId(sector.id);
+    setEditingHaccpSectorId(sector.id);
+    setNewHaccpSectorName(sector.name);
+  }
+
+  async function onDeleteHaccpSector(sectorId: string) {
+    const sector = haccpSectors.find((item) => item.id === sectorId);
+    const targetId = sector?.internal_id || sectorId;
+    if (!window.confirm("Eliminare questo settore e i relativi punti freddo?")) {
+      return;
+    }
+    setIsHaccpSaving(true);
+    try {
+      const res = await apiFetch(`/haccp/traccia/sectors/${targetId}/`, { method: "DELETE" });
+      const body = res.status === 204 ? {} : await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", (body as Record<string, unknown>).detail ?? JSON.stringify(body)));
+        return;
+      }
+      if (editingHaccpSectorId === sectorId) {
+        resetHaccpSectorForm();
+      }
+      if (selectedHaccpSectorId === sectorId) {
+        setSelectedHaccpSectorId("");
+        setSelectedHaccpColdPointId("");
+      }
+      setNotice("Settore HACCP eliminato.");
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
     }
   }
 
@@ -2003,32 +2370,93 @@ function App() {
       return;
     }
     setIsHaccpSaving(true);
-    const externalId = createClientUuid();
+    const synced = await ensureHaccpSiteSynced(siteId);
+    if (!synced) {
+      setIsHaccpSaving(false);
+      return;
+    }
     try {
-      const res = await apiFetch("/haccp/traccia/sectors/sync/", {
-        method: "POST",
-        body: JSON.stringify({
-          sectors: [
-            {
-              external_id: externalId,
-              external_code: newHaccpSectorName.trim().toLowerCase().replace(/\s+/g, "-").slice(0, 64),
-              site: siteId,
-              name: newHaccpSectorName.trim(),
-              sort_order: haccpSectors.length + 1,
-              is_active: true,
-            },
-          ],
-        }),
+      const payload = {
+        site: siteId,
+        external_code: newHaccpSectorName.trim().toLowerCase().replace(/\s+/g, "-").slice(0, 64),
+        name: newHaccpSectorName.trim(),
+        sort_order: haccpSectors.length + 1,
+        is_active: true,
+      };
+      const editingSector = haccpSectors.find((item) => item.id === editingHaccpSectorId);
+      const editTargetId = editingSector?.internal_id || editingHaccpSectorId;
+      const res = await apiFetch(editingHaccpSectorId ? `/haccp/traccia/sectors/${editTargetId}/` : "/haccp/traccia/sectors/sync/", {
+        method: editingHaccpSectorId ? "PATCH" : "POST",
+        body: JSON.stringify(
+          editingHaccpSectorId
+            ? payload
+            : {
+                sectors: [
+                  {
+                    external_id: createClientUuid(),
+                    ...payload,
+                  },
+                ],
+              }
+        ),
       });
       const body = await res.json();
       if (!res.ok) {
         setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
         return;
       }
-      setNotice(`Settore HACCP creato: ${newHaccpSectorName.trim()}`);
-      setNewHaccpSectorName("");
+      const savedSectorId =
+        editingHaccpSectorId ||
+        String(
+          (body as Record<string, unknown>).id ||
+            ((body as { results?: Array<{ id?: string }> }).results?.[0]?.id ?? "")
+        );
+      setNotice(editingHaccpSectorId ? `Settore HACCP aggiornato: ${newHaccpSectorName.trim()}` : `Settore HACCP creato: ${newHaccpSectorName.trim()}`);
+      resetHaccpSectorForm();
       await loadHaccpData();
-      setSelectedHaccpSectorId(externalId);
+      if (savedSectorId) {
+        setSelectedHaccpSectorId(savedSectorId);
+      }
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  function onEditHaccpColdPoint(pointId: string) {
+    const point = haccpColdPoints.find((item) => item.id === pointId);
+    if (!point) return;
+    if (point.sector) {
+      setSelectedHaccpSectorId(point.sector);
+    }
+    setEditingHaccpColdPointId(point.id);
+    setNewHaccpColdPointName(point.name);
+    setNewHaccpColdPointEquipmentType((point.equipment_type || "FRIDGE") as "FRIDGE" | "FREEZER" | "COLD_ROOM" | "OTHER");
+  }
+
+  async function onDeleteHaccpColdPoint(pointId: string) {
+    const point = haccpColdPoints.find((item) => item.id === pointId);
+    const targetId = point?.internal_id || pointId;
+    if (!window.confirm("Eliminare questo punto freddo?")) {
+      return;
+    }
+    setIsHaccpSaving(true);
+    try {
+      const res = await apiFetch(`/haccp/traccia/cold-points/${targetId}/`, { method: "DELETE" });
+      const body = res.status === 204 ? {} : await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", (body as Record<string, unknown>).detail ?? JSON.stringify(body)));
+        return;
+      }
+      if (editingHaccpColdPointId === pointId) {
+        resetHaccpColdPointForm();
+      }
+      if (selectedHaccpColdPointId === pointId) {
+        setSelectedHaccpColdPointId("");
+      }
+      setNotice("Punto freddo eliminato.");
+      await loadHaccpData();
     } catch {
       setNotice(t("error.siteCreateConnection"));
     } finally {
@@ -2051,34 +2479,55 @@ function App() {
       return;
     }
     setIsHaccpSaving(true);
-    const externalId = createClientUuid();
+    const synced = await ensureHaccpSiteSynced(siteId);
+    if (!synced) {
+      setIsHaccpSaving(false);
+      return;
+    }
     try {
-      const res = await apiFetch("/haccp/traccia/cold-points/sync/", {
-        method: "POST",
-        body: JSON.stringify({
-          cold_points: [
-            {
-              external_id: externalId,
-              external_code: newHaccpColdPointName.trim().toLowerCase().replace(/\s+/g, "-").slice(0, 64),
-              site: siteId,
-              sector: selectedHaccpSectorId,
-              name: newHaccpColdPointName.trim(),
-              equipment_type: newHaccpColdPointEquipmentType,
-              sort_order: filteredHaccpColdPoints.length + 1,
-              is_active: true,
-            },
-          ],
-        }),
+      const payload = {
+        site: siteId,
+        sector: selectedHaccpSectorId,
+        external_code: newHaccpColdPointName.trim().toLowerCase().replace(/\s+/g, "-").slice(0, 64),
+        name: newHaccpColdPointName.trim(),
+        equipment_type: newHaccpColdPointEquipmentType,
+        sort_order: filteredHaccpColdPoints.length + 1,
+        is_active: true,
+      };
+      const editingPoint = haccpColdPoints.find((item) => item.id === editingHaccpColdPointId);
+      const editTargetId = editingPoint?.internal_id || editingHaccpColdPointId;
+      const res = await apiFetch(editingHaccpColdPointId ? `/haccp/traccia/cold-points/${editTargetId}/` : "/haccp/traccia/cold-points/sync/", {
+        method: editingHaccpColdPointId ? "PATCH" : "POST",
+        body: JSON.stringify(
+          editingHaccpColdPointId
+            ? payload
+            : {
+                cold_points: [
+                  {
+                    external_id: createClientUuid(),
+                    ...payload,
+                  },
+                ],
+              }
+        ),
       });
       const body = await res.json();
       if (!res.ok) {
         setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
         return;
       }
-      setNotice(`Punto freddo creato: ${newHaccpColdPointName.trim()}`);
-      setNewHaccpColdPointName("");
+      const savedPointId =
+        editingHaccpColdPointId ||
+        String(
+          (body as Record<string, unknown>).id ||
+            ((body as { results?: Array<{ id?: string }> }).results?.[0]?.id ?? "")
+        );
+      setNotice(editingHaccpColdPointId ? `Punto freddo aggiornato: ${newHaccpColdPointName.trim()}` : `Punto freddo creato: ${newHaccpColdPointName.trim()}`);
+      resetHaccpColdPointForm();
       await loadHaccpData();
-      setSelectedHaccpColdPointId(externalId);
+      if (savedPointId) {
+        setSelectedHaccpColdPointId(savedPointId);
+      }
     } catch {
       setNotice(t("error.siteCreateConnection"));
     } finally {
@@ -2142,6 +2591,11 @@ function App() {
       endsAtIso = endDate.toISOString();
     }
     setIsHaccpSaving(true);
+    const synced = await ensureHaccpSiteSynced(siteId);
+    if (!synced) {
+      setIsHaccpSaving(false);
+      return;
+    }
     const taskType = forcedTaskType ?? newHaccpTaskType;
     const selectedSector = haccpSectors.find((item) => item.id === selectedHaccpSectorId) ?? null;
     const selectedColdPoint =
@@ -2191,6 +2645,161 @@ function App() {
       setSelectedHaccpColdPointId("");
       setNewHaccpStartsAt("");
       setNewHaccpEndsAt("");
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  async function onCreateHaccpLabelProfile(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId) {
+      setNotice(t("validation.selectSite"));
+      return;
+    }
+    if (!newLabelProfileName.trim()) {
+      setNotice("Inserisci il nome del profilo etichetta.");
+      return;
+    }
+    const shelfLifeValue = newLabelShelfLifeValue.trim() ? Number(newLabelShelfLifeValue) : null;
+    if (shelfLifeValue !== null && (!Number.isInteger(shelfLifeValue) || shelfLifeValue < 0)) {
+      setNotice("Shelf life non valida.");
+      return;
+    }
+    setIsHaccpSaving(true);
+    const synced = await ensureHaccpSiteSynced(siteId);
+    if (!synced) {
+      setIsHaccpSaving(false);
+      return;
+    }
+    try {
+      const res = await apiFetch(editingLabelProfileId ? `/haccp/label-profiles/${editingLabelProfileId}/` : "/haccp/label-profiles/", {
+        method: editingLabelProfileId ? "PATCH" : "POST",
+        body: JSON.stringify({
+          site: siteId,
+          name: newLabelProfileName.trim(),
+          category: newLabelProfileCategory.trim(),
+          template_type: newLabelTemplateType,
+          shelf_life_value: shelfLifeValue,
+          shelf_life_unit: newLabelShelfLifeUnit,
+          packaging: newLabelPackaging.trim(),
+          storage_hint: newLabelStorageHint.trim(),
+          allergens_text: newLabelAllergensText.trim(),
+          is_active: true,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(editingLabelProfileId ? `Profilo etichetta aggiornato: ${body.name ?? newLabelProfileName.trim()}` : `Profilo etichetta creato: ${body.name ?? newLabelProfileName.trim()}`);
+      setNewLabelProfileName("");
+      setNewLabelProfileCategory("Carni");
+      setEditingLabelProfileId("");
+      setNewLabelTemplateType("PREPARATION");
+      setNewLabelShelfLifeValue("3");
+      setNewLabelShelfLifeUnit("days");
+      setNewLabelPackaging("");
+      setNewLabelStorageHint("");
+      setNewLabelAllergensText("");
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  function onEditHaccpLabelProfile(profileId: string) {
+    const profile = haccpLabelProfiles.find((item) => item.id === profileId);
+    if (!profile) return;
+    setEditingLabelProfileId(profile.id);
+    setNewLabelProfileName(profile.name);
+    setNewLabelProfileCategory((profile.category || "Carni").trim() || "Carni");
+    setNewLabelTemplateType(profile.template_type);
+    setNewLabelShelfLifeValue(profile.shelf_life_value == null ? "3" : String(profile.shelf_life_value));
+    setNewLabelShelfLifeUnit(profile.shelf_life_unit || "days");
+    setNewLabelPackaging(profile.packaging || "");
+    setNewLabelStorageHint(profile.storage_hint || "");
+    setNewLabelAllergensText(profile.allergens_text || "");
+  }
+
+  async function onDeleteHaccpLabelProfile(profileId: string) {
+    if (!window.confirm("Eliminare questo profilo etichetta?")) {
+      return;
+    }
+    setIsHaccpSaving(true);
+    try {
+      const res = await apiFetch(`/haccp/label-profiles/${profileId}/`, { method: "DELETE" });
+      const body = res.status === 204 ? {} : await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", (body as Record<string, unknown>).detail ?? JSON.stringify(body)));
+        return;
+      }
+      if (editingLabelProfileId === profileId) {
+        setEditingLabelProfileId("");
+        setNewLabelProfileName("");
+        setNewLabelProfileCategory("Carni");
+        setNewLabelTemplateType("PREPARATION");
+        setNewLabelShelfLifeValue("3");
+        setNewLabelShelfLifeUnit("days");
+        setNewLabelPackaging("");
+        setNewLabelStorageHint("");
+        setNewLabelAllergensText("");
+      }
+      setNotice("Profilo etichetta eliminato.");
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteCreateConnection"));
+    } finally {
+      setIsHaccpSaving(false);
+    }
+  }
+
+  async function onCreateHaccpLabelSession(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId) {
+      setNotice(t("validation.selectSite"));
+      return;
+    }
+    if (!selectedLabelProfileId) {
+      setNotice("Seleziona un profilo etichetta.");
+      return;
+    }
+    const quantity = Number(newLabelSessionQuantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      setNotice("Quantita etichette non valida.");
+      return;
+    }
+    setIsHaccpSaving(true);
+    const synced = await ensureHaccpSiteSynced(siteId);
+    if (!synced) {
+      setIsHaccpSaving(false);
+      return;
+    }
+    try {
+      const res = await apiFetch("/haccp/label-sessions/", {
+        method: "POST",
+        body: JSON.stringify({
+          site: siteId,
+          profile_id: selectedLabelProfileId,
+          planned_schedule_id: selectedLabelPlannedScheduleId || null,
+          source_lot_code: newLabelSessionSourceLotCode.trim(),
+          quantity,
+          status: "planned",
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Sessione etichette creata: ${body.id ?? selectedLabelProfileId}`);
+      setNewLabelSessionQuantity("12");
+      setNewLabelSessionSourceLotCode("");
       await loadHaccpData();
     } catch {
       setNotice(t("error.siteCreateConnection"));
@@ -2709,10 +3318,15 @@ function App() {
     () => documents.find((doc) => doc.id === selectedDocId) ?? null,
     [documents, selectedDocId]
   );
+  const intakeDocuments = useMemo(
+    () => documents.filter((doc) => doc.document_type === "goods_receipt" || doc.document_type === "invoice"),
+    [documents]
+  );
   const originalDocumentUrl = useMemo(() => getDocumentFileUrl(selectedDocument), [selectedDocument]);
+  const haccpLabelCaptureQueue = useMemo(() => normalizeHaccpOcrQueueRowsFromDocuments(documents), [documents]);
   const selectedHaccpQueueItem = useMemo(
-    () => haccpOcrQueue.find((item) => item.document_id === selectedHaccpDocumentId) ?? haccpOcrQueue[0] ?? null,
-    [haccpOcrQueue, selectedHaccpDocumentId]
+    () => haccpLabelCaptureQueue.find((item) => item.document_id === selectedHaccpDocumentId) ?? haccpLabelCaptureQueue[0] ?? null,
+    [haccpLabelCaptureQueue, selectedHaccpDocumentId]
   );
   const selectedHaccpDocument = useMemo(
     () => documents.find((doc) => doc.id === selectedHaccpQueueItem?.document_id) ?? null,
@@ -2730,7 +3344,7 @@ function App() {
   const previewDocumentUrl = originalDocumentBlobUrl;
   const haccpAnomalyRows = useMemo(() => {
     const rows: Array<{ id: string; happened_at: string; source: string; category: string; detail: string; severity: string }> = [];
-    haccpOcrQueue
+    haccpLabelCaptureQueue
       .filter((item) => item.validation_status === "rejected")
       .forEach((item) => {
         rows.push({
@@ -2779,7 +3393,7 @@ function App() {
       });
 
     return rows.sort((a, b) => String(b.happened_at).localeCompare(String(a.happened_at)));
-  }, [haccpOcrQueue, haccpReconciliationOverview, haccpSchedules]);
+  }, [haccpLabelCaptureQueue, haccpReconciliationOverview, haccpSchedules]);
   const supplierOrderGroups = useMemo(() => {
     if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
@@ -3515,12 +4129,12 @@ function App() {
                         const id = e.target.value;
                         setSelectedDocId(id);
                         setSelectedExtractionId("");
-                        const doc = documents.find((d) => d.id === id);
+                        const doc = intakeDocuments.find((d) => d.id === id);
                         if (doc) setSelectedDocType(doc.document_type);
                       }}
                     >
                       <option value="">{t("action.select")}</option>
-                      {documents.map((d) => (
+                      {intakeDocuments.map((d) => (
                         <option key={d.id} value={d.id}>{d.filename} ({d.document_type})</option>
                       ))}
                     </select>
@@ -3890,9 +4504,12 @@ function App() {
               isHaccpSaving={isHaccpSaving}
               haccpView={haccpView}
               setHaccpView={setHaccpView}
-              haccpOcrQueue={haccpOcrQueue}
+              haccpOcrQueue={haccpLabelCaptureQueue}
               haccpLifecycleEvents={haccpLifecycleEvents}
               haccpSchedules={haccpSchedules}
+              haccpLabelProfiles={haccpLabelProfiles}
+              haccpLabelSessions={haccpLabelSessions}
+              haccpTemperatureReadings={haccpTemperatureReadings}
               haccpReconciliationOverview={haccpReconciliationOverview}
               selectedHaccpQueueItem={selectedHaccpQueueItem}
               selectedHaccpDocumentUrl={selectedHaccpDocumentUrl}
@@ -3911,21 +4528,58 @@ function App() {
               setSelectedHaccpColdPointId={setSelectedHaccpColdPointId}
               newHaccpSectorName={newHaccpSectorName}
               setNewHaccpSectorName={setNewHaccpSectorName}
+              editingHaccpSectorId={editingHaccpSectorId}
               newHaccpColdPointName={newHaccpColdPointName}
               setNewHaccpColdPointName={setNewHaccpColdPointName}
               newHaccpColdPointEquipmentType={newHaccpColdPointEquipmentType}
               setNewHaccpColdPointEquipmentType={setNewHaccpColdPointEquipmentType}
+              editingHaccpColdPointId={editingHaccpColdPointId}
               newHaccpStartsAt={newHaccpStartsAt}
               setNewHaccpStartsAt={setNewHaccpStartsAt}
               newHaccpEndsAt={newHaccpEndsAt}
               setNewHaccpEndsAt={setNewHaccpEndsAt}
+              newLabelProfileName={newLabelProfileName}
+              setNewLabelProfileName={setNewLabelProfileName}
+              newLabelProfileCategory={newLabelProfileCategory}
+              setNewLabelProfileCategory={setNewLabelProfileCategory}
+              newLabelTemplateType={newLabelTemplateType}
+              setNewLabelTemplateType={setNewLabelTemplateType}
+              newLabelShelfLifeValue={newLabelShelfLifeValue}
+              setNewLabelShelfLifeValue={setNewLabelShelfLifeValue}
+              newLabelShelfLifeUnit={newLabelShelfLifeUnit}
+              setNewLabelShelfLifeUnit={setNewLabelShelfLifeUnit}
+              newLabelPackaging={newLabelPackaging}
+              setNewLabelPackaging={setNewLabelPackaging}
+              newLabelStorageHint={newLabelStorageHint}
+              setNewLabelStorageHint={setNewLabelStorageHint}
+              newLabelAllergensText={newLabelAllergensText}
+              setNewLabelAllergensText={setNewLabelAllergensText}
+              editingLabelProfileId={editingLabelProfileId}
+              selectedLabelProfileId={selectedLabelProfileId}
+              setSelectedLabelProfileId={setSelectedLabelProfileId}
+              selectedLabelPlannedScheduleId={selectedLabelPlannedScheduleId}
+              setSelectedLabelPlannedScheduleId={setSelectedLabelPlannedScheduleId}
+              newLabelSessionQuantity={newLabelSessionQuantity}
+              setNewLabelSessionQuantity={setNewLabelSessionQuantity}
+              newLabelSessionSourceLotCode={newLabelSessionSourceLotCode}
+              setNewLabelSessionSourceLotCode={setNewLabelSessionSourceLotCode}
               loadHaccpData={loadHaccpData}
+              onImportHaccpAssets={onImportHaccpAssets}
+              onExtractHaccpDocument={onExtractHaccpDocument}
               onValidateHaccpOcr={onValidateHaccpOcr}
               onSetHaccpScheduleStatus={onSetHaccpScheduleStatus}
               onDeleteHaccpSchedule={onDeleteHaccpSchedule}
               onCreateHaccpSector={onCreateHaccpSector}
+              onEditHaccpSector={onEditHaccpSector}
+              onDeleteHaccpSector={onDeleteHaccpSector}
               onCreateHaccpColdPoint={onCreateHaccpColdPoint}
+              onEditHaccpColdPoint={onEditHaccpColdPoint}
+              onDeleteHaccpColdPoint={onDeleteHaccpColdPoint}
               onCreateHaccpSchedule={onCreateHaccpSchedule}
+              onCreateHaccpLabelProfile={onCreateHaccpLabelProfile}
+              onEditHaccpLabelProfile={onEditHaccpLabelProfile}
+              onDeleteHaccpLabelProfile={onDeleteHaccpLabelProfile}
+              onCreateHaccpLabelSession={onCreateHaccpLabelSession}
               t={t}
             />
           )}
