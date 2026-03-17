@@ -993,6 +993,22 @@ th {
   color: var(--text);
 }
 
+.reconciliation-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 10px;
+  align-items: end;
+  padding-top: 6px;
+}
+
+.reconciliation-actions .entry-actions {
+  margin: 0;
+}
+
+.reconciliation-actions .entry-actions button {
+  margin-top: 0;
+}
+
 .traceability-row--active {
   background: rgba(184, 212, 136, 0.18) !important;
 }

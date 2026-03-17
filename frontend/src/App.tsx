@@ -882,6 +882,7 @@ function App() {
   const [reconciliationSiteFilter, setReconciliationSiteFilter] = useState(
     () => parseTraceabilityReconciliationHash(window.location.hash).siteId || ""
   );
+  const [reconciliationSelections, setReconciliationSelections] = useState<Record<string, { goodsReceiptLineId: string; invoiceLineId: string }>>({});
   const [lastTraceabilityImportSummary, setLastTraceabilityImportSummary] = useState<{
     created_count: number;
     skipped_existing: number;
@@ -4122,6 +4123,47 @@ function App() {
     setNav("tracciabilita");
   }
 
+  function getReconciliationSelection(row: HaccpReconciliationRow) {
+    const saved = reconciliationSelections[row.event_id];
+    return {
+      goodsReceiptLineId: saved?.goodsReceiptLineId || row.goods_receipts[0]?.id || "",
+      invoiceLineId: saved?.invoiceLineId || row.invoices[0]?.id || "",
+    };
+  }
+
+  async function onCreateCentralReconciliationMatch(row: HaccpReconciliationRow) {
+    const selection = getReconciliationSelection(row);
+    if (!selection.goodsReceiptLineId || !selection.invoiceLineId) {
+      setNotice("Seleziona una riga bolla e una riga fattura.");
+      return;
+    }
+    try {
+      const res = await apiFetch("/reconciliation/matches/", {
+        method: "POST",
+        body: JSON.stringify({
+          invoice_line: selection.invoiceLineId,
+          goods_receipt_line: selection.goodsReceiptLineId,
+          status: "manual",
+          note: `Conferma manuale da riconciliazione tracciabilita per evento ${row.event_id}`,
+          metadata: {
+            source: "traceability_reconciliation",
+            event_id: row.event_id,
+            site_id: row.site_id || null,
+          },
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.reconciliationCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Match creato: ${body.id}`);
+      await loadCentralTraceabilityReconciliation();
+    } catch {
+      setNotice(t("error.reconciliationCreate"));
+    }
+  }
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -4304,6 +4346,59 @@ function App() {
                                     <div><strong>Fatture</strong> {row.invoices.map((item) => item.invoice_number).join(", ") || "-"}</div>
                                     <div><strong>Match</strong> {row.matches.length}</div>
                                     <div><strong>Alert</strong> {row.alerts.join(" ") || "-"}</div>
+                                    {row.matches.length === 0 && (row.goods_receipts.length > 0 || row.invoices.length > 0) ? (
+                                      <div className="reconciliation-actions">
+                                        <div>
+                                          <label>Bolla</label>
+                                          <select
+                                            value={getReconciliationSelection(row).goodsReceiptLineId}
+                                            onChange={(e) =>
+                                              setReconciliationSelections((prev) => ({
+                                                ...prev,
+                                                [row.event_id]: {
+                                                  goodsReceiptLineId: e.target.value,
+                                                  invoiceLineId: prev[row.event_id]?.invoiceLineId || row.invoices[0]?.id || "",
+                                                },
+                                              }))
+                                            }
+                                          >
+                                            <option value="">Seleziona</option>
+                                            {row.goods_receipts.map((item) => (
+                                              <option key={item.id} value={item.id}>{item.delivery_note_number}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label>Fattura</label>
+                                          <select
+                                            value={getReconciliationSelection(row).invoiceLineId}
+                                            onChange={(e) =>
+                                              setReconciliationSelections((prev) => ({
+                                                ...prev,
+                                                [row.event_id]: {
+                                                  goodsReceiptLineId: prev[row.event_id]?.goodsReceiptLineId || row.goods_receipts[0]?.id || "",
+                                                  invoiceLineId: e.target.value,
+                                                },
+                                              }))
+                                            }
+                                          >
+                                            <option value="">Seleziona</option>
+                                            {row.invoices.map((item) => (
+                                              <option key={item.id} value={item.id}>{item.invoice_number}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                        <div className="entry-actions">
+                                          <button
+                                            type="button"
+                                            onClick={() => void onCreateCentralReconciliationMatch(row)}
+                                            disabled={!getReconciliationSelection(row).goodsReceiptLineId || !getReconciliationSelection(row).invoiceLineId}
+                                          >
+                                            {row.goods_receipts.length === 1 && row.invoices.length === 1 ? "Conferma match" : "Collega manualmente"}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </details>
                               </td>

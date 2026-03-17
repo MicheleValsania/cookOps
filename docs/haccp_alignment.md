@@ -169,6 +169,12 @@ Rule:
 - operational traceability work stays site-based
 - reconciliation works on a central dataset with an optional site filter
 
+Current UI direction for reconciliation:
+
+- central page
+- initial site prefilter from origin context
+- manual confirmation/linking of delivery-note and invoice candidates when available
+
 ## Sync strategy
 
 Recommended rollout:
