@@ -19,6 +19,23 @@ CookOps = **Cook Operations**: achats, stocks, BL/factures, ventes POS, rapproch
 - Reconciliation BL ↔ lots ↔ factures
 - Connecteurs (Lightspeed, Sage, Pennylane) via adapters
 
+## HACCP/Traccia integration (CookOps as gateway)
+CookOps frontend stays single-app and calls only CookOps API.
+CookOps backend proxies HACCP/Traccia calls server-to-server.
+
+Environment variables (backend):
+- `TRACCIA_API_BASE_URL` (example: `https://traccia.example.com`)
+- `TRACCIA_API_KEY` (API key used by CookOps when calling Traccia)
+- `TRACCIA_TIMEOUT_SECONDS` (default `12`)
+
+Proxy endpoints exposed by CookOps:
+- `GET /api/v1/haccp/traccia/ocr-queue/`
+- `POST /api/v1/haccp/traccia/ocr-queue/{document_id}/validate/`
+- `GET /api/v1/haccp/traccia/lifecycle/`
+- `GET /api/v1/haccp/traccia/reconciliation-overview/`
+- `GET/POST /api/v1/haccp/schedules/`
+- `PATCH/DELETE /api/v1/haccp/schedules/{schedule_id}/`
+
 ## Import snapshots da Fiches (JSON v1.1)
 - Endpoint: `POST /api/v1/integration/fiches/snapshots/import-envelope/`
 - Header richiesto: `X-API-Key`

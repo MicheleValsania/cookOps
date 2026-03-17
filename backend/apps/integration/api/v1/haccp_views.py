@@ -6,7 +6,14 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.integration.api.v1.serializers import HaccpOcrValidationSerializer, HaccpScheduleSerializer
+from apps.integration.api.v1.serializers import (
+    HaccpColdPointSerializer,
+    HaccpLabelProfileSerializer,
+    HaccpLabelSessionSerializer,
+    HaccpOcrValidationSerializer,
+    HaccpScheduleSerializer,
+    HaccpSectorSerializer,
+)
 from apps.integration.services.traccia_client import TracciaClient, TracciaClientError
 from apps.purchasing.models import GoodsReceiptLine, InvoiceGoodsReceiptMatch, InvoiceLine
 
@@ -338,7 +345,7 @@ class HaccpOcrValidateView(APIView):
             code, payload = client.request_json(
                 "POST",
                 f"/api/v1/haccp/ocr-results/{document_id}/validate/",
-                data=serializer.validated_data,
+                data=serializer.data,
                 headers=_pass_through_headers(request),
             )
             return Response(payload, status=code)
@@ -383,6 +390,50 @@ class HaccpSectorListView(APIView):
             return _proxy_error(exc)
 
 
+class HaccpSectorDetailView(APIView):
+    def patch(self, request, sector_id):
+        serializer = HaccpSectorSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "PATCH",
+                f"/api/v1/haccp/sectors/{sector_id}/",
+                data=serializer.data,
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+    def delete(self, request, sector_id):
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "DELETE",
+                f"/api/v1/haccp/sectors/{sector_id}/",
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+
+class HaccpSiteSyncView(APIView):
+    def post(self, request):
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "POST",
+                "/api/v1/haccp/sites/sync/",
+                data=request.data,
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+
 class HaccpColdPointListView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
@@ -395,6 +446,58 @@ class HaccpColdPointListView(APIView):
                 "GET",
                 "/api/v1/haccp/cold-points/",
                 params={"site": site_id, "sector": sector_id},
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+
+class HaccpColdPointDetailView(APIView):
+    def patch(self, request, point_id):
+        serializer = HaccpColdPointSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "PATCH",
+                f"/api/v1/haccp/cold-points/{point_id}/",
+                data=serializer.data,
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+    def delete(self, request, point_id):
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "DELETE",
+                f"/api/v1/haccp/cold-points/{point_id}/",
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+
+class HaccpTemperatureReadingListView(APIView):
+    def get(self, request):
+        site_id = (request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "GET",
+                "/api/v1/haccp/temperature-readings/",
+                params={
+                    "site": site_id,
+                    "sector": (request.query_params.get("sector") or "").strip(),
+                    "cold_point": (request.query_params.get("cold_point") or "").strip(),
+                    "limit": (request.query_params.get("limit") or "120").strip(),
+                },
                 headers=_pass_through_headers(request),
             )
             return Response(payload, status=code)
@@ -456,7 +559,7 @@ class HaccpScheduleListCreateView(APIView):
             code, payload = client.request_json(
                 "POST",
                 "/api/v1/haccp/schedules/",
-                data=serializer.validated_data,
+                data=serializer.data,
                 headers=_pass_through_headers(request),
             )
             return Response(payload, status=code)
@@ -473,7 +576,98 @@ class HaccpScheduleDetailView(APIView):
             code, payload = client.request_json(
                 "PATCH",
                 f"/api/v1/haccp/schedules/{schedule_id}/",
-                data=serializer.validated_data,
+                data=serializer.data,
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+
+class HaccpLabelProfileListCreateView(APIView):
+    def get(self, request):
+        site_id = (request.query_params.get("site") or "").strip()
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "GET",
+                "/api/v1/haccp/label-profiles/",
+                params={"site": site_id},
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+    def post(self, request):
+        serializer = HaccpLabelProfileSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "POST",
+                "/api/v1/haccp/label-profiles/",
+                data=serializer.data,
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+
+class HaccpLabelProfileDetailView(APIView):
+    def patch(self, request, profile_id):
+        serializer = HaccpLabelProfileSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "PATCH",
+                f"/api/v1/haccp/label-profiles/{profile_id}/",
+                data=serializer.data,
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+    def delete(self, request, profile_id):
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "DELETE",
+                f"/api/v1/haccp/label-profiles/{profile_id}/",
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+
+class HaccpLabelSessionListCreateView(APIView):
+    def get(self, request):
+        site_id = (request.query_params.get("site") or "").strip()
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "GET",
+                "/api/v1/haccp/label-sessions/",
+                params={"site": site_id},
+                headers=_pass_through_headers(request),
+            )
+            return Response(payload, status=code)
+        except TracciaClientError as exc:
+            return _proxy_error(exc)
+
+    def post(self, request):
+        serializer = HaccpLabelSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            client = TracciaClient()
+            code, payload = client.request_json(
+                "POST",
+                "/api/v1/haccp/label-sessions/",
+                data=serializer.data,
                 headers=_pass_through_headers(request),
             )
             return Response(payload, status=code)
