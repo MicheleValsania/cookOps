@@ -90,6 +90,7 @@ type HaccpOcrQueueItem = {
   document_status: string;
   validation_status: string;
   validation_notes?: string;
+  reviewed_at?: string;
   created_at?: string;
   updated_at?: string;
   extraction?: {
@@ -534,7 +535,8 @@ function normalizeHaccpOcrQueueRowsFromDocuments(documents: DocumentItem[]): Hac
         document_type: "label_capture",
         document_status: doc.status,
         validation_status: validationStatus,
-        validation_notes: "",
+        validation_notes: String(asRecord(doc.metadata ?? {}).review_notes ?? ""),
+        reviewed_at: String(asRecord(doc.metadata ?? {}).reviewed_at ?? ""),
         created_at: String(doc.created_at ?? ""),
         updated_at: String(doc.updated_at ?? ""),
         extraction: {
@@ -2376,16 +2378,7 @@ function App() {
         setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
         return;
       }
-      const createdDocs = Array.isArray(body.created) ? body.created : [];
-      let extractedCount = 0;
-      for (const row of createdDocs) {
-        const documentId = String((row as Record<string, unknown>).document_id ?? "").trim();
-        if (!documentId) continue;
-        const extraction = await runClaudeExtraction(documentId, { silent: true });
-        if (extraction.ok) {
-          extractedCount += 1;
-        }
-      }
+      const extractedCount = Number(body.extracted_count ?? 0);
       await loadDocuments();
       await loadHaccpData();
       const createdCount = Number(body.created_count ?? 0);
@@ -2650,13 +2643,15 @@ function App() {
   async function onValidateHaccpOcr(
     documentId: string,
     statusValue: "validated" | "rejected",
-    correctedPayload?: Record<string, unknown>
+    correctedPayload?: Record<string, unknown>,
+    notes = ""
   ) {
     try {
       const res = await apiFetch(`/integration/documents/${documentId}/review/`, {
         method: "POST",
         body: JSON.stringify({
           status: statusValue,
+          notes,
           corrected_payload: correctedPayload,
         }),
       });
@@ -3569,6 +3564,8 @@ function App() {
         supplierLotCode: String(payload.supplier_lot_code ?? payload.lot_code ?? payload.lot ?? "-"),
         productionDate: String(payload.production_date ?? payload.manufactured_at ?? "-"),
         dlcDate: String(payload.dlc_date ?? payload.expiry_date ?? "-"),
+        reviewNotes: String(row.validation_notes ?? "-") || "-",
+        reviewedAt: String(row.reviewed_at ?? row.updated_at ?? ""),
       };
     });
   }, [haccpLabelCaptureQueue]);
@@ -3613,6 +3610,7 @@ function App() {
         row.originLotCode,
         row.supplierLotCode,
         row.dlcDate,
+        row.reviewNotes,
       ].some((value) => String(value || "").toLowerCase().includes(q));
     });
   }, [traceabilityReportRows, reportDateFrom, reportDateTo, reportReviewStatus, reportSearch, reportOnlyAnomalies, reportSupplierSearch, reportProductSearch, reportLotSearch]);
@@ -3884,6 +3882,57 @@ function App() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  }
+
+  function exportPdfReport(title: string, headers: string[], rows: string[][]) {
+    const popup = window.open("", "_blank", "width=1200,height=900");
+    if (!popup) {
+      setNotice("Impossibile aprire la finestra PDF dal browser.");
+      return;
+    }
+    const escapeHtml = (value: string) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;");
+    const headerHtml = headers.map((item) => `<th>${escapeHtml(item)}</th>`).join("");
+    const bodyHtml = rows
+      .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+      .join("");
+    const printedAt = new Date().toLocaleString("it-IT");
+    popup.document.write(`<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 24px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #eef5df; }
+    .meta { display: flex; gap: 16px; margin-bottom: 16px; font-size: 12px; color: #475569; }
+    .meta strong { display: block; font-size: 11px; text-transform: uppercase; color: #64748b; }
+    @page { size: A4 landscape; margin: 12mm; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="meta">
+    <div><strong>Sito</strong>${escapeHtml(activeSite?.name ?? "-")}</div>
+    <div><strong>Generato il</strong>${escapeHtml(printedAt)}</div>
+    <div><strong>Filtri</strong>${escapeHtml(`${reportDateFrom || "all"} -> ${reportDateTo || "all"} / ${reportReviewStatus}`)}</div>
+  </div>
+  <table>
+    <thead><tr>${headerHtml}</tr></thead>
+    <tbody>${bodyHtml || `<tr><td colspan="${headers.length}">Nessun dato</td></tr>`}</tbody>
+  </table>
+</body>
+</html>`);
+    popup.document.close();
+    popup.focus();
+    popup.print();
   }
 
   function resetReportFilters() {
@@ -4938,9 +4987,9 @@ function App() {
                     <button
                       type="button"
                       onClick={() =>
-                        exportCsv(
-                          `report-tracciabilita-${reportDateFrom || "all"}-${reportDateTo || "all"}.csv`,
-                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "OCR", "Convalida"],
+                        exportPdfReport(
+                          "Report tracciabilita",
+                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "OCR", "Convalida", "Note review", "Revisionato il"],
                           filteredTraceabilityReportRows.map((row) => [
                             row.filename,
                             row.productGuess,
@@ -4951,11 +5000,57 @@ function App() {
                             row.dlcDate,
                             String(row.extraction?.status || row.document_status || "-"),
                             row.validation_status,
+                            row.reviewNotes,
+                            String(row.reviewedAt || "-").replace("T", " ").slice(0, 19),
+                          ])
+                        )
+                      }
+                    >
+                      PDF tracciabilita
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        exportCsv(
+                          `report-tracciabilita-${reportDateFrom || "all"}-${reportDateTo || "all"}.csv`,
+                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "OCR", "Convalida", "Note review", "Revisionato il"],
+                          filteredTraceabilityReportRows.map((row) => [
+                            row.filename,
+                            row.productGuess,
+                            row.supplierName,
+                            row.originLotCode,
+                            row.supplierLotCode,
+                            row.productionDate,
+                            row.dlcDate,
+                            String(row.extraction?.status || row.document_status || "-"),
+                            row.validation_status,
+                            row.reviewNotes,
+                            String(row.reviewedAt || "-").replace("T", " ").slice(0, 19),
                           ])
                         )
                       }
                     >
                       Export tracciabilita
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        exportPdfReport(
+                          "Report temperature",
+                          ["Settore", "Punto freddo", "Temperatura", "Riferimento", "Rilevata il", "Sorgente", "Stato"],
+                          filteredTemperatureReportRows.map((row) => [
+                            row.sector_name || "-",
+                            row.cold_point_name || row.register_name || "-",
+                            `${row.temperature_celsius || "-"} ${row.unit || "C"}`,
+                            row.reference_temperature_celsius || "-",
+                            String(row.observed_at ?? "-").replace("T", " ").slice(0, 19),
+                            row.source || "-",
+                            row.isAlert ? "Fuori soglia" : "OK",
+                          ])
+                        )
+                      }
+                    >
+                      PDF temperature
                     </button>
                     <button
                       type="button"
@@ -5046,6 +5141,8 @@ function App() {
                             <th>DLC</th>
                             <th>OCR</th>
                             <th>Convalida</th>
+                            <th>Note review</th>
+                            <th>Revisionato il</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -5060,6 +5157,8 @@ function App() {
                               <td>{row.dlcDate}</td>
                               <td>{String(row.extraction?.status || row.document_status || "-")}</td>
                               <td>{renderReportStatusChip(row.validation_status)}</td>
+                              <td className="report-note-cell">{row.reviewNotes}</td>
+                              <td>{String(row.reviewedAt || "-").replace("T", " ").slice(0, 19)}</td>
                             </tr>
                           ))}
                         </tbody>

@@ -35,6 +35,7 @@ from apps.integration.import_batches import complete_batch, fail_batch, find_com
 from apps.integration.models import DocumentExtraction, DocumentSource, DocumentType, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
 from apps.integration.services.drive_client import DriveClient, DriveClientError
+from apps.integration.services.drive_importer import import_drive_assets_for_site
 from apps.integration.services.traccia_client import TracciaClient, TracciaClientError
 from apps.inventory.models import InventoryMovement, MovementType
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
@@ -580,69 +581,13 @@ class DriveAssetImportView(APIView):
         )
 
         try:
-            client = DriveClient()
-            if folder_id:
-                client.folder_id = folder_id
-            rows = client.list_folder_files(limit=limit)
-            created = []
-            skipped_existing = 0
-            skipped_invalid = 0
-            errors = []
-
-            for row in rows if isinstance(rows, list) else []:
-                if not isinstance(row, dict):
-                    skipped_invalid += 1
-                    continue
-                drive_file_id = str(row.get("id") or "").strip()
-                if not drive_file_id:
-                    skipped_invalid += 1
-                    continue
-                if _document_exists_for_drive_file(site, drive_file_id):
-                    skipped_existing += 1
-                    continue
-
-                try:
-                    headers, binary = client.download_file(drive_file_id)
-                    content_type = (headers.get("Content-Type") or row.get("mimeType") or "application/octet-stream").strip()
-                    filename = str(row.get("name") or f"{drive_file_id}.bin").strip() or f"{drive_file_id}.bin"
-                    metadata = {
-                        "drive_file_id": drive_file_id,
-                        "drive_link": row.get("webViewLink") or "",
-                        "drive_folder_id": client.folder_id,
-                        "mime_type": row.get("mimeType") or content_type,
-                        "drive_created_at": row.get("createdTime"),
-                        "drive_modified_at": row.get("modifiedTime"),
-                        "source_app": "drive",
-                    }
-                    document = _create_drive_document(
-                        site=site,
-                        document_type=document_type,
-                        filename=filename,
-                        content_type=content_type,
-                        binary=binary,
-                        metadata=metadata,
-                    )
-                    created.append(
-                        {
-                            "document_id": str(document.id),
-                            "drive_file_id": drive_file_id,
-                            "filename": filename,
-                        }
-                    )
-                except DriveClientError as exc:
-                    errors.append({"drive_file_id": drive_file_id, "detail": exc.payload})
-
-            result = {
-                "site": str(site.id),
-                "folder_id": client.folder_id,
-                "document_type": document_type,
-                "created_count": len(created),
-                "skipped_existing": skipped_existing,
-                "skipped_invalid": skipped_invalid,
-                "error_count": len(errors),
-                "created": created,
-                "errors": errors,
-            }
+            result = import_drive_assets_for_site(
+                site=site,
+                limit=limit,
+                folder_id=folder_id,
+                document_type=document_type,
+                auto_extract=True,
+            ).as_dict()
             complete_batch(batch, status.HTTP_201_CREATED, result)
             return Response(result, status=status.HTTP_201_CREATED)
         except DriveClientError as exc:

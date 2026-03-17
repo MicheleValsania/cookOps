@@ -11,6 +11,7 @@ backend/.venv/
 # Django/env
 backend/.env
 .env
+backend/media/
 
 # IDE
 .vscode/

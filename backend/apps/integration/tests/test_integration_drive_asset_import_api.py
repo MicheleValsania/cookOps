@@ -1,6 +1,7 @@
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from django.test import override_settings
 from rest_framework import status
@@ -16,9 +17,11 @@ class IntegrationDriveAssetImportApiTests(APITestCase):
         self.client.credentials(HTTP_X_API_KEY="dev-api-key")
         self.site = Site.objects.create(name="Central Site", code="CENTRAL")
 
-    @patch("apps.integration.api.v1.views.DriveClient")
-    def test_import_drive_assets_creates_documents(self, client_cls):
+    @patch("apps.integration.services.drive_importer.run_claude_extraction")
+    @patch("apps.integration.services.drive_importer.DriveClient")
+    def test_import_drive_assets_creates_documents(self, client_cls, extract_mock):
         client = client_cls.return_value
+        extract_mock.return_value = SimpleNamespace(status="succeeded", error_message="")
         client.folder_id = "folder-001"
         client.list_folder_files.return_value = [
             {
@@ -40,6 +43,7 @@ class IntegrationDriveAssetImportApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.json()["created_count"], 1)
+        self.assertEqual(response.json()["extracted_count"], 1)
         document = IntegrationDocument.objects.get()
         self.assertEqual(document.site, self.site)
         self.assertEqual(document.document_type, DocumentType.LABEL_CAPTURE)
@@ -56,8 +60,9 @@ class IntegrationDriveAssetImportApiTests(APITestCase):
             1,
         )
 
-    @patch("apps.integration.api.v1.views.DriveClient")
-    def test_import_drive_assets_skips_existing_drive_file(self, client_cls):
+    @patch("apps.integration.services.drive_importer.run_claude_extraction")
+    @patch("apps.integration.services.drive_importer.DriveClient")
+    def test_import_drive_assets_skips_existing_drive_file(self, client_cls, extract_mock):
         IntegrationDocument.objects.create(
             site=self.site,
             document_type=DocumentType.LABEL_CAPTURE,
@@ -88,3 +93,4 @@ class IntegrationDriveAssetImportApiTests(APITestCase):
         self.assertEqual(response.json()["skipped_existing"], 1)
         self.assertEqual(IntegrationDocument.objects.count(), 1)
         client.download_file.assert_not_called()
+        extract_mock.assert_not_called()

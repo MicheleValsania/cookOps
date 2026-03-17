@@ -283,6 +283,11 @@ li {
   font-size: 0.9rem;
 }
 
+.report-note-cell {
+  max-width: 280px;
+  white-space: pre-wrap;
+}
+
 label {
   display: block;
   margin: 8px 0 4px;

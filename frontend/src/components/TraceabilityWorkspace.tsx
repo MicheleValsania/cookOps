@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type TraceabilityQueueItem = {
   document_id: string;
@@ -6,6 +6,7 @@ type TraceabilityQueueItem = {
   document_type: "goods_receipt" | "invoice" | "label_capture";
   document_status: string;
   validation_status: string;
+  validation_notes?: string;
   extraction?: {
     confidence?: string | null;
     status?: string | null;
@@ -70,7 +71,12 @@ type Props = {
   onImportAssets: () => void | Promise<void>;
   onRefresh: () => void;
   onExtractDocument: (documentId: string) => void | Promise<void>;
-  onValidateDocument: (documentId: string, statusValue: "validated" | "rejected", correctedPayload?: Record<string, unknown>) => void;
+  onValidateDocument: (
+    documentId: string,
+    statusValue: "validated" | "rejected",
+    correctedPayload?: Record<string, unknown>,
+    notes?: string
+  ) => void;
   onDeleteDocument: (documentId: string) => void | Promise<void>;
   importSummary: TraceabilityImportSummary | null;
   importStatus: string;
@@ -119,6 +125,7 @@ export function TraceabilityWorkspace(props: Props) {
   const [isZoomOpen, setIsZoomOpen] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [editPayload, setEditPayload] = useState<Record<string, string>>({});
+  const [reviewNotes, setReviewNotes] = useState("");
 
   const extractedCount = queue.filter((item) => String(item.extraction?.status || "").trim() === "succeeded").length;
   const pendingCount = queue.filter((item) => {
@@ -132,6 +139,11 @@ export function TraceabilityWorkspace(props: Props) {
     || /\.(png|jpe?g|gif|webp)$/i.test(String(selectedQueueItem?.filename || ""));
   const canConfirm = selectedQueueItem?.validation_status !== "validated";
   const canReject = selectedQueueItem?.validation_status !== "rejected";
+
+  useEffect(() => {
+    setEditPayload({});
+    setReviewNotes(String(selectedQueueItem?.validation_notes ?? ""));
+  }, [selectedQueueItem?.document_id]);
 
   function readEditableField(key: string, fallbackKeys: string[]) {
     const localValue = String(editPayload[key] ?? "").trim();
@@ -278,8 +290,8 @@ export function TraceabilityWorkspace(props: Props) {
                     {isImagePreview ? (
                       <button type="button" onClick={() => setIsZoomOpen(true)}>Zoom</button>
                     ) : null}
-                    <button type="button" onClick={() => onValidateDocument(selectedQueueItem.document_id, "validated", buildCorrectedPayload())} disabled={!canConfirm}>Conferma</button>
-                    <button type="button" className="warning-btn" onClick={() => onValidateDocument(selectedQueueItem.document_id, "rejected")} disabled={!canReject}>
+                    <button type="button" onClick={() => onValidateDocument(selectedQueueItem.document_id, "validated", buildCorrectedPayload(), reviewNotes)} disabled={!canConfirm}>Conferma</button>
+                    <button type="button" className="warning-btn" onClick={() => onValidateDocument(selectedQueueItem.document_id, "rejected", undefined, reviewNotes)} disabled={!canReject}>
                       Rifiuta
                     </button>
                     <button type="button" className="danger-btn" onClick={() => void onDeleteDocument(selectedQueueItem.document_id)}>Elimina</button>
@@ -350,6 +362,10 @@ export function TraceabilityWorkspace(props: Props) {
                       <div>
                         <span>Validazione</span>
                         <b>{formatValidationStatus(selectedQueueItem.validation_status)}</b>
+                      </div>
+                      <div className="traceability-grid-span">
+                        <span>Note review</span>
+                        <textarea value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} rows={2} />
                       </div>
                       <div className="traceability-grid-span">
                         <span>Note estratte</span>
