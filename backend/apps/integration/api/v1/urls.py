@@ -21,9 +21,11 @@ from apps.integration.api.v1.haccp_views import (
     HaccpScheduleListCreateView,
 )
 from apps.integration.api.v1.views import (
+    DriveAssetImportView,
     DocumentClaudeExtractView,
     DocumentExtractionViewSet,
     DocumentIngestViewSet,
+    DocumentReviewView,
     FicheCatalogImportView,
     FicheSnapshotEnvelopeImportView,
     FicheSnapshotImportView,
@@ -63,6 +65,11 @@ urlpatterns = [
         name="integration-traccia-asset-import",
     ),
     path(
+        "integration/drive-assets/import/",
+        DriveAssetImportView.as_view(),
+        name="integration-drive-asset-import",
+    ),
+    path(
         "integration/documents/<uuid:document_id>/extractions/",
         DocumentExtractionViewSet.as_view({"post": "create"}),
         name="integration-document-extraction-create",
@@ -76,6 +83,11 @@ urlpatterns = [
         "integration/documents/<uuid:document_id>/extract-claude/",
         DocumentClaudeExtractView.as_view(),
         name="integration-document-claude-extract",
+    ),
+    path(
+        "integration/documents/<uuid:document_id>/review/",
+        DocumentReviewView.as_view(),
+        name="integration-document-review",
     ),
     path(
         "haccp/traccia/ocr-queue/",

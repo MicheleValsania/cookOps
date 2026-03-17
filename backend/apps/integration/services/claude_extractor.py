@@ -192,6 +192,25 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
     content_type = (document.content_type or "application/pdf").strip().lower()
     encoded = base64.b64encode(file_bytes).decode("ascii")
     client = Anthropic(api_key=api_key)
+    supported_image_types = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    if content_type in supported_image_types:
+        source_block = {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": content_type,
+                "data": encoded,
+            },
+        }
+    else:
+        source_block = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": encoded,
+            },
+        }
 
     try:
         response = client.messages.create(
@@ -203,14 +222,7 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": content_type,
-                                "data": encoded,
-                            },
-                        },
+                        source_block,
                     ],
                 }
             ],

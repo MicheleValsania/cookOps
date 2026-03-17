@@ -148,12 +148,8 @@ type HaccpAnomalyRow = {
 };
 
 export const HACCP_VIEWS: Array<{ key: HaccpViewKey; label: string; desc: string }> = [
-  { key: "reports", label: "Report", desc: "Tabelle operative live con stampa secondaria" },
-  { key: "validation", label: "Convalida", desc: "Documento, OCR e dati estratti da controllare" },
   { key: "temperature", label: "Temperature", desc: "Programmazione per settore e punto freddo" },
   { key: "labels", label: "Etichette", desc: "Profili e sessioni di stampa" },
-  { key: "lifecycle", label: "Lifecycle", desc: "Lotti e riconciliazione Traccia" },
-  { key: "anomalies", label: "Anomalie", desc: "Non conformita e scostamenti" },
   { key: "cleaning", label: "Pulizie", desc: "Programmazione e convalida" },
 ];
 
@@ -223,7 +219,6 @@ type Props = {
   newLabelSessionSourceLotCode: string;
   setNewLabelSessionSourceLotCode: (value: string) => void;
   loadHaccpData: () => void;
-  onImportHaccpAssets: () => void | Promise<void>;
   onExtractHaccpDocument: (documentId: string) => void | Promise<void>;
   onValidateHaccpOcr: (documentId: string, statusValue: "validated" | "rejected") => void;
   onSetHaccpScheduleStatus: (scheduleId: string, statusValue: "planned" | "done" | "skipped" | "cancelled") => void;
@@ -312,7 +307,6 @@ export function HaccpWorkspace(props: Props) {
     newLabelSessionSourceLotCode,
     setNewLabelSessionSourceLotCode,
     loadHaccpData,
-    onImportHaccpAssets,
     onExtractHaccpDocument,
     onValidateHaccpOcr,
     onSetHaccpScheduleStatus,
@@ -355,12 +349,9 @@ export function HaccpWorkspace(props: Props) {
         <div className="menu-space-header-row">
           <div>
             <h2>Area HACCP</h2>
-            <p className="muted">Pilotage HACCP centralise dans CookOps, execution et tracabilite dans Traccia.</p>
+            <p className="muted">Programmazione HACCP centralizzata in CookOps, con esecuzione locale in Traccia.</p>
           </div>
           <div className="entry-actions no-print">
-            <button type="button" onClick={() => void onImportHaccpAssets()} disabled={!siteId || isHaccpLoading || isHaccpSaving}>
-              Importer photos Traccia
-            </button>
             <button type="button" onClick={loadHaccpData} disabled={!siteId || isHaccpLoading}>
               {isHaccpLoading ? t("action.loading") : t("suppliers.refreshList")}
             </button>
@@ -379,6 +370,7 @@ export function HaccpWorkspace(props: Props) {
           ))}
         </div>
         <p className="muted">{HACCP_VIEWS.find((item) => item.key === haccpView)?.desc}</p>
+        <p className="muted">La gestione foto, OCR e dati estratti e stata spostata nella sezione Tracciabilita.</p>
         <p className="muted">Structure cible: site -&gt; secteur -&gt; point froid, avec planning saisi ici et execute dans Traccia.</p>
       </section>
 

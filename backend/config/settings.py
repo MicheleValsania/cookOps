@@ -148,3 +148,14 @@ REST_FRAMEWORK = {
     ),
     "EXCEPTION_HANDLER": "apps.core.api.exceptions.cookops_exception_handler",
 }
+
+TRACCIA_API_BASE_URL = os.getenv("TRACCIA_API_BASE_URL", "").strip().rstrip("/")
+TRACCIA_API_KEY = os.getenv("TRACCIA_API_KEY", "").strip()
+TRACCIA_TIMEOUT_SECONDS = float(os.getenv("TRACCIA_TIMEOUT_SECONDS", "12"))
+
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+GOOGLE_DRIVE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_DRIVE_OAUTH_CLIENT_ID", "").strip()
+GOOGLE_DRIVE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET", "").strip()
+GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN = os.getenv("GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN", "").strip()
+GOOGLE_DRIVE_OAUTH_TOKEN_URI = os.getenv("GOOGLE_DRIVE_OAUTH_TOKEN_URI", "https://oauth2.googleapis.com/token").strip()
+GOOGLE_DRIVE_TIMEOUT_SECONDS = float(os.getenv("GOOGLE_DRIVE_TIMEOUT_SECONDS", "20"))

@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.files.base import ContentFile
 from django.db import IntegrityError
+from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -17,6 +18,8 @@ from apps.catalog.models import Supplier
 from apps.core.models import Site
 from apps.integration.api.v1.serializers import (
     ClaudeExtractSerializer,
+    DocumentReviewSerializer,
+    DriveAssetImportSerializer,
     DocumentExtractionSerializer,
     ExtractionIngestSerializer,
     FicheCatalogImportSerializer,
@@ -31,6 +34,7 @@ from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
 from apps.integration.models import DocumentExtraction, DocumentSource, DocumentType, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
+from apps.integration.services.drive_client import DriveClient, DriveClientError
 from apps.integration.services.traccia_client import TracciaClient, TracciaClientError
 from apps.inventory.models import InventoryMovement, MovementType
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
@@ -136,6 +140,23 @@ def _document_exists_for_drive_file(site: Site, drive_file_id: str) -> bool:
         source=DocumentSource.DRIVE,
         metadata__drive_file_id=drive_file_id,
     ).exists()
+
+
+def _create_drive_document(*, site: Site, document_type: str, filename: str, content_type: str, binary: bytes, metadata: dict):
+    document = IntegrationDocument.objects.create(
+        site=site,
+        document_type=document_type,
+        source=DocumentSource.DRIVE,
+        filename=filename,
+        content_type=content_type,
+        file_size=len(binary),
+        status="uploaded",
+        metadata=metadata,
+    )
+    document.file.save(filename, ContentFile(binary), save=False)
+    document.storage_path = document.file.name
+    document.save()
+    return document
 
 
 def _normalize_date_text(value):
@@ -404,11 +425,17 @@ class IntegrationDocumentViewSet(
     mixins.CreateModelMixin,
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
+    mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
     queryset = IntegrationDocument.objects.all()
     serializer_class = IntegrationDocumentSerializer
     parser_classes = (MultiPartParser, FormParser)
+
+    def perform_destroy(self, instance: IntegrationDocument):
+        if instance.file:
+            instance.file.delete(save=False)
+        instance.delete()
 
 
 class TracciaAssetImportView(APIView):
@@ -518,6 +545,107 @@ class TracciaAssetImportView(APIView):
             complete_batch(batch, status.HTTP_201_CREATED, result)
             return Response(result, status=status.HTTP_201_CREATED)
         except TracciaClientError as exc:
+            fail_batch(batch, exc.status_code, exc.payload)
+            return Response(exc.payload, status=exc.status_code)
+        except Exception as exc:
+            fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
+            raise
+
+
+class DriveAssetImportView(APIView):
+    def post(self, request):
+        serializer = DriveAssetImportSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+
+        site = get_object_or_404(Site, pk=serializer.validated_data["site"])
+        limit = serializer.validated_data["limit"]
+        folder_id = serializer.validated_data.get("folder_id", "").strip()
+        document_type = serializer.validated_data["document_type"]
+        idempotency_key = (
+            serializer.validated_data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key", "")
+        )
+
+        if idempotency_key:
+            existing = find_completed_batch("drive", "asset_import", idempotency_key)
+            if existing:
+                result = existing.result or {}
+                return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
+
+        batch = start_batch(
+            "drive",
+            "asset_import",
+            idempotency_key,
+            {"site": str(site.id), "folder_id": folder_id, "limit": limit, "document_type": document_type},
+        )
+
+        try:
+            client = DriveClient()
+            if folder_id:
+                client.folder_id = folder_id
+            rows = client.list_folder_files(limit=limit)
+            created = []
+            skipped_existing = 0
+            skipped_invalid = 0
+            errors = []
+
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    skipped_invalid += 1
+                    continue
+                drive_file_id = str(row.get("id") or "").strip()
+                if not drive_file_id:
+                    skipped_invalid += 1
+                    continue
+                if _document_exists_for_drive_file(site, drive_file_id):
+                    skipped_existing += 1
+                    continue
+
+                try:
+                    headers, binary = client.download_file(drive_file_id)
+                    content_type = (headers.get("Content-Type") or row.get("mimeType") or "application/octet-stream").strip()
+                    filename = str(row.get("name") or f"{drive_file_id}.bin").strip() or f"{drive_file_id}.bin"
+                    metadata = {
+                        "drive_file_id": drive_file_id,
+                        "drive_link": row.get("webViewLink") or "",
+                        "drive_folder_id": client.folder_id,
+                        "mime_type": row.get("mimeType") or content_type,
+                        "drive_created_at": row.get("createdTime"),
+                        "drive_modified_at": row.get("modifiedTime"),
+                        "source_app": "drive",
+                    }
+                    document = _create_drive_document(
+                        site=site,
+                        document_type=document_type,
+                        filename=filename,
+                        content_type=content_type,
+                        binary=binary,
+                        metadata=metadata,
+                    )
+                    created.append(
+                        {
+                            "document_id": str(document.id),
+                            "drive_file_id": drive_file_id,
+                            "filename": filename,
+                        }
+                    )
+                except DriveClientError as exc:
+                    errors.append({"drive_file_id": drive_file_id, "detail": exc.payload})
+
+            result = {
+                "site": str(site.id),
+                "folder_id": client.folder_id,
+                "document_type": document_type,
+                "created_count": len(created),
+                "skipped_existing": skipped_existing,
+                "skipped_invalid": skipped_invalid,
+                "error_count": len(errors),
+                "created": created,
+                "errors": errors,
+            }
+            complete_batch(batch, status.HTTP_201_CREATED, result)
+            return Response(result, status=status.HTTP_201_CREATED)
+        except DriveClientError as exc:
             fail_batch(batch, exc.status_code, exc.payload)
             return Response(exc.payload, status=exc.status_code)
         except Exception as exc:
@@ -669,6 +797,36 @@ class DocumentClaudeExtractView(APIView):
         except Exception as exc:
             fail_batch(batch, status.HTTP_500_INTERNAL_SERVER_ERROR, {"detail": str(exc)})
             raise
+
+
+class DocumentReviewView(APIView):
+    def post(self, request, document_id):
+        document = get_object_or_404(IntegrationDocument, pk=document_id)
+        serializer = DocumentReviewSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+
+        metadata = document.metadata.copy() if isinstance(document.metadata, dict) else {}
+        metadata["review_status"] = serializer.validated_data["status"]
+        metadata["review_notes"] = serializer.validated_data.get("notes", "")
+        metadata["reviewed_at"] = timezone.now().isoformat()
+        document.metadata = metadata
+        corrected_payload = serializer.validated_data.get("corrected_payload")
+        if corrected_payload is not None:
+            latest_extraction = document.extractions.order_by("-created_at").first()
+            if latest_extraction:
+                latest_extraction.normalized_payload = corrected_payload
+                latest_extraction.save(update_fields=["normalized_payload", "updated_at"])
+        document.save(update_fields=["metadata", "updated_at"])
+        return Response(
+            {
+                "document_id": str(document.id),
+                "review_status": metadata["review_status"],
+                "review_notes": metadata["review_notes"],
+                "reviewed_at": metadata["reviewed_at"],
+                "corrected_payload": corrected_payload,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class FicheRecipeTitleListView(APIView):

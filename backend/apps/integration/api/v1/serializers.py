@@ -132,6 +132,12 @@ class ClaudeExtractSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
 
 
+class DocumentReviewSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=("validated", "rejected"))
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    corrected_payload = serializers.JSONField(required=False)
+
+
 class TracciaAssetImportSerializer(serializers.Serializer):
     site = serializers.UUIDField()
     limit = serializers.IntegerField(required=False, min_value=1, max_value=500, default=80)
@@ -139,6 +145,18 @@ class TracciaAssetImportSerializer(serializers.Serializer):
         choices=("PHOTO_LABEL", "PHOTO_PRODUCT", "DELIVERY_NOTE", "INVOICE"),
         required=False,
         default="PHOTO_LABEL",
+    )
+    idempotency_key = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)
+
+
+class DriveAssetImportSerializer(serializers.Serializer):
+    site = serializers.UUIDField()
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=500, default=80)
+    folder_id = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)
+    document_type = serializers.ChoiceField(
+        choices=("label_capture", "goods_receipt", "invoice"),
+        required=False,
+        default="label_capture",
     )
     idempotency_key = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)
 

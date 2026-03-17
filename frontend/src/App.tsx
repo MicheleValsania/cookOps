@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch, getApiBase, getDefaultApiKey, setDefaultApiKey } from "./api/client";
 import { HaccpWorkspace } from "./components/HaccpWorkspace";
+import { TraceabilityWorkspace } from "./components/TraceabilityWorkspace";
 import { getInitialLang, LANG_STORAGE_KEY, t as translate, type Lang } from "./i18n";
 
 type NavKey =
@@ -12,6 +13,7 @@ type NavKey =
   | "ricette"
   | "comande"
   | "riconciliazioni"
+  | "tracciabilita"
   | "haccp"
   | "report";
 
@@ -21,6 +23,7 @@ type DocumentItem = {
   document_type: "goods_receipt" | "invoice" | "label_capture";
   status: string;
   site: string;
+  content_type?: string | null;
   created_at?: string;
   updated_at?: string;
   metadata?: Record<string, unknown> | null;
@@ -307,6 +310,7 @@ const NAV_ITEMS: Array<{ key: NavKey; labelKey: string; helpKey: string }> = [
   { key: "ricette", labelKey: "nav.recipes", helpKey: "nav.recipesHelp" },
   { key: "comande", labelKey: "nav.orders", helpKey: "nav.ordersHelp" },
   { key: "riconciliazioni", labelKey: "nav.reconciliations", helpKey: "nav.reconciliationsHelp" },
+  { key: "tracciabilita", labelKey: "nav.traceability", helpKey: "nav.traceabilityHelp" },
   { key: "haccp", labelKey: "nav.haccp", helpKey: "nav.haccpHelp" },
   { key: "report", labelKey: "nav.reports", helpKey: "nav.reportsHelp" },
 ];
@@ -315,6 +319,7 @@ const MENU_SPACES_STORAGE_KEY = "cookops_menu_spaces_v1";
 const MENU_SPACES_CACHE_STORAGE_KEY = "cookops_menu_spaces_cache_v1";
 const MENU_ADVANCED_STORAGE_KEY = "cookops_menu_advanced_v1";
 const SELECTED_SITE_STORAGE_KEY = "cookops_selected_site_v1";
+const REPORT_FILTERS_STORAGE_KEY = "cookops_report_filters_v1";
 
 const FICHE_RECIPE_SUGGESTIONS = [
   "Focaccia Bresaola",
@@ -472,6 +477,17 @@ function getTodayIsoDate() {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function readReportFilters() {
+  try {
+    const raw = localStorage.getItem(REPORT_FILTERS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeHaccpOcrQueueRows(body: unknown): HaccpOcrQueueItem[] {
@@ -818,8 +834,24 @@ function App() {
   const [haccpReconciliationOverview, setHaccpReconciliationOverview] = useState<HaccpReconciliationOverview | null>(null);
   const [isHaccpLoading, setIsHaccpLoading] = useState(false);
   const [isHaccpSaving, setIsHaccpSaving] = useState(false);
-  const [haccpView, setHaccpView] = useState<HaccpViewKey>("reports");
+  const [haccpView, setHaccpView] = useState<HaccpViewKey>("temperature");
   const [selectedHaccpDocumentId, setSelectedHaccpDocumentId] = useState("");
+  const [traceabilityImportStatus, setTraceabilityImportStatus] = useState("");
+  const [reportDateFrom, setReportDateFrom] = useState(() => String(readReportFilters()?.date_from ?? getTodayIsoDate().slice(0, 8) + "01"));
+  const [reportDateTo, setReportDateTo] = useState(() => String(readReportFilters()?.date_to ?? getTodayIsoDate()));
+  const [reportReviewStatus, setReportReviewStatus] = useState(() => String(readReportFilters()?.review_status ?? "all"));
+  const [reportSearch, setReportSearch] = useState(() => String(readReportFilters()?.search ?? ""));
+  const [reportOnlyAnomalies, setReportOnlyAnomalies] = useState(() => Boolean(readReportFilters()?.only_anomalies ?? false));
+  const [reportSupplierSearch, setReportSupplierSearch] = useState(() => String(readReportFilters()?.supplier_search ?? ""));
+  const [reportProductSearch, setReportProductSearch] = useState(() => String(readReportFilters()?.product_search ?? ""));
+  const [reportLotSearch, setReportLotSearch] = useState(() => String(readReportFilters()?.lot_search ?? ""));
+  const [lastTraceabilityImportSummary, setLastTraceabilityImportSummary] = useState<{
+    created_count: number;
+    skipped_existing: number;
+    skipped_invalid: number;
+    error_count: number;
+    extracted_count: number;
+  } | null>(null);
   const [newHaccpTaskType, setNewHaccpTaskType] = useState<"label_print" | "temperature_register" | "cleaning">("label_print");
   const [newHaccpTitle, setNewHaccpTitle] = useState("");
   const [newHaccpArea, setNewHaccpArea] = useState("");
@@ -931,18 +963,35 @@ function App() {
   }, [siteId]);
 
   useEffect(() => {
+    localStorage.setItem(
+      REPORT_FILTERS_STORAGE_KEY,
+      JSON.stringify({
+        date_from: reportDateFrom,
+        date_to: reportDateTo,
+        review_status: reportReviewStatus,
+        search: reportSearch,
+        only_anomalies: reportOnlyAnomalies,
+        supplier_search: reportSupplierSearch,
+        product_search: reportProductSearch,
+        lot_search: reportLotSearch,
+      })
+    );
+  }, [reportDateFrom, reportDateTo, reportReviewStatus, reportSearch, reportOnlyAnomalies, reportSupplierSearch, reportProductSearch, reportLotSearch]);
+
+  useEffect(() => {
     void loadSites();
   }, []);
 
   useEffect(() => {
+    if (nav !== "acquisti") return;
     if (!selectedDocId) return;
     if (isClaudeExtracting) return;
     if (selectedExtractionId) return;
     void onExtractWithClaude(selectedDocId);
-  }, [selectedDocId]);
+  }, [nav, selectedDocId]);
 
   useEffect(() => {
-    if (nav !== "acquisti" && nav !== "haccp") return;
+    if (nav !== "acquisti" && nav !== "haccp" && nav !== "tracciabilita" && nav !== "dashboard" && nav !== "report") return;
     void loadDocuments();
   }, [nav]);
 
@@ -953,7 +1002,7 @@ function App() {
   }, [nav, siteId]);
 
   useEffect(() => {
-    if (nav !== "haccp") return;
+    if (nav !== "haccp" && nav !== "tracciabilita" && nav !== "dashboard" && nav !== "report") return;
     if (!siteId) return;
     void loadHaccpData();
   }, [nav, siteId]);
@@ -1616,9 +1665,15 @@ function App() {
 
   async function ensureHaccpSiteSynced(targetSiteId?: string) {
     const resolvedSiteId = (targetSiteId || siteId || "").trim();
-    if (!resolvedSiteId) return false;
+    if (!resolvedSiteId) {
+      setNotice(t("validation.selectSite"));
+      return false;
+    }
     const site = sites.find((item) => item.id === resolvedSiteId);
-    if (!site) return false;
+    if (!site) {
+      setNotice(`Sito non trovato nella sessione locale: ${resolvedSiteId}. Aggiorna l'elenco siti.`);
+      return false;
+    }
     const res = await apiFetch("/haccp/traccia/sites/sync/", {
       method: "POST",
       body: JSON.stringify({
@@ -1936,14 +1991,18 @@ function App() {
     setNotice(t("notice.extractionSaved", { id: body.id }));
   }
 
-  async function onExtractWithClaude(forcedDocId?: string) {
-    const targetDocId = (forcedDocId || selectedDocId || "").trim();
+  async function runClaudeExtraction(targetDocId: string, options?: { silent?: boolean }) {
+    const silent = Boolean(options?.silent);
     if (!targetDocId) {
-      setNotice(t("validation.selectDocument"));
-      return;
+      if (!silent) {
+        setNotice(t("validation.selectDocument"));
+      }
+      return { ok: false, extractionId: "" };
     }
     setIsClaudeExtracting(true);
-    setIntakeStage("extracting");
+    if (!silent) {
+      setIntakeStage("extracting");
+    }
     try {
       const res = await apiFetch(`/integration/documents/${targetDocId}/extract-claude/`, {
         method: "POST",
@@ -1953,33 +2012,55 @@ function App() {
       if (!res.ok) {
         const extraction = body?.extraction;
         const detail = extraction?.error_message || body.detail || JSON.stringify(body);
-        setNotice(errorWithDetail("error.claudeExtract", detail));
-        setIntakeStage("idle");
-        return;
+        if (!silent) {
+          setNotice(errorWithDetail("error.claudeExtract", detail));
+          setIntakeStage("idle");
+        }
+        return { ok: false, extractionId: String(body?.id ?? "") };
       }
       if (body.status && String(body.status) !== "succeeded") {
         const detail = body.error_message || t("error.claudeExtract");
-        setNotice(errorWithDetail("error.claudeExtract", detail));
-        setIntakeStage("idle");
-        return;
+        if (!silent) {
+          setNotice(errorWithDetail("error.claudeExtract", detail));
+          setIntakeStage("idle");
+        }
+        return { ok: false, extractionId: String(body?.id ?? "") };
       }
-      if (body.id) {
+      if (!silent && body.id) {
         setSelectedExtractionId(String(body.id));
-      } else {
-        setNotice(errorWithDetail("error.claudeExtract", "missing extraction id in response"));
-        setIntakeStage("idle");
-        return;
       }
-      if (body.normalized_payload && typeof body.normalized_payload === "object") {
+      if (!silent && body.normalized_payload && typeof body.normalized_payload === "object") {
         setNormalizedPayload(JSON.stringify(body.normalized_payload, null, 2));
       }
-      setIntakeStage("review");
-      setNotice(t("notice.claudeExtractionSaved", { id: body.id ?? "-" }));
+      if (!silent) {
+        setIntakeStage("review");
+        setNotice(t("notice.claudeExtractionSaved", { id: body.id ?? "-" }));
+      }
+      return { ok: Boolean(body.id), extractionId: String(body.id ?? "") };
     } catch {
-      setNotice(t("error.claudeExtractConnection"));
-      setIntakeStage("idle");
+      if (!silent) {
+        setNotice(t("error.claudeExtractConnection"));
+        setIntakeStage("idle");
+      }
+      return { ok: false, extractionId: "" };
     } finally {
       setIsClaudeExtracting(false);
+    }
+  }
+
+  async function onExtractWithClaude(forcedDocId?: string) {
+    const targetDocId = (forcedDocId || selectedDocId || "").trim();
+    if (!targetDocId) {
+      setNotice(t("validation.selectDocument"));
+      return;
+    }
+    const result = await runClaudeExtraction(targetDocId);
+    if (!result.ok && !result.extractionId) {
+      return;
+    }
+    if (!result.extractionId) {
+      setNotice(errorWithDetail("error.claudeExtract", "missing extraction id in response"));
+      setIntakeStage("idle");
     }
   }
 
@@ -2278,16 +2359,16 @@ function App() {
       return;
     }
     setIsHaccpSaving(true);
+    setTraceabilityImportStatus("Import da Drive in corso...");
+    setNotice("Import da Drive avviato.");
     try {
-      const synced = await ensureHaccpSiteSynced(siteId);
-      if (!synced) return;
-      const res = await apiFetch("/integration/traccia-assets/import/", {
+      const res = await apiFetch("/integration/drive-assets/import/", {
         method: "POST",
         body: JSON.stringify({
           site: siteId,
-          asset_type: "PHOTO_LABEL",
+          document_type: "label_capture",
           limit: 80,
-          idempotency_key: `traccia-assets-${siteId}-${Date.now()}`,
+          idempotency_key: `drive-assets-${siteId}-${Date.now()}`,
         }),
       });
       const body = await res.json();
@@ -2295,9 +2376,40 @@ function App() {
         setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
         return;
       }
+      const createdDocs = Array.isArray(body.created) ? body.created : [];
+      let extractedCount = 0;
+      for (const row of createdDocs) {
+        const documentId = String((row as Record<string, unknown>).document_id ?? "").trim();
+        if (!documentId) continue;
+        const extraction = await runClaudeExtraction(documentId, { silent: true });
+        if (extraction.ok) {
+          extractedCount += 1;
+        }
+      }
       await loadDocuments();
-      setNotice(`Import central termine: ${body.created_count ?? 0} nouveau(x), ${body.skipped_existing ?? 0} deja presents.`);
+      await loadHaccpData();
+      const createdCount = Number(body.created_count ?? 0);
+      const skippedExisting = Number(body.skipped_existing ?? 0);
+      const skippedInvalid = Number(body.skipped_invalid ?? 0);
+      const errorCount = Number(body.error_count ?? 0);
+      setLastTraceabilityImportSummary({
+        created_count: createdCount,
+        skipped_existing: skippedExisting,
+        skipped_invalid: skippedInvalid,
+        error_count: errorCount,
+        extracted_count: extractedCount,
+      });
+      if (createdCount === 0 && skippedExisting === 0 && skippedInvalid === 0 && errorCount === 0) {
+        setTraceabilityImportStatus("Drive non ha restituito nessuna foto per questo sito.");
+        setNotice("Import completato: nessuna foto trovata nella cartella Drive per il sito selezionato.");
+        return;
+      }
+      setTraceabilityImportStatus(
+        `Import completato: ${createdCount} nuove, ${skippedExisting} gia presenti, ${extractedCount} estrazioni avviate.`
+      );
+      setNotice(`Import termine: ${createdCount} nuove, ${skippedExisting} gia presenti, ${extractedCount} estrazioni avviate.`);
     } catch {
+      setTraceabilityImportStatus("Errore durante l'import da Drive.");
       setNotice(t("error.documentsLoad"));
     } finally {
       setIsHaccpSaving(false);
@@ -2535,15 +2647,17 @@ function App() {
     }
   }
 
-  async function onValidateHaccpOcr(documentId: string, statusValue: "validated" | "rejected") {
-    const queueItem = haccpOcrQueue.find((item) => item.document_id === documentId);
-    const extractionId = String(queueItem?.extraction?.id || "").trim();
+  async function onValidateHaccpOcr(
+    documentId: string,
+    statusValue: "validated" | "rejected",
+    correctedPayload?: Record<string, unknown>
+  ) {
     try {
-      const res = await apiFetch(`/haccp/traccia/ocr-queue/${documentId}/validate/`, {
+      const res = await apiFetch(`/integration/documents/${documentId}/review/`, {
         method: "POST",
         body: JSON.stringify({
-          extraction_id: extractionId || undefined,
           status: statusValue,
+          corrected_payload: correctedPayload,
         }),
       });
       const body = await res.json();
@@ -2552,9 +2666,39 @@ function App() {
         return;
       }
       setNotice(`Validazione OCR aggiornata: ${statusValue}.`);
+      await loadDocuments();
       await loadHaccpData();
     } catch {
       setNotice(t("error.extractionCreate"));
+    }
+  }
+
+  async function onDeleteTraceabilityDocument(documentId: string) {
+    if (!window.confirm("Eliminare definitivamente questa foto da CookOps?")) {
+      return;
+    }
+    try {
+      const res = await apiFetch(`/integration/documents/${documentId}/`, {
+        method: "DELETE",
+      }, false);
+      if (!res.ok) {
+        let body: unknown = null;
+        try {
+          body = await res.json();
+        } catch {
+          body = null;
+        }
+        setNotice(errorWithDetail("error.siteDelete", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+        return;
+      }
+      if (selectedHaccpDocumentId === documentId) {
+        setSelectedHaccpDocumentId("");
+      }
+      setNotice("Foto eliminata da CookOps.");
+      await loadDocuments();
+      await loadHaccpData();
+    } catch {
+      setNotice(t("error.siteDelete"));
     }
   }
 
@@ -3394,6 +3538,100 @@ function App() {
 
     return rows.sort((a, b) => String(b.happened_at).localeCompare(String(a.happened_at)));
   }, [haccpLabelCaptureQueue, haccpReconciliationOverview, haccpSchedules]);
+  const dashboardPendingReviewCount = useMemo(
+    () => haccpLabelCaptureQueue.filter((item) => item.validation_status === "pending_review" || item.validation_status === "pending").length,
+    [haccpLabelCaptureQueue]
+  );
+  const dashboardValidatedCount = useMemo(
+    () => haccpLabelCaptureQueue.filter((item) => item.validation_status === "validated").length,
+    [haccpLabelCaptureQueue]
+  );
+  const dashboardFailedOcrCount = useMemo(
+    () => haccpLabelCaptureQueue.filter((item) => item.validation_status === "failed" || item.extraction?.status === "failed").length,
+    [haccpLabelCaptureQueue]
+  );
+  const dashboardTemperatureAlertCount = useMemo(() => {
+    return haccpTemperatureReadings.filter((item) => {
+      const observed = Number.parseFloat(String(item.temperature_celsius ?? ""));
+      const reference = Number.parseFloat(String(item.reference_temperature_celsius ?? ""));
+      if (!Number.isFinite(observed) || !Number.isFinite(reference)) return false;
+      return observed > reference;
+    }).length;
+  }, [haccpTemperatureReadings]);
+  const traceabilityReportRows = useMemo(() => {
+    return haccpLabelCaptureQueue.map((row) => {
+      const payload = asRecord(row.extraction?.normalized_payload ?? {});
+      return {
+        ...row,
+        productGuess: String(payload.product_guess ?? payload.product_name ?? payload.label ?? "-"),
+        supplierName: String(payload.supplier_name ?? payload.supplier ?? payload.vendor_name ?? "-"),
+        originLotCode: String(payload.origin_lot_code ?? payload.source_lot_code ?? "-"),
+        supplierLotCode: String(payload.supplier_lot_code ?? payload.lot_code ?? payload.lot ?? "-"),
+        productionDate: String(payload.production_date ?? payload.manufactured_at ?? "-"),
+        dlcDate: String(payload.dlc_date ?? payload.expiry_date ?? "-"),
+      };
+    });
+  }, [haccpLabelCaptureQueue]);
+  const temperatureReportRows = useMemo(() => {
+    return haccpTemperatureReadings.map((row) => {
+      const observed = Number.parseFloat(String(row.temperature_celsius ?? ""));
+      const reference = Number.parseFloat(String(row.reference_temperature_celsius ?? ""));
+      const isAlert = Number.isFinite(observed) && Number.isFinite(reference) ? observed > reference : false;
+      return {
+        ...row,
+        isAlert,
+      };
+    });
+  }, [haccpTemperatureReadings]);
+  const filteredTraceabilityReportRows = useMemo(() => {
+    const q = reportSearch.trim().toLowerCase();
+    const supplierQ = reportSupplierSearch.trim().toLowerCase();
+    const productQ = reportProductSearch.trim().toLowerCase();
+    const lotQ = reportLotSearch.trim().toLowerCase();
+    return traceabilityReportRows.filter((row) => {
+      const createdAt = String(row.created_at || "").slice(0, 10);
+      if (reportDateFrom && createdAt && createdAt < reportDateFrom) return false;
+      if (reportDateTo && createdAt && createdAt > reportDateTo) return false;
+      if (reportReviewStatus !== "all" && row.validation_status !== reportReviewStatus) return false;
+      if (reportOnlyAnomalies && row.validation_status !== "rejected" && row.validation_status !== "failed" && row.validation_status !== "pending_review") {
+        return false;
+      }
+      if (supplierQ && !String(row.supplierName || "").toLowerCase().includes(supplierQ)) return false;
+      if (productQ && !String(row.productGuess || "").toLowerCase().includes(productQ)) return false;
+      if (
+        lotQ
+        && !String(row.originLotCode || "").toLowerCase().includes(lotQ)
+        && !String(row.supplierLotCode || "").toLowerCase().includes(lotQ)
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return [
+        row.filename,
+        row.productGuess,
+        row.supplierName,
+        row.originLotCode,
+        row.supplierLotCode,
+        row.dlcDate,
+      ].some((value) => String(value || "").toLowerCase().includes(q));
+    });
+  }, [traceabilityReportRows, reportDateFrom, reportDateTo, reportReviewStatus, reportSearch, reportOnlyAnomalies, reportSupplierSearch, reportProductSearch, reportLotSearch]);
+  const filteredTemperatureReportRows = useMemo(() => {
+    const q = reportSearch.trim().toLowerCase();
+    return temperatureReportRows.filter((row) => {
+      const observedAt = String(row.observed_at || "").slice(0, 10);
+      if (reportDateFrom && observedAt && observedAt < reportDateFrom) return false;
+      if (reportDateTo && observedAt && observedAt > reportDateTo) return false;
+      if ((reportReviewStatus === "alert_only" || reportOnlyAnomalies) && !row.isAlert) return false;
+      if (!q) return true;
+      return [
+        row.sector_name,
+        row.cold_point_name,
+        row.register_name,
+        row.source,
+      ].some((value) => String(value || "").toLowerCase().includes(q));
+    });
+  }, [temperatureReportRows, reportDateFrom, reportDateTo, reportReviewStatus, reportSearch, reportOnlyAnomalies]);
   const supplierOrderGroups = useMemo(() => {
     if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
@@ -3634,6 +3872,50 @@ function App() {
     printChecklistTable(`${t("orders.recipeChecklist")}: ${label}`, headers, rows);
   }
 
+  function exportCsv(filename: string, headers: string[], rows: string[][]) {
+    const escapeCell = (value: string) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const csv = [headers.map(escapeCell).join(";"), ...rows.map((row) => row.map(escapeCell).join(";"))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function resetReportFilters() {
+    setReportDateFrom(getTodayIsoDate().slice(0, 8) + "01");
+    setReportDateTo(getTodayIsoDate());
+    setReportReviewStatus("all");
+    setReportSearch("");
+    setReportOnlyAnomalies(false);
+    setReportSupplierSearch("");
+    setReportProductSearch("");
+    setReportLotSearch("");
+  }
+
+  function renderReportStatusChip(value: string) {
+    const normalized = String(value || "").trim().toLowerCase();
+    const label =
+      normalized === "validated"
+        ? "Confermato"
+        : normalized === "rejected"
+          ? "Rifiutato"
+          : normalized === "pending_review"
+            ? "Da validare"
+            : normalized === "failed"
+              ? "Fallito"
+              : normalized || "-";
+    return <span className={`status-chip status-chip--report-${normalized || "neutral"}`}>{label}</span>;
+  }
+
+  function renderTemperatureStatusChip(isAlert: boolean) {
+    return <span className={`status-chip ${isAlert ? "status-chip--report-alert" : "status-chip--report-ok"}`}>{isAlert ? "Fuori soglia" : "OK"}</span>;
+  }
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -3705,14 +3987,50 @@ function App() {
           ) : null}
 
           {nav === "dashboard" && (
-            <section className="grid grid-3">
-              <article className="panel metric-card"><strong>{sites.filter((s) => s.is_active).length}</strong><span>{t("dashboard.activeSites")}</span></article>
-              <article className="panel metric-card"><strong>{documents.length}</strong><span>{t("dashboard.importedDocs")}</span></article>
-              <article className="panel metric-card"><strong>{vociCartaTotali}</strong><span>{t("dashboard.activeMenuItems")}</span></article>
-              <article className="panel"><h3>{t("dashboard.urgencies")}</h3><ul className="clean-list"><li>{t("dashboard.urgency.docs")}</li><li>{t("dashboard.urgency.lots")}</li><li>{t("dashboard.urgency.pos")}</li></ul></article>
-              <article className="panel"><h3>{t("dashboard.foodCost")}</h3><p className="muted">{t("dashboard.foodCostDesc")}</p></article>
-              <article className="panel"><h3>{t("dashboard.recoStatus")}</h3><p className="muted">{t("dashboard.recoStatusDesc")}</p></article>
-            </section>
+            <div className="grid grid-single">
+              <section className="grid grid-3">
+                <article className="panel metric-card"><strong>{sites.filter((s) => s.is_active).length}</strong><span>{t("dashboard.activeSites")}</span></article>
+                <article className="panel metric-card"><strong>{documents.length}</strong><span>{t("dashboard.importedDocs")}</span></article>
+                <article className="panel metric-card"><strong>{vociCartaTotali}</strong><span>{t("dashboard.activeMenuItems")}</span></article>
+                <article className="panel metric-card"><strong>{dashboardPendingReviewCount}</strong><span>Foto da validare</span></article>
+                <article className="panel metric-card"><strong>{dashboardFailedOcrCount}</strong><span>OCR in errore</span></article>
+                <article className="panel metric-card"><strong>{dashboardTemperatureAlertCount}</strong><span>Temperature fuori soglia</span></article>
+              </section>
+              <section className="grid">
+                <article className="panel">
+                  <div className="doc-preview__head">
+                    <h3>Tracciabilita</h3>
+                    <button type="button" onClick={() => setNav("report")}>Apri report</button>
+                  </div>
+                  <p className="muted">Pilotaggio rapido delle estrazioni e delle convalide.</p>
+                  <ul className="clean-list">
+                    <li>{dashboardPendingReviewCount} documenti da validare</li>
+                    <li>{dashboardValidatedCount} documenti gia confermati</li>
+                    <li>{dashboardFailedOcrCount} OCR da rilanciare</li>
+                  </ul>
+                  <div className="entry-actions">
+                    <button type="button" onClick={() => setNav("tracciabilita")}>Vai a Tracciabilita</button>
+                    <button type="button" onClick={() => setNav("report")}>Vai ai report</button>
+                  </div>
+                </article>
+                <article className="panel">
+                  <div className="doc-preview__head">
+                    <h3>HACCP</h3>
+                    <button type="button" onClick={() => setNav("haccp")}>Apri HACCP</button>
+                  </div>
+                  <p className="muted">Sintesi temperature e anomalie operative.</p>
+                  <ul className="clean-list">
+                    <li>{temperatureReportRows.length} rilevazioni temperatura disponibili</li>
+                    <li>{dashboardTemperatureAlertCount} misure sopra riferimento</li>
+                    <li>{haccpAnomalyRows.length} anomalie aggregate</li>
+                  </ul>
+                  <div className="entry-actions">
+                    <button type="button" onClick={() => setNav("report")}>Report temperature</button>
+                    <button type="button" onClick={() => setNav("haccp")}>Vai a HACCP</button>
+                  </div>
+                </article>
+              </section>
+            </div>
           )}
 
           {nav === "ricette" && (
@@ -4564,7 +4882,6 @@ function App() {
               newLabelSessionSourceLotCode={newLabelSessionSourceLotCode}
               setNewLabelSessionSourceLotCode={setNewLabelSessionSourceLotCode}
               loadHaccpData={loadHaccpData}
-              onImportHaccpAssets={onImportHaccpAssets}
               onExtractHaccpDocument={onExtractHaccpDocument}
               onValidateHaccpOcr={onValidateHaccpOcr}
               onSetHaccpScheduleStatus={onSetHaccpScheduleStatus}
@@ -4582,6 +4899,215 @@ function App() {
               onCreateHaccpLabelSession={onCreateHaccpLabelSession}
               t={t}
             />
+          )}
+
+          {nav === "tracciabilita" && (
+            <TraceabilityWorkspace
+              siteId={siteId}
+              isLoading={isHaccpLoading}
+              isSaving={isHaccpSaving}
+              queue={haccpLabelCaptureQueue}
+              lifecycleEvents={haccpLifecycleEvents}
+              reconciliationOverview={haccpReconciliationOverview}
+              selectedQueueItem={selectedHaccpQueueItem}
+              selectedDocumentId={selectedHaccpDocumentId}
+              selectedDocumentUrl={selectedHaccpDocumentUrl}
+              selectedDocumentContentType={selectedHaccpDocument?.content_type ?? null}
+              setSelectedDocumentId={setSelectedHaccpDocumentId}
+              onImportAssets={onImportHaccpAssets}
+              onRefresh={loadHaccpData}
+              onExtractDocument={onExtractHaccpDocument}
+              onValidateDocument={onValidateHaccpOcr}
+              onDeleteDocument={onDeleteTraceabilityDocument}
+              importSummary={lastTraceabilityImportSummary}
+              importStatus={traceabilityImportStatus}
+              t={t}
+            />
+          )}
+
+          {nav === "report" && (
+            <div className="grid grid-single">
+              <section className="panel">
+                <div className="menu-space-header-row">
+                  <div>
+                    <h2>Area Report</h2>
+                    <p className="muted">Report aggregati per tracciabilita e HACCP, orientati a controllo, stampa ed export.</p>
+                  </div>
+                  <div className="entry-actions no-print">
+                    <button type="button" onClick={() => window.print()}>Stampa</button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        exportCsv(
+                          `report-tracciabilita-${reportDateFrom || "all"}-${reportDateTo || "all"}.csv`,
+                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "OCR", "Convalida"],
+                          filteredTraceabilityReportRows.map((row) => [
+                            row.filename,
+                            row.productGuess,
+                            row.supplierName,
+                            row.originLotCode,
+                            row.supplierLotCode,
+                            row.productionDate,
+                            row.dlcDate,
+                            String(row.extraction?.status || row.document_status || "-"),
+                            row.validation_status,
+                          ])
+                        )
+                      }
+                    >
+                      Export tracciabilita
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        exportCsv(
+                          `report-temperature-${reportDateFrom || "all"}-${reportDateTo || "all"}.csv`,
+                          ["Settore", "Punto freddo", "Temperatura", "Riferimento", "Rilevata il", "Sorgente", "Stato"],
+                          filteredTemperatureReportRows.map((row) => [
+                            row.sector_name || "-",
+                            row.cold_point_name || row.register_name || "-",
+                            `${row.temperature_celsius || "-"} ${row.unit || "C"}`,
+                            row.reference_temperature_celsius || "-",
+                            String(row.observed_at ?? "-").replace("T", " ").slice(0, 19),
+                            row.source || "-",
+                            row.isAlert ? "Fuori soglia" : "OK",
+                          ])
+                        )
+                      }
+                    >
+                      Export temperature
+                    </button>
+                    <button type="button" onClick={resetReportFilters}>Reset filtri</button>
+                    <button type="button" onClick={() => setNav("dashboard")}>Dashboard</button>
+                  </div>
+                </div>
+                <div className="grid grid-2">
+                  <div>
+                    <label>Data da</label>
+                    <input type="date" value={reportDateFrom} onChange={(e) => setReportDateFrom(e.target.value)} />
+                  </div>
+                  <div>
+                    <label>Data a</label>
+                    <input type="date" value={reportDateTo} onChange={(e) => setReportDateTo(e.target.value)} />
+                  </div>
+                  <div>
+                    <label>Stato</label>
+                    <select value={reportReviewStatus} onChange={(e) => setReportReviewStatus(e.target.value)}>
+                      <option value="all">Tutti</option>
+                      <option value="pending_review">Da validare</option>
+                      <option value="validated">Confermati</option>
+                      <option value="rejected">Rifiutati</option>
+                      <option value="failed">OCR falliti</option>
+                      <option value="alert_only">Solo alert temperature</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Ricerca</label>
+                    <input value={reportSearch} onChange={(e) => setReportSearch(e.target.value)} placeholder="Fornitore, lotto, prodotto..." />
+                  </div>
+                  <div>
+                    <label>Filtro fornitore</label>
+                    <input value={reportSupplierSearch} onChange={(e) => setReportSupplierSearch(e.target.value)} placeholder="Marée Provençale..." />
+                  </div>
+                  <div>
+                    <label>Filtro prodotto</label>
+                    <input value={reportProductSearch} onChange={(e) => setReportProductSearch(e.target.value)} placeholder="Dorade, filet..." />
+                  </div>
+                  <div>
+                    <label>Filtro lotto</label>
+                    <input value={reportLotSearch} onChange={(e) => setReportLotSearch(e.target.value)} placeholder="TOURN-2026-003..." />
+                  </div>
+                  <div className="checkline report-checkline">
+                    <input type="checkbox" checked={reportOnlyAnomalies} onChange={(e) => setReportOnlyAnomalies(e.target.checked)} />
+                    <span>Solo anomalie</span>
+                  </div>
+                </div>
+              </section>
+
+              <div className="grid">
+                <section className="panel">
+                  <div className="doc-preview__head">
+                    <h2>1. Report tracciabilita</h2>
+                  </div>
+                  <p className="muted">Storico operativo delle foto importate, dei dati estratti e del loro stato di convalida.</p>
+                  {filteredTraceabilityReportRows.length === 0 ? (
+                    <p className="muted">Nessun documento tracciabilita disponibile.</p>
+                  ) : (
+                    <div className="sheet-wrap">
+                      <table className="sheet-table">
+                        <thead>
+                          <tr>
+                            <th>Foto</th>
+                            <th>Prodotto</th>
+                            <th>Fornitore</th>
+                            <th>Lotto origine</th>
+                            <th>Lotto fornitore</th>
+                            <th>Produzione</th>
+                            <th>DLC</th>
+                            <th>OCR</th>
+                            <th>Convalida</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredTraceabilityReportRows.slice(0, 80).map((row) => (
+                            <tr key={row.document_id}>
+                              <td>{row.filename}</td>
+                              <td>{row.productGuess}</td>
+                              <td>{row.supplierName}</td>
+                              <td>{row.originLotCode}</td>
+                              <td>{row.supplierLotCode}</td>
+                              <td>{row.productionDate}</td>
+                              <td>{row.dlcDate}</td>
+                              <td>{String(row.extraction?.status || row.document_status || "-")}</td>
+                              <td>{renderReportStatusChip(row.validation_status)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+
+                <section className="panel">
+                  <div className="doc-preview__head">
+                    <h2>2. Report temperature</h2>
+                  </div>
+                  <p className="muted">Rilevazioni temperatura eseguite, con evidenza delle misure sopra il riferimento.</p>
+                  {filteredTemperatureReportRows.length === 0 ? (
+                    <p className="muted">Nessuna rilevazione temperatura disponibile.</p>
+                  ) : (
+                    <div className="sheet-wrap">
+                      <table className="sheet-table">
+                        <thead>
+                          <tr>
+                            <th>Settore</th>
+                            <th>Punto freddo</th>
+                            <th>Temperatura</th>
+                            <th>Riferimento</th>
+                            <th>Rilevata il</th>
+                            <th>Sorgente</th>
+                            <th>Stato</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredTemperatureReportRows.slice(0, 120).map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.sector_name || "-"}</td>
+                              <td>{row.cold_point_name || row.register_name || "-"}</td>
+                              <td>{row.temperature_celsius || "-"} {row.unit || "C"}</td>
+                              <td>{row.reference_temperature_celsius || "-"}</td>
+                              <td>{String(row.observed_at ?? "-").replace("T", " ").slice(0, 19)}</td>
+                              <td>{row.source || "-"}</td>
+                              <td>{renderTemperatureStatusChip(row.isAlert)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+              </div>
+            </div>
           )}
 
           {false && nav === "haccp" && (
