@@ -53,7 +53,7 @@ def _to_decimal_or_none(value: object):
 
 
 def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, object]]:
-    limit = max(1, min(limit, 100))
+    limit = max(1, min(limit, 2000))
     query = query.strip()
 
     if "fiches" in connections.databases:

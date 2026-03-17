@@ -13,6 +13,7 @@ from apps.integration.models import RecipeSnapshot
 
 
 SAFE_DB_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_\\.]*$")
+FICHES_TEXTUAL_ID_NAMESPACE = uuid.UUID("9a7b0c87-3d8f-4b29-a06d-3f5b0e33fd7f")
 
 
 def _safe_identifier(value: str, fallback: str) -> str:
@@ -43,6 +44,21 @@ def _to_decimal(value: Any):
 def _snapshot_hash(payload: dict[str, Any]) -> str:
     serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _normalize_fiche_id(raw_value: Any) -> tuple[uuid.UUID | None, bool]:
+    """
+    Return a stable UUID for fiche IDs.
+    - Native UUIDs are preserved.
+    - Textual IDs are mapped deterministically via uuid5 namespace.
+    """
+    normalized = str(raw_value or "").strip()
+    if not normalized:
+        return None, False
+    try:
+        return uuid.UUID(normalized), False
+    except (ValueError, TypeError, AttributeError):
+        return uuid.uuid5(FICHES_TEXTUAL_ID_NAMESPACE, normalized), True
 
 
 def _normalize_fiche_payload_from_v11(fiche: dict[str, Any]) -> dict[str, Any]:
@@ -77,6 +93,7 @@ def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[
     created = 0
     skipped_existing = 0
     invalid_ids = 0
+    remapped_ids = 0
     invalid_payloads = 0
     examples: list[str] = []
 
@@ -86,11 +103,12 @@ def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[
             continue
 
         fiche_id_raw = fiche.get("fiche_id")
-        try:
-            fiche_id = uuid.UUID(str(fiche_id_raw))
-        except (ValueError, TypeError):
+        fiche_id, was_remapped = _normalize_fiche_id(fiche_id_raw)
+        if not fiche_id:
             invalid_ids += 1
             continue
+        if was_remapped:
+            remapped_ids += 1
 
         payload = _normalize_fiche_payload_from_v11(fiche)
         snapshot_hash = _snapshot_hash(payload)
@@ -122,6 +140,7 @@ def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[
         "created": created,
         "skipped_existing": skipped_existing,
         "invalid_ids": invalid_ids,
+        "remapped_ids": remapped_ids,
         "invalid_payloads": invalid_payloads,
         "examples": examples,
     }
@@ -161,15 +180,17 @@ def import_recipe_snapshots(query: str = "", limit: int = 500) -> dict[str, Any]
     created = 0
     skipped_existing = 0
     invalid_ids = 0
+    remapped_ids = 0
     invalid_payloads = 0
     examples: list[str] = []
 
     for fiche_id_raw, title, data, updated_at in rows:
-        try:
-            fiche_id = uuid.UUID(str(fiche_id_raw))
-        except (ValueError, TypeError):
+        fiche_id, was_remapped = _normalize_fiche_id(fiche_id_raw)
+        if not fiche_id:
             invalid_ids += 1
             continue
+        if was_remapped:
+            remapped_ids += 1
 
         payload = data
         if isinstance(payload, str):
@@ -211,6 +232,7 @@ def import_recipe_snapshots(query: str = "", limit: int = 500) -> dict[str, Any]
         "created": created,
         "skipped_existing": skipped_existing,
         "invalid_ids": invalid_ids,
+        "remapped_ids": remapped_ids,
         "invalid_payloads": invalid_payloads,
         "examples": examples,
     }

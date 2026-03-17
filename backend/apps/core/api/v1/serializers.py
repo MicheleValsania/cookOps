@@ -1,4 +1,6 @@
-﻿from rest_framework import serializers
+import uuid
+
+from rest_framework import serializers
 
 from apps.core.models import ServiceMenuEntry, Site
 
@@ -44,11 +46,35 @@ class ServiceMenuEntrySyncItemSerializer(serializers.Serializer):
     space_key = serializers.CharField(max_length=64)
     section = serializers.CharField(max_length=128, required=False, allow_blank=True)
     title = serializers.CharField(max_length=255)
-    fiche_product_id = serializers.UUIDField(required=False, allow_null=True)
+    fiche_product_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     expected_qty = serializers.DecimalField(max_digits=12, decimal_places=3, required=False, default="0")
     sort_order = serializers.IntegerField(required=False, default=0)
     is_active = serializers.BooleanField(required=False, default=True)
     metadata = serializers.JSONField(required=False, default=dict)
+
+    def validate_fiche_product_id(self, value):
+        """Accept legacy/non-UUID IDs without failing sync; persist UUID only when valid."""
+        if value in (None, ""):
+            return None
+        try:
+            return uuid.UUID(str(value))
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def validate_space_key(self, value):
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise serializers.ValidationError("space_key is required.")
+        return normalized[:64]
+
+    def validate_section(self, value):
+        return str(value or "").strip()[:128]
+
+    def validate_title(self, value):
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise serializers.ValidationError("title is required.")
+        return normalized[:255]
 
 
 class ServiceMenuEntrySyncSerializer(serializers.Serializer):

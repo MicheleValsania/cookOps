@@ -258,11 +258,18 @@ class ServiceMenuEntrySyncView(APIView):
                     ).order_by("space_key", "sort_order", "title")
                 )
 
-        combined = []
+        deduped: dict[tuple[str, str, str, str], ServiceMenuEntry] = {}
         for entry in permanent_entries + legacy_card_entries + dated_entries:
             if cls._is_entry_applicable_for_date(entry, target_date):
-                combined.append(entry)
-        return combined
+                key = (
+                    (entry.space_key or "").strip().lower(),
+                    (entry.section or "").strip().lower(),
+                    (entry.title or "").strip().lower(),
+                    str(entry.fiche_product_id or "").strip().lower(),
+                )
+                # Iteration order keeps dated entries last, so they override permanent/legacy duplicates.
+                deduped[key] = entry
+        return list(deduped.values())
 
     def get(self, request):
         site_id = request.query_params.get("site")
