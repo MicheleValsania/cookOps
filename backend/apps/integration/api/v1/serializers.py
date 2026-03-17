@@ -1,6 +1,11 @@
 ﻿from rest_framework import serializers
 
-from apps.integration.models import DocumentExtraction, ExtractionStatus, IntegrationDocument
+from apps.integration.models import (
+    DocumentExtraction,
+    ExtractionStatus,
+    IntegrationDocument,
+    TraceabilityReconciliationDecision,
+)
 
 
 class IntegrationDocumentSerializer(serializers.ModelSerializer):
@@ -251,3 +256,21 @@ class HaccpLabelSessionSerializer(serializers.Serializer):
     source_lot_code = serializers.CharField(required=False, allow_blank=True, default="", max_length=128)
     quantity = serializers.IntegerField(min_value=1)
     status = serializers.ChoiceField(choices=("planned", "done", "cancelled"), required=False, default="planned")
+
+
+class TraceabilityReconciliationDecisionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TraceabilityReconciliationDecision
+        fields = (
+            "id",
+            "site",
+            "event_id",
+            "decision_status",
+            "notes",
+            "linked_document",
+            "linked_match",
+            "metadata",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")

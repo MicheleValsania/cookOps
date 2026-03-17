@@ -174,6 +174,10 @@ Current UI direction for reconciliation:
 - central page
 - initial site prefilter from origin context
 - manual confirmation/linking of delivery-note and invoice candidates when available
+- persistent central decisions for:
+  - `review_required`
+  - `ignored`
+  - `matched`
 
 ## Sync strategy
 

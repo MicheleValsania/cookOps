@@ -26,13 +26,20 @@ from apps.integration.api.v1.serializers import (
     FicheSnapshotEnvelopeImportSerializer,
     FicheSnapshotImportSerializer,
     IntegrationDocumentSerializer,
+    TraceabilityReconciliationDecisionSerializer,
     TracciaAssetImportSerializer,
 )
 from apps.integration.fiches_catalog import import_supplier_catalog_from_fiches
 from apps.integration.fiches_snapshots import import_recipe_snapshots, import_recipe_snapshots_from_v11_envelope
 from apps.integration.fiches_titles import fetch_recipe_titles
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
-from apps.integration.models import DocumentExtraction, DocumentSource, DocumentType, IntegrationDocument
+from apps.integration.models import (
+    DocumentExtraction,
+    DocumentSource,
+    DocumentType,
+    IntegrationDocument,
+    TraceabilityReconciliationDecision,
+)
 from apps.integration.services.claude_extractor import run_claude_extraction
 from apps.integration.services.drive_client import DriveClient, DriveClientError
 from apps.integration.services.drive_importer import import_drive_assets_for_site
@@ -772,6 +779,33 @@ class DocumentReviewView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class TraceabilityReconciliationDecisionListCreateView(APIView):
+    def get(self, request):
+        queryset = TraceabilityReconciliationDecision.objects.select_related("site", "linked_document", "linked_match").all()
+        site_id = (request.query_params.get("site") or "").strip()
+        if site_id:
+            queryset = queryset.filter(site_id=site_id)
+        serializer = TraceabilityReconciliationDecisionSerializer(queryset.order_by("-updated_at", "-created_at"), many=True)
+        return Response({"results": serializer.data}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = TraceabilityReconciliationDecisionSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+        decision, _created = TraceabilityReconciliationDecision.objects.update_or_create(
+            site=validated["site"],
+            event_id=validated["event_id"],
+            defaults={
+                "decision_status": validated["decision_status"],
+                "notes": validated.get("notes", ""),
+                "linked_document": validated.get("linked_document"),
+                "linked_match": validated.get("linked_match"),
+                "metadata": validated.get("metadata", {}),
+            },
+        )
+        return Response(TraceabilityReconciliationDecisionSerializer(decision).data, status=status.HTTP_200_OK)
 
 
 class FicheRecipeTitleListView(APIView):

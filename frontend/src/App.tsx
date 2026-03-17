@@ -266,6 +266,18 @@ type HaccpReconciliationOverview = {
   results: HaccpReconciliationRow[];
 };
 
+type TraceabilityReconciliationDecision = {
+  id: string;
+  site: string;
+  event_id: string;
+  decision_status: "review_required" | "ignored" | "matched";
+  notes?: string | null;
+  linked_document?: string | null;
+  linked_match?: string | null;
+  metadata?: Record<string, unknown> | null;
+  updated_at?: string | null;
+};
+
 type HaccpViewKey =
   | "reports"
   | "validation"
@@ -883,6 +895,8 @@ function App() {
     () => parseTraceabilityReconciliationHash(window.location.hash).siteId || ""
   );
   const [reconciliationSelections, setReconciliationSelections] = useState<Record<string, { goodsReceiptLineId: string; invoiceLineId: string }>>({});
+  const [reconciliationDecisionNotes, setReconciliationDecisionNotes] = useState<Record<string, string>>({});
+  const [reconciliationDecisions, setReconciliationDecisions] = useState<TraceabilityReconciliationDecision[]>([]);
   const [lastTraceabilityImportSummary, setLastTraceabilityImportSummary] = useState<{
     created_count: number;
     skipped_existing: number;
@@ -1063,6 +1077,7 @@ function App() {
     if (!isTraceabilityReconciliationPage) return;
     if (sites.length === 0) return;
     void loadCentralTraceabilityReconciliation();
+    void loadTraceabilityReconciliationDecisions();
   }, [isTraceabilityReconciliationPage, sites]);
 
   useEffect(() => {
@@ -2461,6 +2476,20 @@ function App() {
       setCentralReconciliationOverview(merged);
     } finally {
       setIsCentralReconciliationLoading(false);
+    }
+  }
+
+  async function loadTraceabilityReconciliationDecisions() {
+    try {
+      const res = await apiFetch("/integration/reconciliation-decisions/");
+      const body = await res.json();
+      if (!res.ok) {
+        return;
+      }
+      const rows = Array.isArray(body?.results) ? (body.results as TraceabilityReconciliationDecision[]) : [];
+      setReconciliationDecisions(rows);
+    } catch {
+      // keep page usable even if decisions fail to load
     }
   }
 
@@ -4110,6 +4139,19 @@ function App() {
     return <span className={`status-chip status-chip--${normalized || "neutral"}`}>{label}</span>;
   }
 
+  function renderReconciliationDecisionChip(value?: string | null) {
+    const normalized = String(value || "").trim().toLowerCase();
+    const label =
+      normalized === "matched"
+        ? "Match confermato"
+        : normalized === "review_required"
+          ? "Da rivedere"
+          : normalized === "ignored"
+            ? "Ignorato"
+            : "-";
+    return <span className={`status-chip status-chip--decision-${normalized || "neutral"}`}>{label}</span>;
+  }
+
   function openTraceabilityReconciliationWindow() {
     const suffix = siteId ? `?site=${encodeURIComponent(siteId)}` : "";
     const targetUrl = `${window.location.origin}${window.location.pathname}${TRACEABILITY_RECONCILIATION_HASH}${suffix}`;
@@ -4129,6 +4171,45 @@ function App() {
       goodsReceiptLineId: saved?.goodsReceiptLineId || row.goods_receipts[0]?.id || "",
       invoiceLineId: saved?.invoiceLineId || row.invoices[0]?.id || "",
     };
+  }
+
+  function getReconciliationDecision(row: HaccpReconciliationRow) {
+    return reconciliationDecisions.find((item) => item.site === row.site_id && item.event_id === row.event_id) ?? null;
+  }
+
+  async function saveReconciliationDecision(
+    row: HaccpReconciliationRow,
+    decisionStatus: "review_required" | "ignored" | "matched",
+    options?: { linkedMatchId?: string | null }
+  ) {
+    if (!row.site_id) {
+      setNotice("Sito mancante sulla riga di riconciliazione.");
+      return;
+    }
+    try {
+      const res = await apiFetch("/integration/reconciliation-decisions/", {
+        method: "POST",
+        body: JSON.stringify({
+          site: row.site_id,
+          event_id: row.event_id,
+          decision_status: decisionStatus,
+          notes: reconciliationDecisionNotes[row.event_id] || "",
+          linked_match: options?.linkedMatchId || null,
+          metadata: {
+            source: "traceability_reconciliation_ui",
+          },
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.reconciliationCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Decisione salvata: ${decisionStatus}.`);
+      await loadTraceabilityReconciliationDecisions();
+    } catch {
+      setNotice(t("error.reconciliationCreate"));
+    }
   }
 
   async function onCreateCentralReconciliationMatch(row: HaccpReconciliationRow) {
@@ -4158,6 +4239,7 @@ function App() {
         return;
       }
       setNotice(`Match creato: ${body.id}`);
+      await saveReconciliationDecision(row, "matched", { linkedMatchId: String(body.id || "") });
       await loadCentralTraceabilityReconciliation();
     } catch {
       setNotice(t("error.reconciliationCreate"));
@@ -4318,6 +4400,7 @@ function App() {
                             <th>Lotto</th>
                             <th>Documenti</th>
                             <th>Stato</th>
+                            <th>Decisione</th>
                             <th>Dettaglio</th>
                           </tr>
                         </thead>
@@ -4338,6 +4421,7 @@ function App() {
                                 {row.goods_receipts.length === 0 && row.invoices.length === 0 ? "-" : ""}
                               </td>
                               <td>{renderReconciliationStatusChip(row.reconcile_status)}</td>
+                              <td>{renderReconciliationDecisionChip(getReconciliationDecision(row)?.decision_status)}</td>
                               <td>
                                 <details>
                                   <summary>Apri</summary>
@@ -4346,6 +4430,20 @@ function App() {
                                     <div><strong>Fatture</strong> {row.invoices.map((item) => item.invoice_number).join(", ") || "-"}</div>
                                     <div><strong>Match</strong> {row.matches.length}</div>
                                     <div><strong>Alert</strong> {row.alerts.join(" ") || "-"}</div>
+                                    <div><strong>Decisione</strong> {renderReconciliationDecisionChip(getReconciliationDecision(row)?.decision_status)}</div>
+                                    <div>
+                                      <label>Note</label>
+                                      <textarea
+                                        value={reconciliationDecisionNotes[row.event_id] ?? getReconciliationDecision(row)?.notes ?? ""}
+                                        onChange={(e) =>
+                                          setReconciliationDecisionNotes((prev) => ({
+                                            ...prev,
+                                            [row.event_id]: e.target.value,
+                                          }))
+                                        }
+                                        rows={2}
+                                      />
+                                    </div>
                                     {row.matches.length === 0 && (row.goods_receipts.length > 0 || row.invoices.length > 0) ? (
                                       <div className="reconciliation-actions">
                                         <div>
@@ -4399,6 +4497,18 @@ function App() {
                                         </div>
                                       </div>
                                     ) : null}
+                                    <div className="reconciliation-actions reconciliation-actions--secondary">
+                                      <div className="entry-actions">
+                                        <button type="button" onClick={() => void saveReconciliationDecision(row, "review_required")}>
+                                          Segna da rivedere
+                                        </button>
+                                      </div>
+                                      <div className="entry-actions">
+                                        <button type="button" className="warning-btn" onClick={() => void saveReconciliationDecision(row, "ignored")}>
+                                          Ignora
+                                        </button>
+                                      </div>
+                                    </div>
                                   </div>
                                 </details>
                               </td>

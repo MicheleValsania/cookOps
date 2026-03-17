@@ -1009,6 +1009,28 @@ th {
   margin-top: 0;
 }
 
+.reconciliation-actions--secondary {
+  grid-template-columns: repeat(2, minmax(180px, max-content));
+}
+
+.status-chip--decision-matched {
+  background: #e8f4df;
+  border-color: #b8d69a;
+  color: #29461d;
+}
+
+.status-chip--decision-review_required {
+  background: #fff1d6;
+  border-color: #f3d08b;
+  color: #7a4b00;
+}
+
+.status-chip--decision-ignored {
+  background: #eef2f8;
+  border-color: #bdc8d9;
+  color: #314562;
+}
+
 .traceability-row--active {
   background: rgba(184, 212, 136, 0.18) !important;
 }

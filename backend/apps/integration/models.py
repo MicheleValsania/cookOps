@@ -4,6 +4,7 @@ from django.db import models
 
 from apps.catalog.models import SupplierProduct
 from apps.core.models import Site
+from apps.purchasing.models import InvoiceGoodsReceiptMatch
 
 
 class QtyUnit(models.TextChoices):
@@ -157,3 +158,47 @@ class DocumentExtraction(models.Model):
 
     def __str__(self) -> str:
         return f"{self.document_id}:{self.extractor_name}:{self.status}"
+
+
+class ReconciliationDecisionStatus(models.TextChoices):
+    REVIEW_REQUIRED = "review_required", "review_required"
+    IGNORED = "ignored", "ignored"
+    MATCHED = "matched", "matched"
+
+
+class TraceabilityReconciliationDecision(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name="traceability_reconciliation_decisions")
+    event_id = models.CharField(max_length=128)
+    decision_status = models.CharField(max_length=24, choices=ReconciliationDecisionStatus.choices)
+    notes = models.TextField(blank=True, null=True)
+    linked_document = models.ForeignKey(
+        IntegrationDocument,
+        on_delete=models.SET_NULL,
+        related_name="reconciliation_decisions",
+        blank=True,
+        null=True,
+    )
+    linked_match = models.ForeignKey(
+        InvoiceGoodsReceiptMatch,
+        on_delete=models.SET_NULL,
+        related_name="traceability_decisions",
+        blank=True,
+        null=True,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "integration_traceability_reconciliation_decision"
+        ordering = ["-updated_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["site", "event_id"],
+                name="uq_integration_traceability_reconciliation_decision_site_event",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.site_id}:{self.event_id}:{self.decision_status}"

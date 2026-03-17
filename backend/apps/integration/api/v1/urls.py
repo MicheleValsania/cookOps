@@ -25,6 +25,7 @@ from apps.integration.api.v1.views import (
     DocumentClaudeExtractView,
     DocumentExtractionViewSet,
     DocumentIngestViewSet,
+    TraceabilityReconciliationDecisionListCreateView,
     DocumentReviewView,
     FicheCatalogImportView,
     FicheSnapshotEnvelopeImportView,
@@ -88,6 +89,11 @@ urlpatterns = [
         "integration/documents/<uuid:document_id>/review/",
         DocumentReviewView.as_view(),
         name="integration-document-review",
+    ),
+    path(
+        "integration/reconciliation-decisions/",
+        TraceabilityReconciliationDecisionListCreateView.as_view(),
+        name="integration-traceability-reconciliation-decision-list-create",
     ),
     path(
         "haccp/traccia/ocr-queue/",
