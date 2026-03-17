@@ -78,6 +78,7 @@ type Props = {
     notes?: string
   ) => void;
   onDeleteDocument: (documentId: string) => void | Promise<void>;
+  onOpenReconciliation: () => void;
   importSummary: TraceabilityImportSummary | null;
   importStatus: string;
   t: (key: string) => string;
@@ -118,6 +119,7 @@ export function TraceabilityWorkspace(props: Props) {
     onExtractDocument,
     onValidateDocument,
     onDeleteDocument,
+    onOpenReconciliation,
     importSummary,
     importStatus,
     t,
@@ -170,76 +172,33 @@ export function TraceabilityWorkspace(props: Props) {
 
   return (
     <div className="grid grid-single">
-      <section className="panel">
-        <div className="menu-space-header-row">
-          <div>
-            <h2>Area Tracciabilita</h2>
-            <p className="muted">Foto Traccia, dati estratti e riconciliazione operativa in una vista dedicata.</p>
-          </div>
-          <div className="entry-actions no-print">
-            <button type="button" onClick={() => void onImportAssets()} disabled={!siteId || isLoading || isSaving}>
-              {isSaving ? t("action.loading") : "Importa da Drive"}
-            </button>
-            <button type="button" onClick={onRefresh} disabled={!siteId || isLoading}>
-              {isLoading ? t("action.loading") : t("suppliers.refreshList")}
-            </button>
-          </div>
-        </div>
-        <p className="muted">Target: background worker centrale che osserva Drive, importa le nuove foto e aggiorna automaticamente l'estrazione.</p>
-        <div className="grid-3">
-          <article className="panel metric-card">
-            <strong>{queue.length}</strong>
-            <span>Foto disponibili</span>
-          </article>
-          <article className="panel metric-card">
-            <strong>{extractedCount}</strong>
-            <span>Dati estratti</span>
-          </article>
-          <article className="panel metric-card">
-            <strong>{pendingCount}</strong>
-            <span>Da validare</span>
-          </article>
-          <article className="panel metric-card">
-            <strong>{failedCount}</strong>
-            <span>OCR in errore</span>
-          </article>
-          <article className="panel metric-card">
-            <strong>{reconciliationOverview?.summary.reconciled_events ?? 0}</strong>
-            <span>Eventi riconciliati</span>
-          </article>
-          <article className="panel metric-card">
-            <strong>{reconciliationOverview?.summary.missing_events ?? 0}</strong>
-            <span>Eventi senza documenti</span>
-          </article>
-        </div>
-        {importSummary ? (
-          <div className="traceability-summary">
-            <strong>Ultimo import</strong>
-            <span>
-              {importSummary.created_count} nuove, {importSummary.skipped_existing} gia presenti, {importSummary.extracted_count} estrazioni avviate,
-              {" "}{importSummary.error_count} errori.
-            </span>
-          </div>
-        ) : importStatus ? (
-          <div className="traceability-summary">
-            <strong>Stato</strong>
-            <span>{importStatus}</span>
-          </div>
-        ) : null}
-      </section>
-
       {!siteId ? (
         <section className="panel">
           <p className="muted">{t("validation.selectSite")}</p>
         </section>
       ) : (
         <>
+          <section className="panel traceability-toolbar-panel">
+            <div className="traceability-toolbar">
+              <div className="entry-actions no-print">
+                <button type="button" onClick={() => void onImportAssets()} disabled={!siteId || isLoading || isSaving}>
+                  {isSaving ? t("action.loading") : "Importa da Drive"}
+                </button>
+                <button type="button" onClick={onRefresh} disabled={!siteId || isLoading}>
+                  {isLoading ? t("action.loading") : t("suppliers.refreshList")}
+                </button>
+                <button type="button" onClick={onOpenReconciliation} disabled={!siteId}>
+                  Apri riconciliazione
+                </button>
+              </div>
+            </div>
+          </section>
+
           <div className="grid">
             <section className="panel">
               <div className="doc-preview__head">
-                <h2>1. Foto e stato</h2>
+                <h2>Foto</h2>
               </div>
-              <p className="muted">Elenco operativo delle foto importate con stato estrazione e validazione.</p>
               {queue.length === 0 ? (
                 <p className="muted">Nessuna foto importata per il sito.</p>
               ) : (
@@ -248,9 +207,9 @@ export function TraceabilityWorkspace(props: Props) {
                     <thead>
                       <tr>
                         <th>Foto</th>
-                        <th>Estratto</th>
+                        <th>OCR</th>
                         <th>Validazione</th>
-                        <th>Confidenza</th>
+                        <th>Conf.</th>
                         <th>Azione</th>
                       </tr>
                     </thead>
@@ -260,10 +219,7 @@ export function TraceabilityWorkspace(props: Props) {
                           key={row.document_id}
                           className={row.document_id === selectedDocumentId ? "traceability-row--active" : undefined}
                         >
-                          <td>
-                            <strong>{row.filename}</strong>
-                            <div className="muted">{row.document_type}</div>
-                          </td>
+                          <td><strong>{row.filename}</strong></td>
                           <td>{String(row.extraction?.status || row.document_status || "-")}</td>
                           <td>{formatValidationStatus(row.validation_status)}</td>
                           <td>{row.extraction?.confidence || "-"}</td>
@@ -283,23 +239,19 @@ export function TraceabilityWorkspace(props: Props) {
 
             <section className="panel">
               <div className="doc-preview__head">
-                <h2>2. Foto e dati estratti</h2>
+                <h2>Dettaglio</h2>
                 {selectedQueueItem ? (
                   <div className="entry-actions no-print">
                     <button type="button" onClick={() => void onExtractDocument(selectedQueueItem.document_id)}>Rilancia OCR</button>
-                    {isImagePreview ? (
-                      <button type="button" onClick={() => setIsZoomOpen(true)}>Zoom</button>
-                    ) : null}
+                    {isImagePreview ? <button type="button" onClick={() => setIsZoomOpen(true)}>Zoom</button> : null}
                     <button type="button" onClick={() => onValidateDocument(selectedQueueItem.document_id, "validated", buildCorrectedPayload(), reviewNotes)} disabled={!canConfirm}>Conferma</button>
-                    <button type="button" className="warning-btn" onClick={() => onValidateDocument(selectedQueueItem.document_id, "rejected", undefined, reviewNotes)} disabled={!canReject}>
-                      Rifiuta
-                    </button>
+                    <button type="button" className="warning-btn" onClick={() => onValidateDocument(selectedQueueItem.document_id, "rejected", undefined, reviewNotes)} disabled={!canReject}>Rifiuta</button>
                     <button type="button" className="danger-btn" onClick={() => void onDeleteDocument(selectedQueueItem.document_id)}>Elimina</button>
                   </div>
                 ) : null}
               </div>
               {!selectedQueueItem ? (
-                <p className="muted">Seleziona una foto per visualizzare anteprima e campi estratti.</p>
+                <p className="muted">Seleziona una foto.</p>
               ) : (
                 <>
                   <div className="traceability-preview">
@@ -336,7 +288,7 @@ export function TraceabilityWorkspace(props: Props) {
                         <input value={readEditableField("production_date", ["production_date", "manufactured_at", "packed_at"])} onChange={(e) => setEditPayload((prev) => ({ ...prev, production_date: e.target.value }))} />
                       </div>
                       <div>
-                        <span>DLC / DDM</span>
+                        <span>DLC</span>
                         <input value={readEditableField("dlc_date", ["dlc_date", "expiry_date", "best_before_date"])} onChange={(e) => setEditPayload((prev) => ({ ...prev, dlc_date: e.target.value }))} />
                       </div>
                       <div>
@@ -344,7 +296,7 @@ export function TraceabilityWorkspace(props: Props) {
                         <input value={readEditableField("weight_value", ["weight_value"])} onChange={(e) => setEditPayload((prev) => ({ ...prev, weight_value: e.target.value }))} />
                       </div>
                       <div>
-                        <span>UM peso</span>
+                        <span>UM</span>
                         <input value={readEditableField("weight_unit", ["weight_unit"])} onChange={(e) => setEditPayload((prev) => ({ ...prev, weight_unit: e.target.value }))} />
                       </div>
                       <div>
@@ -355,27 +307,11 @@ export function TraceabilityWorkspace(props: Props) {
                         <span>Conservazione</span>
                         <input value={readEditableField("storage_hint", ["storage_hint", "storage"])} onChange={(e) => setEditPayload((prev) => ({ ...prev, storage_hint: e.target.value }))} />
                       </div>
-                      <div>
-                        <span>Stato OCR</span>
-                        <b>{String(selectedQueueItem.extraction?.status || selectedQueueItem.document_status || "-")}</b>
-                      </div>
-                      <div>
-                        <span>Validazione</span>
-                        <b>{formatValidationStatus(selectedQueueItem.validation_status)}</b>
-                      </div>
                       <div className="traceability-grid-span">
                         <span>Note review</span>
                         <textarea value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} rows={2} />
                       </div>
-                      <div className="traceability-grid-span">
-                        <span>Note estratte</span>
-                        <textarea value={readEditableField("notes", ["notes"])} onChange={(e) => setEditPayload((prev) => ({ ...prev, notes: e.target.value }))} rows={3} />
-                      </div>
                     </div>
-                    <details>
-                      <summary>Payload estratto</summary>
-                      <pre>{JSON.stringify(payload, null, 2)}</pre>
-                    </details>
                   </div>
                 </>
               )}
@@ -385,44 +321,22 @@ export function TraceabilityWorkspace(props: Props) {
           <div className="grid">
             <section className="panel">
               <div className="doc-preview__head">
-                <h2>3. Riconciliazione</h2>
-              </div>
-              <p className="muted">Confronto rapido tra documenti trovati e movimenti operativi Traccia.</p>
-              {!reconciliationOverview || reconciliationOverview.results.length === 0 ? (
-                <p className="muted">Nessun dato di riconciliazione disponibile.</p>
-              ) : (
-                <div className="sheet-wrap">
-                  <table className="sheet-table">
-                    <thead>
-                      <tr>
-                        <th>Data</th>
-                        <th>Prodotto</th>
-                        <th>Lotto</th>
-                        <th>Stato</th>
-                        <th>Alert</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reconciliationOverview.results.slice(0, 20).map((row) => (
-                        <tr key={row.event_id}>
-                          <td>{String(row.happened_at).replace("T", " ").slice(0, 19)}</td>
-                          <td>{row.product_label}</td>
-                          <td>{row.lot?.internal_lot_code || row.lot?.supplier_lot_code || "-"}</td>
-                          <td>{row.reconcile_status}</td>
-                          <td>{row.alerts.join(" ") || "-"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <h2>Riconciliazione</h2>
+                <div className="entry-actions no-print">
+                  <button type="button" onClick={onOpenReconciliation}>Apri pagina</button>
                 </div>
-              )}
+              </div>
+              <div className="traceability-compact-summary">
+                <span><strong>{reconciliationOverview?.summary.reconciled_events ?? 0}</strong> riconciliati</span>
+                <span><strong>{reconciliationOverview?.summary.documents_found_events ?? 0}</strong> da confermare</span>
+                <span><strong>{reconciliationOverview?.summary.missing_events ?? 0}</strong> mancanti</span>
+              </div>
             </section>
 
             <section className="panel">
               <div className="doc-preview__head">
-                <h2>4. Ultimi eventi Traccia</h2>
+                <h2>Eventi</h2>
               </div>
-              <p className="muted">Vista sintetica degli eventi lifecycle più recenti associati alla tracciabilità.</p>
               {lifecycleEvents.length === 0 ? (
                 <p className="muted">Nessun evento disponibile.</p>
               ) : (
@@ -433,18 +347,18 @@ export function TraceabilityWorkspace(props: Props) {
                         <th>Data</th>
                         <th>Evento</th>
                         <th>Prodotto</th>
-                        <th>Quantita</th>
+                        <th>Qta</th>
                         <th>Lotto</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {lifecycleEvents.slice(0, 20).map((row) => (
-                        <tr key={row.event_id}>
-                          <td>{String(row.happened_at).replace("T", " ").slice(0, 19)}</td>
-                          <td>{row.event_type}</td>
-                          <td>{row.product_label}</td>
-                          <td>{row.qty_value} {row.qty_unit}</td>
-                          <td>{row.lot?.internal_lot_code || row.lot?.supplier_lot_code || "-"}</td>
+                      {lifecycleEvents.slice(0, 20).map((event) => (
+                        <tr key={event.event_id}>
+                          <td>{String(event.happened_at).replace("T", " ").slice(0, 19)}</td>
+                          <td>{event.event_type}</td>
+                          <td>{event.product_label}</td>
+                          <td>{event.qty_value} {event.qty_unit}</td>
+                          <td>{event.lot?.internal_lot_code || event.lot?.supplier_lot_code || "-"}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -453,31 +367,42 @@ export function TraceabilityWorkspace(props: Props) {
               )}
             </section>
           </div>
+
+          <section className="panel traceability-status-panel">
+            <div className="traceability-compact-summary">
+              <span><strong>{queue.length}</strong> foto</span>
+              <span><strong>{extractedCount}</strong> estratte</span>
+              <span><strong>{pendingCount}</strong> da validare</span>
+              <span><strong>{failedCount}</strong> in errore</span>
+              {importSummary ? (
+                <span>
+                  <strong>{importSummary.created_count}</strong> nuove,
+                  {" "}{importSummary.skipped_existing} gia presenti,
+                  {" "}{importSummary.extracted_count} OCR
+                </span>
+              ) : importStatus ? (
+                <span>{importStatus}</span>
+              ) : null}
+            </div>
+          </section>
         </>
       )}
-      {isZoomOpen && selectedQueueItem && selectedDocumentUrl ? (
-        <div className="modal-backdrop" onClick={() => setIsZoomOpen(false)}>
-          <div className="modal-card modal-card--wide" onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="modal-close-btn" onClick={() => setIsZoomOpen(false)}>
-              X
-            </button>
-            <div className="doc-preview__head">
-              <h2>Zoom foto</h2>
-              <div className="entry-actions">
-                <button type="button" onClick={() => setZoomLevel((prev) => Math.max(0.5, Number((prev - 0.25).toFixed(2))))}>-</button>
-                <button type="button" onClick={() => setZoomLevel(1)}>Reset</button>
-                <button type="button" onClick={() => setZoomLevel((prev) => Math.min(3, Number((prev + 0.25).toFixed(2))))}>+</button>
-              </div>
-            </div>
-            <p className="muted">Zoom: {Math.round(zoomLevel * 100)}%</p>
-            <div className="traceability-zoom-frame">
-              <img
-                className="traceability-zoom-image"
-                src={selectedDocumentUrl}
-                alt={selectedQueueItem.filename}
-                style={{ transform: `scale(${zoomLevel})` }}
-              />
-            </div>
+
+      {isZoomOpen && selectedDocumentUrl ? (
+        <div className="image-zoom-modal" role="dialog" aria-modal="true">
+          <div className="image-zoom-toolbar">
+            <button type="button" onClick={() => setZoomLevel((value) => Math.max(1, value - 0.25))}>-</button>
+            <button type="button" onClick={() => setZoomLevel(1)}>Reset</button>
+            <button type="button" onClick={() => setZoomLevel((value) => Math.min(3, value + 0.25))}>+</button>
+            <button type="button" className="danger-btn" onClick={() => setIsZoomOpen(false)}>Chiudi</button>
+          </div>
+          <div className="image-zoom-canvas">
+            <img
+              className="traceability-image traceability-image--zoomed"
+              src={selectedDocumentUrl}
+              alt={selectedQueueItem?.filename || "Zoom"}
+              style={{ transform: `scale(${zoomLevel})` }}
+            />
           </div>
         </div>
       ) : null}

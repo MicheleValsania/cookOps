@@ -210,6 +210,8 @@ type HaccpColdPointItem = {
 };
 
 type HaccpReconciliationRow = {
+  site_id?: string | null;
+  site_name?: string | null;
   event_id: string;
   event_type: string;
   happened_at: string;
@@ -321,6 +323,23 @@ const MENU_SPACES_CACHE_STORAGE_KEY = "cookops_menu_spaces_cache_v1";
 const MENU_ADVANCED_STORAGE_KEY = "cookops_menu_advanced_v1";
 const SELECTED_SITE_STORAGE_KEY = "cookops_selected_site_v1";
 const REPORT_FILTERS_STORAGE_KEY = "cookops_report_filters_v1";
+const TRACEABILITY_RECONCILIATION_HASH = "#traceability-reconciliation";
+
+function parseTraceabilityReconciliationHash(rawHash: string) {
+  const hash = String(rawHash || "");
+  if (!hash.startsWith(TRACEABILITY_RECONCILIATION_HASH)) {
+    return { active: false, siteId: "" };
+  }
+  const queryIndex = hash.indexOf("?");
+  if (queryIndex === -1) {
+    return { active: true, siteId: "" };
+  }
+  const params = new URLSearchParams(hash.slice(queryIndex + 1));
+  return {
+    active: true,
+    siteId: String(params.get("site") || "").trim(),
+  };
+}
 
 const FICHE_RECIPE_SUGGESTIONS = [
   "Focaccia Bresaola",
@@ -703,7 +722,7 @@ function createClientUuid() {
   return `haccp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function normalizeHaccpReconciliationOverview(body: unknown): HaccpReconciliationOverview {
+function normalizeHaccpReconciliationOverview(body: unknown, context?: { siteId?: string; siteName?: string }): HaccpReconciliationOverview {
   const record = asRecord(body);
   const summary = asRecord(record.summary);
   const labelScheduleSummary = asRecord(record.label_schedule_summary);
@@ -731,6 +750,8 @@ function normalizeHaccpReconciliationOverview(body: unknown): HaccpReconciliatio
     results: results.map((row) => {
       const lot = asRecord(row.lot);
       return {
+        site_id: context?.siteId ?? "",
+        site_name: context?.siteName ?? "",
         event_id: String(row.event_id ?? row.id ?? ""),
         event_type: String(row.event_type ?? row.type ?? "movement"),
         happened_at: String(row.happened_at ?? ""),
@@ -777,6 +798,9 @@ function normalizeHaccpReconciliationOverview(body: unknown): HaccpReconciliatio
 function App() {
   const [lang, setLang] = useState<Lang>(() => getInitialLang());
   const [nav, setNav] = useState<NavKey>("dashboard");
+  const [isTraceabilityReconciliationPage, setIsTraceabilityReconciliationPage] = useState(
+    () => parseTraceabilityReconciliationHash(window.location.hash).active
+  );
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSidebarOpenMobile, setIsSidebarOpenMobile] = useState(false);
   const [apiKey, setApiKey] = useState(getDefaultApiKey());
@@ -847,6 +871,17 @@ function App() {
   const [reportSupplierSearch, setReportSupplierSearch] = useState(() => String(readReportFilters()?.supplier_search ?? ""));
   const [reportProductSearch, setReportProductSearch] = useState(() => String(readReportFilters()?.product_search ?? ""));
   const [reportLotSearch, setReportLotSearch] = useState(() => String(readReportFilters()?.lot_search ?? ""));
+  const [reconciliationInitialSiteId, setReconciliationInitialSiteId] = useState(
+    () => parseTraceabilityReconciliationHash(window.location.hash).siteId || String(localStorage.getItem(SELECTED_SITE_STORAGE_KEY) ?? "")
+  );
+  const [centralReconciliationOverview, setCentralReconciliationOverview] = useState<HaccpReconciliationOverview | null>(null);
+  const [isCentralReconciliationLoading, setIsCentralReconciliationLoading] = useState(false);
+  const [reconciliationSearch, setReconciliationSearch] = useState("");
+  const [reconciliationStatusFilter, setReconciliationStatusFilter] = useState("all");
+  const [reconciliationOnlyAlerts, setReconciliationOnlyAlerts] = useState(false);
+  const [reconciliationSiteFilter, setReconciliationSiteFilter] = useState(
+    () => parseTraceabilityReconciliationHash(window.location.hash).siteId || ""
+  );
   const [lastTraceabilityImportSummary, setLastTraceabilityImportSummary] = useState<{
     created_count: number;
     skipped_existing: number;
@@ -957,6 +992,20 @@ function App() {
   }, [lang]);
 
   useEffect(() => {
+    const syncHashState = () => {
+      const parsed = parseTraceabilityReconciliationHash(window.location.hash);
+      setIsTraceabilityReconciliationPage(parsed.active);
+      if (parsed.siteId) {
+        setReconciliationInitialSiteId(parsed.siteId);
+        setReconciliationSiteFilter(parsed.siteId);
+      }
+    };
+    syncHashState();
+    window.addEventListener("hashchange", syncHashState);
+    return () => window.removeEventListener("hashchange", syncHashState);
+  }, []);
+
+  useEffect(() => {
     if (siteId) {
       localStorage.setItem(SELECTED_SITE_STORAGE_KEY, siteId);
     } else {
@@ -1008,6 +1057,12 @@ function App() {
     if (!siteId) return;
     void loadHaccpData();
   }, [nav, siteId]);
+
+  useEffect(() => {
+    if (!isTraceabilityReconciliationPage) return;
+    if (sites.length === 0) return;
+    void loadCentralTraceabilityReconciliation();
+  }, [isTraceabilityReconciliationPage, sites]);
 
   useEffect(() => {
     const queue = normalizeHaccpOcrQueueRowsFromDocuments(documents);
@@ -2355,6 +2410,59 @@ function App() {
     }
   }
 
+  async function loadCentralTraceabilityReconciliation() {
+    if (sites.length === 0) return;
+    setIsCentralReconciliationLoading(true);
+    try {
+      const activeSitesForReco = sites.filter((item) => item.is_active);
+      const settled = await Promise.allSettled(
+        activeSitesForReco.map(async (site) => {
+          const synced = await ensureHaccpSiteSynced(site.id);
+          if (!synced) {
+            return null;
+          }
+          const res = await apiFetch(`/haccp/traccia/reconciliation-overview/?site=${encodeURIComponent(site.id)}&limit=80`);
+          const body = await res.json();
+          if (!res.ok) {
+            return null;
+          }
+          return normalizeHaccpReconciliationOverview(body, { siteId: site.id, siteName: site.name });
+        })
+      );
+
+      const overviews = settled
+        .filter((item): item is PromiseFulfilledResult<HaccpReconciliationOverview | null> => item.status === "fulfilled")
+        .map((item) => item.value)
+        .filter((item): item is HaccpReconciliationOverview => Boolean(item));
+
+      const merged: HaccpReconciliationOverview = {
+        summary: {
+          lifecycle_events: overviews.reduce((acc, item) => acc + item.summary.lifecycle_events, 0),
+          goods_receipt_lines: overviews.reduce((acc, item) => acc + item.summary.goods_receipt_lines, 0),
+          invoice_lines: overviews.reduce((acc, item) => acc + item.summary.invoice_lines, 0),
+          matches: overviews.reduce((acc, item) => acc + item.summary.matches, 0),
+          reconciled_events: overviews.reduce((acc, item) => acc + item.summary.reconciled_events, 0),
+          goods_receipt_only_events: overviews.reduce((acc, item) => acc + item.summary.goods_receipt_only_events, 0),
+          invoice_only_events: overviews.reduce((acc, item) => acc + item.summary.invoice_only_events, 0),
+          missing_events: overviews.reduce((acc, item) => acc + item.summary.missing_events, 0),
+          documents_found_events: overviews.reduce((acc, item) => acc + item.summary.documents_found_events, 0),
+          label_tasks_planned: overviews.reduce((acc, item) => acc + item.summary.label_tasks_planned, 0),
+          label_tasks_done: overviews.reduce((acc, item) => acc + item.summary.label_tasks_done, 0),
+        },
+        label_schedule_summary: {
+          planned: overviews.reduce((acc, item) => acc + item.label_schedule_summary.planned, 0),
+          done: overviews.reduce((acc, item) => acc + item.label_schedule_summary.done, 0),
+          skipped: overviews.reduce((acc, item) => acc + item.label_schedule_summary.skipped, 0),
+          cancelled: overviews.reduce((acc, item) => acc + item.label_schedule_summary.cancelled, 0),
+        },
+        results: overviews.flatMap((item) => item.results).sort((a, b) => String(b.happened_at).localeCompare(String(a.happened_at))),
+      };
+      setCentralReconciliationOverview(merged);
+    } finally {
+      setIsCentralReconciliationLoading(false);
+    }
+  }
+
   async function onImportHaccpAssets() {
     if (!siteId) {
       setNotice(t("validation.selectSite"));
@@ -3630,6 +3738,25 @@ function App() {
       ].some((value) => String(value || "").toLowerCase().includes(q));
     });
   }, [temperatureReportRows, reportDateFrom, reportDateTo, reportReviewStatus, reportSearch, reportOnlyAnomalies]);
+  const filteredReconciliationRows = useMemo(() => {
+    const q = reconciliationSearch.trim().toLowerCase();
+    return (centralReconciliationOverview?.results ?? []).filter((row) => {
+      if (reconciliationSiteFilter && row.site_id !== reconciliationSiteFilter) return false;
+      if (reconciliationStatusFilter !== "all" && row.reconcile_status !== reconciliationStatusFilter) return false;
+      if (reconciliationOnlyAlerts && row.alerts.length === 0) return false;
+      if (!q) return true;
+      return [
+        row.product_label,
+        row.site_name,
+        row.supplier_code,
+        row.lot?.internal_lot_code,
+        row.lot?.supplier_lot_code,
+        row.goods_receipts.map((item) => item.delivery_note_number).join(" "),
+        row.invoices.map((item) => item.invoice_number).join(" "),
+        row.alerts.join(" "),
+      ].some((value) => String(value || "").toLowerCase().includes(q));
+    });
+  }, [centralReconciliationOverview, reconciliationOnlyAlerts, reconciliationSearch, reconciliationSiteFilter, reconciliationStatusFilter]);
   const supplierOrderGroups = useMemo(() => {
     if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
@@ -3965,6 +4092,36 @@ function App() {
     return <span className={`status-chip ${isAlert ? "status-chip--report-alert" : "status-chip--report-ok"}`}>{isAlert ? "Fuori soglia" : "OK"}</span>;
   }
 
+  function renderReconciliationStatusChip(value: string) {
+    const normalized = String(value || "").trim().toLowerCase();
+    const label =
+      normalized === "reconciled"
+        ? "Riconciliato"
+        : normalized === "documents_found"
+          ? "Da confermare"
+          : normalized === "goods_receipt_only"
+            ? "Solo bolla"
+            : normalized === "invoice_only"
+              ? "Solo fattura"
+              : normalized === "missing"
+                ? "Mancante"
+                : normalized || "-";
+    return <span className={`status-chip status-chip--${normalized || "neutral"}`}>{label}</span>;
+  }
+
+  function openTraceabilityReconciliationWindow() {
+    const suffix = siteId ? `?site=${encodeURIComponent(siteId)}` : "";
+    const targetUrl = `${window.location.origin}${window.location.pathname}${TRACEABILITY_RECONCILIATION_HASH}${suffix}`;
+    window.open(targetUrl, "_blank", "noopener,noreferrer");
+  }
+
+  function closeTraceabilityReconciliationPage() {
+    window.location.hash = "";
+    setIsTraceabilityReconciliationPage(false);
+    setReconciliationSiteFilter(reconciliationInitialSiteId || "");
+    setNav("tracciabilita");
+  }
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -3986,7 +4143,7 @@ function App() {
             <option value="fr">{t("lang.fr")}</option>
             <option value="en">{t("lang.en")}</option>
           </select>
-          <select className="nav-site-select" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+          <select className="nav-site-select" value={siteId} onChange={(e) => setSiteId(e.target.value)} disabled={isTraceabilityReconciliationPage}>
             <option value="">{t("app.selectSite")}</option>
             {sites.filter((site) => site.is_active).map((site) => (
               <option key={site.id} value={site.id}>
@@ -4000,7 +4157,8 @@ function App() {
         </div>
       </header>
 
-      <div className={`app-layout ${isSidebarCollapsed ? "app-layout--collapsed" : ""}`}>
+      <div className={`app-layout ${isSidebarCollapsed ? "app-layout--collapsed" : ""} ${isTraceabilityReconciliationPage ? "app-layout--focus" : ""}`}>
+        {!isTraceabilityReconciliationPage ? (
         <aside className={`sidebar ${isSidebarCollapsed ? "sidebar--collapsed" : ""} ${isSidebarOpenMobile ? "sidebar--open-mobile" : ""}`}>
           <div className="sidebar-title">{t("app.sidebarTitle")}</div>
           <button
@@ -4026,15 +4184,147 @@ function App() {
             </button>
           ))}
         </aside>
+        ) : null}
 
         <main className="content">
-          {nav !== "ricette" && nav !== "comande" && nav !== "acquisti" && nav !== "inventario" && nav !== "inventari" && nav !== "haccp" ? (
+          {isTraceabilityReconciliationPage ? (
+            <div className="grid grid-single">
+              <section className="panel">
+                <div className="menu-space-header-row">
+                  <div>
+                    <h2>Riconciliazione tracciabilita</h2>
+                    <p className="muted">
+                      Vista centrale.
+                      {reconciliationInitialSiteId ? ` Filtro iniziale: ${sites.find((item) => item.id === reconciliationInitialSiteId)?.name || reconciliationInitialSiteId}.` : ""}
+                    </p>
+                  </div>
+                  <div className="entry-actions no-print">
+                    <button type="button" onClick={loadCentralTraceabilityReconciliation} disabled={isCentralReconciliationLoading}>
+                      {isCentralReconciliationLoading ? t("action.loading") : t("suppliers.refreshList")}
+                    </button>
+                    <button type="button" onClick={closeTraceabilityReconciliationPage}>Chiudi</button>
+                  </div>
+                </div>
+              </section>
+
+              {!centralReconciliationOverview || centralReconciliationOverview.results.length === 0 ? (
+                <section className="panel">
+                  <p className="muted">Nessun dato di riconciliazione disponibile.</p>
+                </section>
+              ) : (
+                <>
+                  <section className="panel">
+                    <div className="traceability-compact-summary">
+                      <span><strong>{filteredReconciliationRows.filter((row) => row.reconcile_status === "reconciled").length}</strong> riconciliati</span>
+                      <span><strong>{filteredReconciliationRows.filter((row) => row.reconcile_status === "documents_found").length}</strong> da confermare</span>
+                      <span><strong>{filteredReconciliationRows.filter((row) => row.reconcile_status === "goods_receipt_only").length}</strong> solo bolla</span>
+                      <span><strong>{filteredReconciliationRows.filter((row) => row.reconcile_status === "invoice_only").length}</strong> solo fattura</span>
+                      <span><strong>{filteredReconciliationRows.filter((row) => row.reconcile_status === "missing").length}</strong> mancanti</span>
+                    </div>
+                  </section>
+                  <section className="panel">
+                    <div className="grid grid-2">
+                      <div>
+                        <label>Sito</label>
+                        <select value={reconciliationSiteFilter} onChange={(e) => setReconciliationSiteFilter(e.target.value)}>
+                          <option value="">Tutti i siti</option>
+                          {sites.filter((item) => item.is_active).map((site) => (
+                            <option key={site.id} value={site.id}>{site.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label>Ricerca</label>
+                        <input
+                          value={reconciliationSearch}
+                          onChange={(e) => setReconciliationSearch(e.target.value)}
+                          placeholder="Prodotto, lotto, bolla, fattura..."
+                        />
+                      </div>
+                      <div>
+                        <label>Stato</label>
+                        <select value={reconciliationStatusFilter} onChange={(e) => setReconciliationStatusFilter(e.target.value)}>
+                          <option value="all">Tutti</option>
+                          <option value="reconciled">Riconciliati</option>
+                          <option value="documents_found">Da confermare</option>
+                          <option value="goods_receipt_only">Solo bolla</option>
+                          <option value="invoice_only">Solo fattura</option>
+                          <option value="missing">Mancanti</option>
+                        </select>
+                      </div>
+                      <div className="checkline report-checkline">
+                        <input
+                          type="checkbox"
+                          checked={reconciliationOnlyAlerts}
+                          onChange={(e) => setReconciliationOnlyAlerts(e.target.checked)}
+                        />
+                        <span>Solo alert</span>
+                      </div>
+                    </div>
+                  </section>
+                  <section className="panel">
+                    {filteredReconciliationRows.length === 0 ? (
+                      <p className="muted">Nessuna riga per i filtri selezionati.</p>
+                    ) : null}
+                    <div className="sheet-wrap">
+                      <table className="sheet-table">
+                        <thead>
+                          <tr>
+                            <th>Sito</th>
+                            <th>Data</th>
+                            <th>Prodotto</th>
+                            <th>Lotto</th>
+                            <th>Documenti</th>
+                            <th>Stato</th>
+                            <th>Dettaglio</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredReconciliationRows.map((row) => (
+                            <tr key={`${row.site_id || "central"}-${row.event_id}`}>
+                              <td>{row.site_name || "-"}</td>
+                              <td>{String(row.happened_at).replace("T", " ").slice(0, 19)}</td>
+                              <td>
+                                <strong>{row.product_label}</strong>
+                                <div className="muted">{row.qty_value} {row.qty_unit}{row.supplier_code ? ` · ${row.supplier_code}` : ""}</div>
+                              </td>
+                              <td>{row.lot?.internal_lot_code || row.lot?.supplier_lot_code || "-"}</td>
+                              <td>
+                                {row.goods_receipts.length > 0 ? `BL ${row.goods_receipts.length}` : ""}
+                                {row.goods_receipts.length > 0 && row.invoices.length > 0 ? " · " : ""}
+                                {row.invoices.length > 0 ? `FAC ${row.invoices.length}` : ""}
+                                {row.goods_receipts.length === 0 && row.invoices.length === 0 ? "-" : ""}
+                              </td>
+                              <td>{renderReconciliationStatusChip(row.reconcile_status)}</td>
+                              <td>
+                                <details>
+                                  <summary>Apri</summary>
+                                  <div className="reconciliation-detail">
+                                    <div><strong>Bolle</strong> {row.goods_receipts.map((item) => item.delivery_note_number).join(", ") || "-"}</div>
+                                    <div><strong>Fatture</strong> {row.invoices.map((item) => item.invoice_number).join(", ") || "-"}</div>
+                                    <div><strong>Match</strong> {row.matches.length}</div>
+                                    <div><strong>Alert</strong> {row.alerts.join(" ") || "-"}</div>
+                                  </div>
+                                </details>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </>
+              )}
+            </div>
+          ) : nav !== "ricette" && nav !== "comande" && nav !== "acquisti" && nav !== "inventario" && nav !== "inventari" && nav !== "haccp" && nav !== "tracciabilita" ? (
             <section className="panel page-head">
               <h2>{t(NAV_ITEMS.find((item) => item.key === nav)?.labelKey ?? "")}</h2>
               <p>{t("app.pageHead", { site: activeSite?.name ?? t("app.siteNotSelected"), api: getApiBase() })}</p>
             </section>
           ) : null}
 
+          {!isTraceabilityReconciliationPage ? (
+          <>
           {nav === "dashboard" && (
             <div className="grid grid-single">
               <section className="grid grid-3">
@@ -4968,6 +5258,7 @@ function App() {
               onExtractDocument={onExtractHaccpDocument}
               onValidateDocument={onValidateHaccpOcr}
               onDeleteDocument={onDeleteTraceabilityDocument}
+              onOpenReconciliation={openTraceabilityReconciliationWindow}
               importSummary={lastTraceabilityImportSummary}
               importStatus={traceabilityImportStatus}
               t={t}
@@ -5462,6 +5753,8 @@ function App() {
               </section>
             </div>
           )}
+          </>
+          ) : null}
         </main>
       </div>
       {isSidebarOpenMobile ? <button type="button" className="sidebar-mobile-backdrop" onClick={() => setIsSidebarOpenMobile(false)} /> : null}

@@ -143,6 +143,32 @@ Traccia should be simplified:
 
 This avoids dual entry and accidental changes outside the central workflow.
 
+## Reconciliation scope
+
+Traceability reconciliation should be treated as a central workflow, not as a strictly local site screen.
+
+Recommended behavior:
+
+- users can enter reconciliation from any site context
+- the originating site is used only as the initial filter
+- the reconciliation page itself must be able to switch to:
+  - the originating site
+  - another single site
+  - all sites
+
+This keeps day-to-day access simple for unit users while preserving a single central place to reconcile:
+
+- traceability photos
+- lifecycle events
+- delivery notes
+- invoices
+- lots
+
+Rule:
+
+- operational traceability work stays site-based
+- reconciliation works on a central dataset with an optional site filter
+
 ## Sync strategy
 
 Recommended rollout:
