@@ -58,7 +58,12 @@ class InventoryStockSummaryView(APIView):
                 "qty_unit": "",
                 "total_in": Decimal("0"),
                 "total_out": Decimal("0"),
+                "in_from_docs": Decimal("0"),
+                "in_from_invoice_fallback": Decimal("0"),
+                "out_from_inventory": Decimal("0"),
+                "out_other": Decimal("0"),
                 "current_stock": Decimal("0"),
+                "last_movement_at": None,
             }
         )
         for m in movements:
@@ -70,12 +75,24 @@ class InventoryStockSummaryView(APIView):
             row["product_label"] = label
             row["qty_unit"] = unit
             qty = Decimal(str(m.qty_value or "0"))
+            if row["last_movement_at"] is None or m.happened_at > row["last_movement_at"]:
+                row["last_movement_at"] = m.happened_at
             if m.movement_type == "OUT":
                 row["total_out"] += qty
                 row["current_stock"] -= qty
+                if str(m.ref_type or "") == "inventory_adjustment":
+                    row["out_from_inventory"] += qty
+                else:
+                    row["out_other"] += qty
             else:
                 row["total_in"] += qty
                 row["current_stock"] += qty
+                if str(m.ref_type or "") == "invoice_line_fallback":
+                    row["in_from_invoice_fallback"] += qty
+                elif str(m.ref_type or "") == "goods_receipt_line":
+                    row["in_from_docs"] += qty
+                elif str(m.ref_type or "") != "inventory_adjustment":
+                    row["in_from_docs"] += qty
 
         results = [
             {
@@ -84,7 +101,14 @@ class InventoryStockSummaryView(APIView):
                 "qty_unit": row["qty_unit"],
                 "total_in": f"{row['total_in']:.3f}",
                 "total_out": f"{row['total_out']:.3f}",
+                "in_from_docs": f"{row['in_from_docs']:.3f}",
+                "in_from_invoice_fallback": f"{row['in_from_invoice_fallback']:.3f}",
+                "out_from_inventory": f"{row['out_from_inventory']:.3f}",
+                "out_other": f"{row['out_other']:.3f}",
                 "current_stock": f"{row['current_stock']:.3f}",
+                "last_movement_at": row["last_movement_at"].isoformat().replace("+00:00", "Z")
+                if row["last_movement_at"]
+                else None,
             }
             for row in grouped.values()
         ]
