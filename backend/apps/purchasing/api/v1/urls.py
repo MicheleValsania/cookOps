@@ -11,17 +11,17 @@ from apps.purchasing.api.v1.views import (
 urlpatterns = [
     path(
         "goods-receipts/",
-        GoodsReceiptViewSet.as_view({"post": "create"}),
+        GoodsReceiptViewSet.as_view({"get": "list", "post": "create"}),
         name="goods-receipt-create",
     ),
     path(
         "invoices/",
-        InvoiceViewSet.as_view({"post": "create"}),
+        InvoiceViewSet.as_view({"get": "list", "post": "create"}),
         name="invoice-create",
     ),
     path(
         "reconciliation/matches/",
-        InvoiceGoodsReceiptMatchViewSet.as_view({"post": "create"}),
+        InvoiceGoodsReceiptMatchViewSet.as_view({"get": "list", "post": "create"}),
         name="reconciliation-match-create",
     ),
     path(

@@ -24,6 +24,7 @@ type DocumentItem = {
   status: string;
   site: string;
   content_type?: string | null;
+  file_size?: number | string | null;
   created_at?: string;
   updated_at?: string;
   metadata?: Record<string, unknown> | null;
@@ -47,6 +48,28 @@ type SupplierItem = {
   id: string;
   name: string;
   vat_number: string | null;
+};
+
+type InvoiceRecord = {
+  id: string;
+  site: string;
+  supplier: string;
+  invoice_number: string;
+  invoice_date: string;
+  due_date?: string | null;
+  lines: Array<{
+    id: string;
+    goods_receipt_line?: string | null;
+    supplier_product?: string | null;
+    supplier_code?: string | null;
+    raw_product_name?: string | null;
+    qty_value: string;
+    qty_unit: string;
+    unit_price?: string | null;
+    line_total?: string | null;
+    vat_rate?: string | null;
+    note?: string | null;
+  }>;
 };
 
 type SiteItem = {
@@ -214,6 +237,8 @@ type HaccpReconciliationRow = {
   site_name?: string | null;
   event_id: string;
   event_type: string;
+  source_document_id?: string | null;
+  source_document_filename?: string | null;
   happened_at: string;
   product_label: string;
   supplier_code?: string | null;
@@ -497,6 +522,113 @@ function asArray(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value) ? value.map((item) => asRecord(item)) : [];
 }
 
+function findBestInvoiceLineMatch(
+  lines: Array<Record<string, unknown>>,
+  row: HaccpReconciliationRow
+): {
+  line: Record<string, unknown> | null;
+  qtyValue: number;
+  qtyUnit: string;
+  lineLabel: string;
+  lineLot: string;
+  score: number;
+} {
+  const productKey = normalizeDocumentToken(row.product_label);
+  const lotKey = normalizeDocumentToken(row.lot?.supplier_lot_code || row.lot?.internal_lot_code);
+  let best: {
+    line: Record<string, unknown> | null;
+    qtyValue: number;
+    qtyUnit: string;
+    lineLabel: string;
+    lineLot: string;
+    score: number;
+  } = {
+    line: null,
+    qtyValue: 0,
+    qtyUnit: "",
+    lineLabel: "",
+    lineLot: "",
+    score: -1,
+  };
+  lines.forEach((line) => {
+    const lineLabel = String(line.raw_product_name ?? line.description ?? line.name ?? line.product_name ?? "").trim();
+    const lineLot = String(line.supplier_lot_code ?? line.lot ?? "").trim();
+    const lineLabelKey = normalizeDocumentToken(lineLabel);
+    const lineLotKey = normalizeDocumentToken(lineLot);
+    let score = 0;
+    if (lotKey && lineLotKey && lotKey === lineLotKey) score += 6;
+    if (productKey && lineLabelKey && (lineLabelKey.includes(productKey) || productKey.includes(lineLabelKey))) score += 4;
+    const qtyUnit = String(line.qty_unit ?? line.unit ?? "").trim().toLowerCase();
+    if (qtyUnit && row.qty_unit && qtyUnit === String(row.qty_unit).trim().toLowerCase()) score += 1;
+    if (score > best.score) {
+      best = {
+        line,
+        qtyValue: asNumber(line.qty_value ?? line.quantity ?? "0"),
+        qtyUnit,
+        lineLabel,
+        lineLot,
+        score,
+      };
+    }
+  });
+  return best;
+}
+
+function normalizeDocumentToken(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function normalizeDocumentDateToken(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const isoLike = raw.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(isoLike)) return isoLike;
+  const slashMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (slashMatch) return `${slashMatch[3]}-${slashMatch[2]}-${slashMatch[1]}`;
+  return normalizeDocumentToken(raw);
+}
+
+function normalizeReferenceToken(value: unknown): string {
+  return normalizeDocumentToken(value).replace(/[^a-z0-9]/g, "");
+}
+
+function extractInvoiceReferenceFromPayload(payload: Record<string, unknown>): string {
+  const direct = String(payload.invoice_number ?? payload.invoice_reference ?? "").trim();
+  if (direct) return direct;
+  const notes = String(payload.notes ?? payload.note ?? "").trim();
+  if (!notes) return "";
+  const match = notes.match(/\b(?:facture|invoice)\s*[:#-]?\s*([A-Z0-9][A-Z0-9/-]*)/i);
+  return match?.[1] ?? "";
+}
+
+function getDocumentDuplicateKey(doc: DocumentItem): string {
+  const metadata = asRecord(doc.metadata);
+  const extraction = asRecord(doc.latest_extraction ?? {});
+  const payload = asRecord(extraction.normalized_payload);
+  const driveFileId = normalizeDocumentToken(metadata.drive_file_id);
+  if (driveFileId) {
+    return `${doc.site}|${doc.document_type}|drive:${driveFileId}`;
+  }
+
+  const supplier = normalizeDocumentToken(payload.supplier_name ?? payload.supplier ?? payload.vendor_name);
+  const number = normalizeDocumentToken(payload.document_number ?? payload.invoice_number ?? payload.delivery_note_number);
+  const date = normalizeDocumentDateToken(payload.document_date ?? payload.invoice_date ?? payload.received_at);
+  const total = normalizeDocumentToken(payload.total_amount ?? payload.total ?? payload.total_ht);
+  if (supplier && number) {
+    return `${doc.site}|${doc.document_type}|doc:${supplier}|${number}|${date}|${total}`;
+  }
+
+  const filename = normalizeDocumentToken(doc.filename);
+  const fileSize = normalizeDocumentToken(doc.file_size);
+  if (filename && fileSize) {
+    return `${doc.site}|${doc.document_type}|file:${filename}|${fileSize}`;
+  }
+  return "";
+}
+
 function recipeSuggestionKey(item: RecipeTitleSuggestion): string {
   const fiche = String(item.fiche_product_id || "").trim();
   if (fiche) return `fiche:${fiche}`;
@@ -766,6 +898,8 @@ function normalizeHaccpReconciliationOverview(body: unknown, context?: { siteId?
         site_name: context?.siteName ?? "",
         event_id: String(row.event_id ?? row.id ?? ""),
         event_type: String(row.event_type ?? row.type ?? "movement"),
+        source_document_id: String(row.source_document_id ?? ""),
+        source_document_filename: String(row.source_document_filename ?? ""),
         happened_at: String(row.happened_at ?? ""),
         product_label: String(row.product_label ?? row.product_name ?? row.label ?? "-"),
         supplier_code: String(row.supplier_code ?? ""),
@@ -829,6 +963,7 @@ function App() {
   const [selectedDocId, setSelectedDocId] = useState("");
   const [selectedDocType, setSelectedDocType] = useState<"goods_receipt" | "invoice" | "label_capture">("goods_receipt");
   const [selectedExtractionId, setSelectedExtractionId] = useState("");
+  const [isDeletingDocumentId, setIsDeletingDocumentId] = useState("");
   const [isClaudeExtracting, setIsClaudeExtracting] = useState(false);
   const [intakeStage, setIntakeStage] = useState<IntakeStage>("idle");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -845,6 +980,7 @@ function App() {
   const [isAutoMatching, setIsAutoMatching] = useState(false);
 
   const [suppliers, setSuppliers] = useState<SupplierItem[]>([]);
+  const [registeredInvoices, setRegisteredInvoices] = useState<InvoiceRecord[]>([]);
   const [newSupplierName, setNewSupplierName] = useState("");
   const [isFichesSyncing, setIsFichesSyncing] = useState(false);
   const [isFichesJsonImporting, setIsFichesJsonImporting] = useState(false);
@@ -897,6 +1033,7 @@ function App() {
   const [reconciliationSelections, setReconciliationSelections] = useState<Record<string, { goodsReceiptLineId: string; invoiceLineId: string }>>({});
   const [reconciliationDecisionNotes, setReconciliationDecisionNotes] = useState<Record<string, string>>({});
   const [reconciliationDecisions, setReconciliationDecisions] = useState<TraceabilityReconciliationDecision[]>([]);
+  const [selectedReconciliationEventId, setSelectedReconciliationEventId] = useState("");
   const [lastTraceabilityImportSummary, setLastTraceabilityImportSummary] = useState<{
     created_count: number;
     skipped_existing: number;
@@ -1078,6 +1215,7 @@ function App() {
     if (sites.length === 0) return;
     void loadCentralTraceabilityReconciliation();
     void loadTraceabilityReconciliationDecisions();
+    void loadRegisteredInvoices();
   }, [isTraceabilityReconciliationPage, sites]);
 
   useEffect(() => {
@@ -1921,6 +2059,33 @@ function App() {
     }
   }
 
+  async function loadRegisteredInvoices() {
+    const activeSites = sites.filter((item) => item.is_active);
+    if (activeSites.length === 0) {
+      setRegisteredInvoices([]);
+      return;
+    }
+    try {
+      const responses = await Promise.all(
+        activeSites.map(async (site) => {
+          const res = await apiFetch(`/invoices/?site=${encodeURIComponent(site.id)}`);
+          const body = await res.json();
+          if (!res.ok) {
+            throw new Error(body.detail ?? JSON.stringify(body));
+          }
+          return Array.isArray(body) ? (body as InvoiceRecord[]) : [];
+        })
+      );
+      const deduped = new Map<string, InvoiceRecord>();
+      responses.flat().forEach((invoice) => {
+        deduped.set(invoice.id, invoice);
+      });
+      setRegisteredInvoices(Array.from(deduped.values()));
+    } catch (error) {
+      setNotice(errorWithDetail("error.documentsLoad", error instanceof Error ? error.message : "invoice load failed"));
+    }
+  }
+
   async function onImportFichesJsonEnvelope() {
     if (isFichesJsonImporting) return;
     if (!fichesJsonFile) {
@@ -2171,6 +2336,48 @@ function App() {
     }
     setIntakeStage("review");
     setNotice(t("notice.documentIngested", { id: body.id }));
+  }
+
+  async function onDeleteIntakeDocument(doc: DocumentItem) {
+    if (!doc.id) return;
+    const duplicateCount = getDocumentDuplicateCount(doc);
+    const prompt = duplicateCount > 1
+      ? `Supprimer ce doublon et les donnees derivees de ${doc.filename} ?`
+      : `Supprimer ${doc.filename} et ses donnees derivees ?`;
+    if (!window.confirm(prompt)) {
+      return;
+    }
+
+    setIsDeletingDocumentId(doc.id);
+    try {
+      const res = await apiFetch(`/integration/documents/${doc.id}/`, { method: "DELETE" });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          detail = String(body.detail ?? JSON.stringify(body));
+        } catch {
+          // keep generic detail
+        }
+        setNotice(errorWithDetail("error.documentDelete", detail));
+        return;
+      }
+      if (selectedDocId === doc.id) {
+        setSelectedDocId("");
+        setSelectedExtractionId("");
+      }
+      await loadDocuments();
+      if (siteId) {
+        await loadStockSummary();
+        await loadInventoryMovements();
+      }
+      await loadCentralTraceabilityReconciliation();
+      setNotice(`Document supprime: ${doc.filename}`);
+    } catch {
+      setNotice("Suppression du document impossible.");
+    } finally {
+      setIsDeletingDocumentId("");
+    }
   }
 
   async function onCreateReconciliation(e: FormEvent) {
@@ -3618,6 +3825,23 @@ function App() {
     () => documents.filter((doc) => doc.document_type === "invoice"),
     [documents]
   );
+  const documentDuplicateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    intakeDocuments.forEach((doc) => {
+      const key = getDocumentDuplicateKey(doc);
+      if (!key) return;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    });
+    return counts;
+  }, [intakeDocuments]);
+  const getDocumentDuplicateCount = (doc: DocumentItem): number => {
+    const key = getDocumentDuplicateKey(doc);
+    return key ? documentDuplicateCounts.get(key) ?? 0 : 0;
+  };
+  const selectedDocumentDuplicateCount = useMemo(
+    () => (selectedDocument ? getDocumentDuplicateCount(selectedDocument) : 0),
+    [documentDuplicateCounts, selectedDocument]
+  );
   const previewDocumentUrl = originalDocumentBlobUrl;
   const haccpAnomalyRows = useMemo(() => {
     const rows: Array<{ id: string; happened_at: string; source: string; category: string; detail: string; severity: string }> = [];
@@ -3692,8 +3916,17 @@ function App() {
     }).length;
   }, [haccpTemperatureReadings]);
   const traceabilityReportRows = useMemo(() => {
+    const decisionByDocumentId = new Map<string, TraceabilityReconciliationDecision>();
+    reconciliationDecisions.forEach((decision) => {
+      const metadata = asRecord(decision.metadata);
+      const sourceDocumentId = String(metadata.source_document_id ?? "").trim();
+      if (!sourceDocumentId) return;
+      decisionByDocumentId.set(sourceDocumentId, decision);
+    });
     return haccpLabelCaptureQueue.map((row) => {
       const payload = asRecord(row.extraction?.normalized_payload ?? {});
+      const decision = decisionByDocumentId.get(row.document_id);
+      const decisionMetadata = asRecord(decision?.metadata);
       return {
         ...row,
         productGuess: String(payload.product_guess ?? payload.product_name ?? payload.label ?? "-"),
@@ -3704,9 +3937,13 @@ function App() {
         dlcDate: String(payload.dlc_date ?? payload.expiry_date ?? "-"),
         reviewNotes: String(row.validation_notes ?? "-") || "-",
         reviewedAt: String(row.reviewed_at ?? row.updated_at ?? ""),
+        allocatedQty: String(decisionMetadata.allocated_qty ?? "-"),
+        allocatedUnit: String(decisionMetadata.allocated_unit ?? "-"),
+        linkedDocumentName: String(decisionMetadata.registered_invoice_number ?? decisionMetadata.linked_document_filename ?? "-"),
+        allocationStatus: String(decision?.decision_status ?? ""),
       };
     });
-  }, [haccpLabelCaptureQueue]);
+  }, [haccpLabelCaptureQueue, reconciliationDecisions]);
   const temperatureReportRows = useMemo(() => {
     return haccpTemperatureReadings.map((row) => {
       const observed = Number.parseFloat(String(row.temperature_celsius ?? ""));
@@ -3787,6 +4024,35 @@ function App() {
       ].some((value) => String(value || "").toLowerCase().includes(q));
     });
   }, [centralReconciliationOverview, reconciliationOnlyAlerts, reconciliationSearch, reconciliationSiteFilter, reconciliationStatusFilter]);
+  const selectedReconciliationRow = useMemo(
+    () => filteredReconciliationRows.find((row) => row.event_id === selectedReconciliationEventId) ?? filteredReconciliationRows[0] ?? null,
+    [filteredReconciliationRows, selectedReconciliationEventId]
+  );
+  const selectedReconciliationSourceDocument = useMemo(() => {
+    if (!selectedReconciliationRow?.source_document_id) return null;
+    return documents.find((doc) => doc.id === selectedReconciliationRow.source_document_id) ?? null;
+  }, [documents, selectedReconciliationRow]);
+  const selectedReconciliationSourceDocumentUrl = useMemo(
+    () => getDocumentFileUrl(selectedReconciliationSourceDocument),
+    [selectedReconciliationSourceDocument]
+  );
+  const selectedReconciliationSourcePayload = useMemo(
+    () => asRecord(selectedReconciliationSourceDocument?.latest_extraction?.normalized_payload ?? {}),
+    [selectedReconciliationSourceDocument]
+  );
+  const selectedReconciliationInvoiceReference = useMemo(
+    () => extractInvoiceReferenceFromPayload(selectedReconciliationSourcePayload),
+    [selectedReconciliationSourcePayload]
+  );
+  useEffect(() => {
+    if (!filteredReconciliationRows.length) {
+      if (selectedReconciliationEventId) setSelectedReconciliationEventId("");
+      return;
+    }
+    if (!selectedReconciliationEventId || !filteredReconciliationRows.some((row) => row.event_id === selectedReconciliationEventId)) {
+      setSelectedReconciliationEventId(filteredReconciliationRows[0].event_id);
+    }
+  }, [filteredReconciliationRows, selectedReconciliationEventId]);
   const supplierOrderGroups = useMemo(() => {
     if (ingredientsView !== "supplier") return [] as Array<{ supplier: string; rows: Array<Record<string, unknown>> }>;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
@@ -4177,10 +4443,165 @@ function App() {
     return reconciliationDecisions.find((item) => item.site === row.site_id && item.event_id === row.event_id) ?? null;
   }
 
+  function getReconciliationLinkedDocument(row: HaccpReconciliationRow): DocumentItem | null {
+    const linkedDocumentId = getReconciliationDecision(row)?.linked_document;
+    if (!linkedDocumentId) return null;
+    return documents.find((doc) => doc.id === linkedDocumentId) ?? null;
+  }
+
+  function getEffectiveReconciliationStatus(row: HaccpReconciliationRow) {
+    const decision = getReconciliationDecision(row);
+    if (decision?.decision_status === "matched") {
+      return "reconciled";
+    }
+    return row.reconcile_status;
+  }
+
+  function getReconciliationSourceDocument(row: HaccpReconciliationRow): DocumentItem | null {
+    if (!row.source_document_id) return null;
+    return documents.find((doc) => doc.id === row.source_document_id) ?? null;
+  }
+
+  function getInvoiceDocumentCandidates(row: HaccpReconciliationRow) {
+    const productKey = normalizeDocumentToken(row.product_label);
+    const lotKey = normalizeDocumentToken(row.lot?.supplier_lot_code || row.lot?.internal_lot_code);
+    const sourcePayload = asRecord(getReconciliationSourceDocument(row)?.latest_extraction?.normalized_payload ?? {});
+    const supplierKey = normalizeDocumentToken(sourcePayload.supplier_name ?? sourcePayload.supplier ?? "");
+    const sourceInvoiceReference = normalizeReferenceToken(extractInvoiceReferenceFromPayload(sourcePayload));
+    const siteInvoices = registeredInvoices.filter((invoice) => !row.site_id || invoice.site === row.site_id);
+    const hasExactInvoiceReferenceMatch = Boolean(
+      sourceInvoiceReference
+      && siteInvoices.some(
+        (invoice) =>
+          normalizeReferenceToken(invoice.invoice_number)
+          && normalizeReferenceToken(invoice.invoice_number) === sourceInvoiceReference
+      )
+    );
+    const deduped = new Map<string, {
+      invoice: InvoiceRecord;
+      linkedDocument: DocumentItem | null;
+      score: number;
+      reasons: string[];
+      hasMeaningfulMatch: boolean;
+      passesInvoiceReferenceGate: boolean;
+      lineQtyValue: number;
+      lineQtyUnit: string;
+      lineLabel: string;
+      lineLot: string;
+      alreadyAllocatedQty: number;
+      remainingQty: number;
+      canAllocate: boolean;
+      invoiceNumber: string;
+      supplierName: string;
+      duplicateCount: number;
+    }>();
+    siteInvoices
+      .map((invoice) => {
+        const lines = invoice.lines.map((line) => asRecord(line));
+        const bestLine = findBestInvoiceLineMatch(lines, row);
+        let score = 0;
+        const reasons: string[] = [];
+        const supplierName = suppliers.find((item) => item.id === invoice.supplier)?.name || "";
+        const invoiceSupplier = normalizeDocumentToken(supplierName || invoice.supplier);
+        const supplierHit = Boolean(supplierKey && invoiceSupplier && supplierKey === invoiceSupplier);
+        const invoiceReferenceHit = Boolean(
+          sourceInvoiceReference
+          && normalizeReferenceToken(invoice.invoice_number)
+          && normalizeReferenceToken(invoice.invoice_number) === sourceInvoiceReference
+        );
+        if (invoiceReferenceHit) {
+          score += 8;
+          reasons.push("numero fattura");
+        }
+        if (supplierHit) {
+          score += 4;
+          reasons.push("fornitore");
+        }
+        const productHit = bestLine.score >= 4;
+        if (productHit) {
+          score += 3;
+          reasons.push("prodotto");
+        }
+        const lotHit = Boolean(lotKey && bestLine.lineLot && normalizeDocumentToken(bestLine.lineLot) === lotKey);
+        if (lotHit) {
+          score += 5;
+          reasons.push("lotto");
+        }
+        const dateDelta = Math.abs(
+          new Date(String(invoice.invoice_date || 0)).getTime() - new Date(String(row.happened_at || 0)).getTime()
+        );
+        if (Number.isFinite(dateDelta) && dateDelta <= 1000 * 60 * 60 * 24 * 3) {
+          score += 1;
+          reasons.push("data vicina");
+        }
+        const linkedDocument = archivedInvoices.find((doc) => {
+          if (row.site_id && doc.site !== row.site_id) return false;
+          const payload = asRecord(doc.latest_extraction?.normalized_payload ?? {});
+          return normalizeDocumentToken(payload.invoice_number ?? payload.document_number) === normalizeDocumentToken(invoice.invoice_number);
+        }) ?? null;
+        const existingAllocatedQty = reconciliationDecisions
+          .filter((decision) => {
+            const metadata = asRecord(decision.metadata);
+            return (
+              String(metadata.registered_invoice_id ?? "") === invoice.id
+              && decision.decision_status === "matched"
+              && String(metadata.linked_document_line_lot ?? "") === String(bestLine.lineLot || "")
+              && String(metadata.linked_document_line_label ?? "") === String(bestLine.lineLabel || "")
+            );
+          })
+          .reduce((sum, decision) => {
+            const metadata = asRecord(decision.metadata);
+            return sum + asNumber(metadata.allocated_qty ?? "0");
+          }, 0);
+        const remainingQty = Math.max(bestLine.qtyValue - existingAllocatedQty, 0);
+        return {
+          invoice,
+          linkedDocument,
+          score,
+          reasons,
+          hasMeaningfulMatch: invoiceReferenceHit || supplierHit || productHit || lotHit,
+          passesInvoiceReferenceGate: !hasExactInvoiceReferenceMatch || invoiceReferenceHit,
+          lineQtyValue: bestLine.qtyValue,
+          lineQtyUnit: bestLine.qtyUnit,
+          lineLabel: bestLine.lineLabel,
+          lineLot: bestLine.lineLot,
+          alreadyAllocatedQty: existingAllocatedQty,
+          remainingQty,
+          canAllocate: bestLine.qtyValue <= 0 || asNumber(row.qty_value) <= remainingQty + 0.0001,
+          invoiceNumber: String(invoice.invoice_number ?? "").trim(),
+          supplierName: String(supplierName).trim(),
+        };
+      })
+      .filter((item) => item.hasMeaningfulMatch && item.passesInvoiceReferenceGate)
+      .forEach((item) => {
+        const dedupeKey = [
+          item.invoice.site,
+          normalizeDocumentToken(item.supplierName),
+          normalizeDocumentToken(item.invoiceNumber),
+          normalizeDocumentDateToken(item.invoice.invoice_date),
+        ].join("|");
+        const existing = deduped.get(dedupeKey);
+        if (!existing) {
+          deduped.set(dedupeKey, { ...item, duplicateCount: 1 });
+          return;
+        }
+        const replace =
+          item.score > existing.score
+          || (item.score === existing.score && String(item.invoice.invoice_date || "").localeCompare(String(existing.invoice.invoice_date || "")) > 0);
+        if (replace) {
+          deduped.set(dedupeKey, { ...item, duplicateCount: existing.duplicateCount + 1 });
+        } else {
+          deduped.set(dedupeKey, { ...existing, duplicateCount: existing.duplicateCount + 1 });
+        }
+      });
+    return Array.from(deduped.values())
+      .sort((a, b) => b.score - a.score || String(b.invoice.invoice_date || "").localeCompare(String(a.invoice.invoice_date || "")));
+  }
+
   async function saveReconciliationDecision(
     row: HaccpReconciliationRow,
     decisionStatus: "review_required" | "ignored" | "matched",
-    options?: { linkedMatchId?: string | null }
+    options?: { linkedMatchId?: string | null; linkedDocumentId?: string | null; metadata?: Record<string, unknown> }
   ) {
     if (!row.site_id) {
       setNotice("Sito mancante sulla riga di riconciliazione.");
@@ -4194,9 +4615,20 @@ function App() {
           event_id: row.event_id,
           decision_status: decisionStatus,
           notes: reconciliationDecisionNotes[row.event_id] || "",
+          linked_document: options?.linkedDocumentId || null,
           linked_match: options?.linkedMatchId || null,
           metadata: {
             source: "traceability_reconciliation_ui",
+            source_document_id: row.source_document_id || null,
+            product_label: row.product_label,
+            supplier_code: row.supplier_code || "",
+            supplier_lot_code: row.lot?.supplier_lot_code || "",
+            internal_lot_code: row.lot?.internal_lot_code || "",
+            dlc_date: row.lot?.dlc_date || "",
+            allocated_qty: row.qty_value || "",
+            allocated_unit: row.qty_unit || "",
+            happened_at: row.happened_at || "",
+            ...(options?.metadata ?? {}),
           },
         }),
       });
@@ -4205,8 +4637,14 @@ function App() {
         setNotice(errorWithDetail("error.reconciliationCreate", body.detail ?? JSON.stringify(body)));
         return;
       }
+      const savedDecision = body as TraceabilityReconciliationDecision;
+      setReconciliationDecisions((prev) => {
+        const next = prev.filter((item) => !(item.site === row.site_id && item.event_id === row.event_id));
+        next.unshift(savedDecision);
+        return next;
+      });
       setNotice(`Decisione salvata: ${decisionStatus}.`);
-      await loadTraceabilityReconciliationDecisions();
+      await loadCentralTraceabilityReconciliation();
     } catch {
       setNotice(t("error.reconciliationCreate"));
     }
@@ -4240,6 +4678,94 @@ function App() {
       }
       setNotice(`Match creato: ${body.id}`);
       await saveReconciliationDecision(row, "matched", { linkedMatchId: String(body.id || "") });
+      await loadCentralTraceabilityReconciliation();
+    } catch {
+      setNotice(t("error.reconciliationCreate"));
+    }
+  }
+
+  async function onLinkReconciliationRowToInvoiceDocument(
+    row: HaccpReconciliationRow,
+    candidate: ReturnType<typeof getInvoiceDocumentCandidates>[number]
+  ) {
+    if (!candidate.canAllocate) {
+      setNotice(`Quantita residua insufficiente su ${candidate.invoice.invoice_number}.`);
+      return;
+    }
+    await saveReconciliationDecision(row, "matched", {
+      linkedDocumentId: candidate.linkedDocument?.id || null,
+      metadata: {
+        linked_document_type: "invoice",
+        linked_document_filename: candidate.linkedDocument?.filename || candidate.invoice.invoice_number,
+        registered_invoice_id: candidate.invoice.id,
+        registered_invoice_number: candidate.invoice.invoice_number,
+        linked_document_line_label: candidate.lineLabel,
+        linked_document_line_lot: candidate.lineLot,
+        linked_document_line_qty: candidate.lineQtyValue,
+        linked_document_line_unit: candidate.lineQtyUnit,
+      },
+    });
+    setNotice(`Etichetta collegata a ${candidate.invoice.invoice_number}.`);
+  }
+
+  async function onBulkLinkReconciliationRowsToInvoiceDocument(invoice: InvoiceRecord) {
+    const candidateRows = filteredReconciliationRows.flatMap((row) => {
+      if (row.reconcile_status === "reconciled") return [];
+      const candidates = getInvoiceDocumentCandidates(row);
+      const match = candidates.find((candidate) => candidate.invoice.id === invoice.id && candidate.canAllocate);
+      return match ? [{ row, candidate: match }] : [];
+    });
+    if (candidateRows.length === 0) {
+      setNotice("Nessuna etichetta compatibile con la fattura selezionata.");
+      return;
+    }
+    for (const item of candidateRows) {
+      await saveReconciliationDecision(item.row, "matched", {
+        linkedDocumentId: item.candidate.linkedDocument?.id || null,
+        metadata: {
+          linked_document_type: "invoice",
+          linked_document_filename: item.candidate.linkedDocument?.filename || invoice.invoice_number,
+          registered_invoice_id: invoice.id,
+          registered_invoice_number: invoice.invoice_number,
+          linked_document_line_label: item.candidate.lineLabel,
+          linked_document_line_lot: item.candidate.lineLot,
+          linked_document_line_qty: item.candidate.lineQtyValue,
+          linked_document_line_unit: item.candidate.lineQtyUnit,
+          bulk_link: true,
+        },
+      });
+    }
+    setNotice(`Collegate ${candidateRows.length} etichette a ${invoice.invoice_number}.`);
+  }
+
+  async function clearReconciliationDecision(row: HaccpReconciliationRow) {
+    if (!row.site_id) {
+      setNotice("Sito mancante sulla riga di riconciliazione.");
+      return;
+    }
+    try {
+      const res = await apiFetch(
+        `/integration/reconciliation-decisions/?site=${encodeURIComponent(row.site_id)}&event_id=${encodeURIComponent(row.event_id)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok && res.status !== 404) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          detail = String(body.detail ?? JSON.stringify(body));
+        } catch {
+          // keep generic detail
+        }
+        setNotice(errorWithDetail("error.reconciliationCreate", detail));
+        return;
+      }
+      setReconciliationDecisionNotes((prev) => {
+        const next = { ...prev };
+        delete next[row.event_id];
+        return next;
+      });
+      setReconciliationDecisions((prev) => prev.filter((item) => !(item.site === row.site_id && item.event_id === row.event_id)));
+      setNotice("Decisione annullata.");
       await loadCentralTraceabilityReconciliation();
     } catch {
       setNotice(t("error.reconciliationCreate"));
@@ -4401,7 +4927,7 @@ function App() {
                             <th>Documenti</th>
                             <th>Stato</th>
                             <th>Decisione</th>
-                            <th>Dettaglio</th>
+                            <th>Azione</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -4420,9 +4946,14 @@ function App() {
                                 {row.invoices.length > 0 ? `FAC ${row.invoices.length}` : ""}
                                 {row.goods_receipts.length === 0 && row.invoices.length === 0 ? "-" : ""}
                               </td>
-                              <td>{renderReconciliationStatusChip(row.reconcile_status)}</td>
+                              <td>{renderReconciliationStatusChip(getEffectiveReconciliationStatus(row))}</td>
                               <td>{renderReconciliationDecisionChip(getReconciliationDecision(row)?.decision_status)}</td>
                               <td>
+                                <div className="entry-actions">
+                                  <button type="button" onClick={() => setSelectedReconciliationEventId(row.event_id)}>
+                                    Lavora
+                                  </button>
+                                </div>
                                 <details>
                                   <summary>Apri</summary>
                                   <div className="reconciliation-detail">
@@ -4517,6 +5048,203 @@ function App() {
                         </tbody>
                       </table>
                     </div>
+                    {selectedReconciliationRow ? (
+                      <div className="reconciliation-operate-panel">
+                        <div className="reconciliation-operate-panel__main">
+                          <div className="doc-preview__head">
+                            <div>
+                              <h3>{selectedReconciliationRow.product_label}</h3>
+                              <p className="muted">
+                                {selectedReconciliationRow.qty_value} {selectedReconciliationRow.qty_unit}
+                                {selectedReconciliationRow.lot?.supplier_lot_code ? ` · Lotto ${selectedReconciliationRow.lot.supplier_lot_code}` : ""}
+                                {selectedReconciliationRow.source_document_filename ? ` · ${selectedReconciliationRow.source_document_filename}` : ""}
+                              </p>
+                            </div>
+                            <div className="reconciliation-sidepanel__chips">
+                              {renderReconciliationStatusChip(getEffectiveReconciliationStatus(selectedReconciliationRow))}
+                              {renderReconciliationDecisionChip(getReconciliationDecision(selectedReconciliationRow)?.decision_status)}
+                            </div>
+                          </div>
+                          <div className="reconciliation-detail">
+                            <div><strong>Alert</strong> {selectedReconciliationRow.alerts.join(" ") || "-"}</div>
+                            <div><strong>Bolle candidate</strong> {selectedReconciliationRow.goods_receipts.map((item) => item.delivery_note_number).join(", ") || "-"}</div>
+                            <div><strong>Fatture linee locali</strong> {selectedReconciliationRow.invoices.map((item) => item.invoice_number).join(", ") || "-"}</div>
+                            <div><strong>Fattura collegata</strong> {getReconciliationLinkedDocument(selectedReconciliationRow)?.filename || "-"}</div>
+                            <div><strong>Fattura letta da etichetta</strong> {selectedReconciliationInvoiceReference || "-"}</div>
+                          </div>
+                          <div>
+                            <label>Note</label>
+                            <textarea
+                              value={reconciliationDecisionNotes[selectedReconciliationRow.event_id] ?? getReconciliationDecision(selectedReconciliationRow)?.notes ?? ""}
+                              onChange={(e) =>
+                                setReconciliationDecisionNotes((prev) => ({
+                                  ...prev,
+                                  [selectedReconciliationRow.event_id]: e.target.value,
+                                }))
+                              }
+                              rows={2}
+                            />
+                          </div>
+                          <div className="reconciliation-actions reconciliation-actions--secondary">
+                            <div className="entry-actions">
+                              <button type="button" onClick={() => void saveReconciliationDecision(selectedReconciliationRow, "review_required")}>
+                                Segna da rivedere
+                              </button>
+                            </div>
+                            <div className="entry-actions">
+                              <button type="button" className="warning-btn" onClick={() => void saveReconciliationDecision(selectedReconciliationRow, "ignored")}>
+                                Ignora
+                              </button>
+                            </div>
+                            {getReconciliationDecision(selectedReconciliationRow) ? (
+                              <div className="entry-actions">
+                                <button type="button" onClick={() => void clearReconciliationDecision(selectedReconciliationRow)}>
+                                  Annulla decisione
+                                </button>
+                              </div>
+                            ) : null}
+                          </div>
+                          {selectedReconciliationRow.matches.length === 0 && (selectedReconciliationRow.goods_receipts.length > 0 || selectedReconciliationRow.invoices.length > 0) ? (
+                            <div className="reconciliation-candidate-list">
+                              <h4>Match BL / fattura</h4>
+                              <div className="reconciliation-actions">
+                                <div>
+                                  <label>Bolla</label>
+                                  <select
+                                    value={getReconciliationSelection(selectedReconciliationRow).goodsReceiptLineId}
+                                    onChange={(e) =>
+                                      setReconciliationSelections((prev) => ({
+                                        ...prev,
+                                        [selectedReconciliationRow.event_id]: {
+                                          goodsReceiptLineId: e.target.value,
+                                          invoiceLineId: prev[selectedReconciliationRow.event_id]?.invoiceLineId || selectedReconciliationRow.invoices[0]?.id || "",
+                                        },
+                                      }))
+                                    }
+                                  >
+                                    <option value="">Seleziona</option>
+                                    {selectedReconciliationRow.goods_receipts.map((item) => (
+                                      <option key={item.id} value={item.id}>{item.delivery_note_number}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div>
+                                  <label>Fattura</label>
+                                  <select
+                                    value={getReconciliationSelection(selectedReconciliationRow).invoiceLineId}
+                                    onChange={(e) =>
+                                      setReconciliationSelections((prev) => ({
+                                        ...prev,
+                                        [selectedReconciliationRow.event_id]: {
+                                          goodsReceiptLineId: prev[selectedReconciliationRow.event_id]?.goodsReceiptLineId || selectedReconciliationRow.goods_receipts[0]?.id || "",
+                                          invoiceLineId: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                  >
+                                    <option value="">Seleziona</option>
+                                    {selectedReconciliationRow.invoices.map((item) => (
+                                      <option key={item.id} value={item.id}>{item.invoice_number}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="entry-actions">
+                                  <button
+                                    type="button"
+                                    onClick={() => void onCreateCentralReconciliationMatch(selectedReconciliationRow)}
+                                    disabled={!getReconciliationSelection(selectedReconciliationRow).goodsReceiptLineId || !getReconciliationSelection(selectedReconciliationRow).invoiceLineId}
+                                  >
+                                    {selectedReconciliationRow.goods_receipts.length === 1 && selectedReconciliationRow.invoices.length === 1 ? "Conferma match" : "Collega manualmente"}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                        <aside className="reconciliation-operate-panel__side">
+                          {selectedReconciliationSourceDocumentUrl ? (
+                            <div className="reconciliation-preview">
+                              <div className="doc-preview__head">
+                                <h4>Etichetta sorgente</h4>
+                                <a className="doc-open-link" href={selectedReconciliationSourceDocumentUrl} target="_blank" rel="noreferrer">Apri foto</a>
+                              </div>
+                              <img
+                                className="traceability-image traceability-image--compact"
+                                src={selectedReconciliationSourceDocumentUrl}
+                                alt={selectedReconciliationSourceDocument?.filename || selectedReconciliationRow.product_label}
+                              />
+                            </div>
+                          ) : null}
+                          <div className="reconciliation-candidate-list">
+                            <div className="doc-preview__head">
+                              <h4>Fatture candidate</h4>
+                              <span className="muted">Collega l'etichetta direttamente alla fattura.</span>
+                            </div>
+                            {selectedReconciliationInvoiceReference && getInvoiceDocumentCandidates(selectedReconciliationRow).length > 0 ? (
+                              <div className="muted">
+                                Riferimento letto dall'etichetta: {selectedReconciliationInvoiceReference}.
+                                {" "}
+                                I candidati sotto sono proposti per lotto/prodotto/fornitore se non esiste un match esatto sul numero fattura.
+                              </div>
+                            ) : null}
+                            {getInvoiceDocumentCandidates(selectedReconciliationRow).length === 0 ? (
+                              <div className="reconciliation-warning">
+                                {selectedReconciliationInvoiceReference
+                                  ? `Nessuna fattura registrata compatibile con il riferimento letto sull'etichetta: ${selectedReconciliationInvoiceReference}.`
+                                  : "Nessuna fattura candidata trovata."}
+                              </div>
+                            ) : (
+                              getInvoiceDocumentCandidates(selectedReconciliationRow).map((candidate) => {
+                                const { score, reasons } = candidate;
+                                return (
+                                <article key={candidate.invoice.id} className="reconciliation-candidate-card">
+                                  <div className="reconciliation-candidate-card__head">
+                                    <div>
+                                      <strong>{candidate.invoice.invoice_number || "-"}</strong>
+                                      <div className="muted">{String(candidate.invoice.invoice_date || "").slice(0, 10) || "-"}</div>
+                                      <div className="muted">
+                                        {candidate.linkedDocument?.filename || "fattura registrata"}
+                                        {candidate.supplierName ? ` · ${candidate.supplierName}` : ""}
+                                        {candidate.duplicateCount > 1 ? ` · doublon x${candidate.duplicateCount}` : ""}
+                                      </div>
+                                    </div>
+                                    <span className="status-chip status-chip--documents_found">score {score}</span>
+                                  </div>
+                                  <div className="muted">Match: {reasons.join(", ") || "sito"}</div>
+                                  <div className="muted">
+                                    Riga: {candidate.lineLabel || "-"}
+                                    {candidate.lineLot ? ` · Lotto ${candidate.lineLot}` : ""}
+                                  </div>
+                                  <div className="muted">
+                                    Qta riga {candidate.lineQtyValue || 0} {candidate.lineQtyUnit || ""}
+                                    {" · "}gia allocato {candidate.alreadyAllocatedQty || 0} {candidate.lineQtyUnit || ""}
+                                    {" · "}residuo {candidate.remainingQty || 0} {candidate.lineQtyUnit || ""}
+                                  </div>
+                                  {!candidate.canAllocate ? (
+                                    <div className="reconciliation-warning">
+                                      Quantita etichetta superiore al residuo disponibile sulla riga fattura.
+                                    </div>
+                                  ) : null}
+                                  <div className="entry-actions">
+                                    <button
+                                      type="button"
+                                      onClick={() => void onLinkReconciliationRowToInvoiceDocument(selectedReconciliationRow, candidate)}
+                                      disabled={!candidate.canAllocate}
+                                    >
+                                      Collega etichetta
+                                    </button>
+                                    <button type="button" onClick={() => void onBulkLinkReconciliationRowsToInvoiceDocument(candidate.invoice)}>
+                                      Collega etichette simili
+                                    </button>
+                                  </div>
+                                </article>
+                                );
+                              })
+                            )}
+                          </div>
+                        </aside>
+                      </div>
+                    ) : null}
                   </section>
                 </>
               )}
@@ -5037,6 +5765,11 @@ function App() {
                       {isClaudeExtracting ? t("purchases.extractClaudeLoading") : t("purchases.extractClaude")}
                     </button>
                   </div>
+                  {selectedDocumentDuplicateCount > 1 ? (
+                    <p className="duplicate-note">
+                      Doublon detecte: {selectedDocumentDuplicateCount} documents semblent decrire la meme piece.
+                    </p>
+                  ) : null}
                   <div className="doc-preview__grid">
                     <div><span>{t("purchases.supplier")}</span><b>{String(normalizedData.supplier_name ?? normalizedData.supplier ?? normalizedMeta.supplier_name ?? "-")}</b></div>
                     <div><span>{t("purchases.documentNumber")}</span><b>{String(normalizedData.document_number ?? normalizedData.invoice_number ?? normalizedData.delivery_note_number ?? "-")}</b></div>
@@ -5109,10 +5842,16 @@ function App() {
                       <tbody>
                         {archivedDeliveryNotes.map((doc) => {
                           const url = getDocumentFileUrl(doc);
+                          const duplicateCount = getDocumentDuplicateCount(doc);
                           return (
                             <tr key={doc.id}>
                               <td>{String(doc.created_at ?? "").slice(0, 10) || "-"}</td>
-                              <td>{doc.filename}</td>
+                              <td>
+                                <div className="doc-listing-cell">
+                                  <span>{doc.filename}</span>
+                                  {duplicateCount > 1 ? <span className="status-chip status-chip--duplicate">Doublon x{duplicateCount}</span> : null}
+                                </div>
+                              </td>
                               <td>{flowLabelForDocument(doc)}</td>
                               <td>
                                 <div className="entry-actions">
@@ -5130,6 +5869,14 @@ function App() {
                                       PDF
                                     </a>
                                   ) : null}
+                                  <button
+                                    type="button"
+                                    className="danger-btn"
+                                    onClick={() => void onDeleteIntakeDocument(doc)}
+                                    disabled={isDeletingDocumentId === doc.id}
+                                  >
+                                    {isDeletingDocumentId === doc.id ? "Suppression..." : "Supprimer"}
+                                  </button>
                                 </div>
                               </td>
                             </tr>
@@ -5157,10 +5904,16 @@ function App() {
                       <tbody>
                         {archivedInvoices.map((doc) => {
                           const url = getDocumentFileUrl(doc);
+                          const duplicateCount = getDocumentDuplicateCount(doc);
                           return (
                             <tr key={doc.id}>
                               <td>{String(doc.created_at ?? "").slice(0, 10) || "-"}</td>
-                              <td>{doc.filename}</td>
+                              <td>
+                                <div className="doc-listing-cell">
+                                  <span>{doc.filename}</span>
+                                  {duplicateCount > 1 ? <span className="status-chip status-chip--duplicate">Doublon x{duplicateCount}</span> : null}
+                                </div>
+                              </td>
                               <td>{flowLabelForDocument(doc)}</td>
                               <td>
                                 <div className="entry-actions">
@@ -5178,6 +5931,14 @@ function App() {
                                       PDF
                                     </a>
                                   ) : null}
+                                  <button
+                                    type="button"
+                                    className="danger-btn"
+                                    onClick={() => void onDeleteIntakeDocument(doc)}
+                                    disabled={isDeletingDocumentId === doc.id}
+                                  >
+                                    {isDeletingDocumentId === doc.id ? "Suppression..." : "Supprimer"}
+                                  </button>
                                 </div>
                               </td>
                             </tr>
@@ -5485,7 +6246,7 @@ function App() {
                       onClick={() =>
                         exportPdfReport(
                           "Report tracciabilita",
-                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "OCR", "Convalida", "Note review", "Revisionato il"],
+                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "Qta allocata", "Documento collegato", "OCR", "Convalida", "Note review", "Revisionato il"],
                           filteredTraceabilityReportRows.map((row) => [
                             row.filename,
                             row.productGuess,
@@ -5494,6 +6255,8 @@ function App() {
                             row.supplierLotCode,
                             row.productionDate,
                             row.dlcDate,
+                            row.allocatedQty !== "-" ? `${row.allocatedQty} ${row.allocatedUnit !== "-" ? row.allocatedUnit : ""}`.trim() : "-",
+                            row.linkedDocumentName,
                             String(row.extraction?.status || row.document_status || "-"),
                             row.validation_status,
                             row.reviewNotes,
@@ -5509,7 +6272,7 @@ function App() {
                       onClick={() =>
                         exportCsv(
                           `report-tracciabilita-${reportDateFrom || "all"}-${reportDateTo || "all"}.csv`,
-                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "OCR", "Convalida", "Note review", "Revisionato il"],
+                          ["Foto", "Prodotto", "Fornitore", "Lotto origine", "Lotto fornitore", "Produzione", "DLC", "Qta allocata", "Documento collegato", "OCR", "Convalida", "Note review", "Revisionato il"],
                           filteredTraceabilityReportRows.map((row) => [
                             row.filename,
                             row.productGuess,
@@ -5518,6 +6281,8 @@ function App() {
                             row.supplierLotCode,
                             row.productionDate,
                             row.dlcDate,
+                            row.allocatedQty !== "-" ? `${row.allocatedQty} ${row.allocatedUnit !== "-" ? row.allocatedUnit : ""}`.trim() : "-",
+                            row.linkedDocumentName,
                             String(row.extraction?.status || row.document_status || "-"),
                             row.validation_status,
                             row.reviewNotes,
@@ -5635,6 +6400,8 @@ function App() {
                             <th>Lotto fornitore</th>
                             <th>Produzione</th>
                             <th>DLC</th>
+                            <th>Qta allocata</th>
+                            <th>Documento collegato</th>
                             <th>OCR</th>
                             <th>Convalida</th>
                             <th>Note review</th>
@@ -5651,6 +6418,8 @@ function App() {
                               <td>{row.supplierLotCode}</td>
                               <td>{row.productionDate}</td>
                               <td>{row.dlcDate}</td>
+                              <td>{row.allocatedQty !== "-" ? `${row.allocatedQty} ${row.allocatedUnit !== "-" ? row.allocatedUnit : ""}`.trim() : "-"}</td>
+                              <td>{row.linkedDocumentName}</td>
                               <td>{String(row.extraction?.status || row.document_status || "-")}</td>
                               <td>{renderReportStatusChip(row.validation_status)}</td>
                               <td className="report-note-cell">{row.reviewNotes}</td>

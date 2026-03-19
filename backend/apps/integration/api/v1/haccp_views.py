@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.integration.models import DocumentType, IntegrationDocument
 from apps.integration.api.v1.serializers import (
     HaccpColdPointSerializer,
     HaccpLabelProfileSerializer,
@@ -68,6 +69,7 @@ def _serialize_invoice_line(line: InvoiceLine):
         "invoice_date": line.invoice.invoice_date.isoformat(),
         "supplier_code": line.supplier_code,
         "raw_product_name": line.raw_product_name,
+        "supplier_lot_code": line.goods_receipt_line.supplier_lot_code if line.goods_receipt_line_id else None,
         "qty_value": f"{line.qty_value:.3f}",
         "qty_unit": line.qty_unit,
         "goods_receipt_line": str(line.goods_receipt_line_id) if line.goods_receipt_line_id else None,
@@ -83,6 +85,48 @@ def _serialize_match(match: InvoiceGoodsReceiptMatch):
         "matched_qty_value": f"{match.matched_qty_value:.3f}" if match.matched_qty_value is not None else None,
         "matched_amount": str(match.matched_amount) if match.matched_amount is not None else None,
     }
+
+
+def _build_local_traceability_rows(site_id: str):
+    rows = []
+    documents = (
+        IntegrationDocument.objects
+        .filter(site_id=site_id, document_type=DocumentType.LABEL_CAPTURE, metadata__review_status="validated")
+        .prefetch_related("extractions")
+        .order_by("-updated_at", "-created_at")
+    )
+    for document in documents:
+        extraction = document.extractions.order_by("-created_at").first()
+        if not extraction or not isinstance(extraction.normalized_payload, dict) or not extraction.normalized_payload:
+            continue
+        payload = extraction.normalized_payload
+        happened_at = (
+            document.metadata.get("reviewed_at")
+            if isinstance(document.metadata, dict)
+            else None
+        ) or document.updated_at.isoformat()
+        qty_value = payload.get("weight_value") or payload.get("quantity") or "0"
+        qty_unit = payload.get("weight_unit") or payload.get("unit") or ""
+        rows.append(
+            {
+                "id": f"doc-{document.id}",
+                "event_type": "label_capture_validated",
+                "happened_at": happened_at,
+                "product_label": payload.get("product_guess") or payload.get("product_name") or payload.get("label") or document.filename,
+                "supplier_code": payload.get("supplier_code") or "",
+                "qty_value": qty_value,
+                "qty_unit": qty_unit,
+                "lot": {
+                    "internal_lot_code": payload.get("origin_lot_code") or "",
+                    "supplier_lot_code": payload.get("supplier_lot_code") or payload.get("lot_code") or "",
+                    "status": "validated",
+                    "dlc_date": payload.get("dlc_date") or payload.get("expiry_date") or "",
+                },
+                "source_document_id": str(document.id),
+                "source_document_filename": document.filename,
+            }
+        )
+    return rows
 
 
 class HaccpTracciaReconciliationOverviewView(APIView):
@@ -116,6 +160,25 @@ class HaccpTracciaReconciliationOverviewView(APIView):
             return _proxy_error(exc)
 
         lifecycle_rows = _payload_results(lifecycle_payload)
+        local_traceability_rows = _build_local_traceability_rows(site_id)
+        seen_local_keys = {
+            (
+                _normalize_text((row.get("lot") or {}).get("supplier_lot_code") if isinstance(row.get("lot"), dict) else row.get("supplier_lot_code")),
+                _normalize_text(row.get("product_label") or row.get("product_name") or row.get("label")),
+                _normalize_text(row.get("supplier_code")),
+            )
+            for row in lifecycle_rows
+            if isinstance(row, dict)
+        }
+        for row in local_traceability_rows:
+            row_key = (
+                _normalize_text((row.get("lot") or {}).get("supplier_lot_code") if isinstance(row.get("lot"), dict) else row.get("supplier_lot_code")),
+                _normalize_text(row.get("product_label") or row.get("product_name") or row.get("label")),
+                _normalize_text(row.get("supplier_code")),
+            )
+            if row_key in seen_local_keys:
+                continue
+            lifecycle_rows.append(row)
         schedule_rows = _payload_results(schedule_payload)
 
         goods_receipt_lines = list(
@@ -154,17 +217,21 @@ class HaccpTracciaReconciliationOverviewView(APIView):
 
         invoice_by_code: dict[str, list[InvoiceLine]] = {}
         invoice_by_name: dict[str, list[InvoiceLine]] = {}
+        invoice_by_lot: dict[str, list[InvoiceLine]] = {}
         for line in invoice_lines:
             code_key = _normalize_text(line.supplier_code)
             name_values = {
                 _normalize_text(line.raw_product_name),
                 _normalize_text(line.supplier_product.name if line.supplier_product_id else ""),
             }
+            lot_key = _normalize_text(line.goods_receipt_line.supplier_lot_code if line.goods_receipt_line_id else "")
             if code_key:
                 invoice_by_code.setdefault(code_key, []).append(line)
             for name_key in name_values:
                 if name_key:
                     invoice_by_name.setdefault(name_key, []).append(line)
+            if lot_key:
+                invoice_by_lot.setdefault(lot_key, []).append(line)
 
         matches_by_gr: dict[str, list[InvoiceGoodsReceiptMatch]] = {}
         matches_by_invoice: dict[str, list[InvoiceGoodsReceiptMatch]] = {}
@@ -196,6 +263,9 @@ class HaccpTracciaReconciliationOverviewView(APIView):
                 if candidate not in candidate_goods:
                     candidate_goods.append(candidate)
 
+            for candidate in invoice_by_lot.get(supplier_lot_code, []):
+                if candidate not in candidate_invoices:
+                    candidate_invoices.append(candidate)
             for candidate in invoice_by_code.get(supplier_code, []):
                 if candidate not in candidate_invoices:
                     candidate_invoices.append(candidate)
@@ -271,6 +341,8 @@ class HaccpTracciaReconciliationOverviewView(APIView):
                     "happened_at": row.get("happened_at") or row.get("created_at"),
                     "product_label": row.get("product_label") or row.get("product_name") or row.get("label") or "-",
                     "supplier_code": row.get("supplier_code") or "",
+                    "source_document_id": row.get("source_document_id") or "",
+                    "source_document_filename": row.get("source_document_filename") or "",
                     "qty_value": str(row.get("qty_value") or row.get("quantity") or "0"),
                     "qty_unit": row.get("qty_unit") or row.get("unit") or "",
                     "lot": {

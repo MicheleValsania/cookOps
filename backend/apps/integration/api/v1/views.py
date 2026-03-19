@@ -44,7 +44,7 @@ from apps.integration.services.claude_extractor import run_claude_extraction
 from apps.integration.services.drive_client import DriveClient, DriveClientError
 from apps.integration.services.drive_importer import import_drive_assets_for_site
 from apps.integration.services.traccia_client import TracciaClient, TracciaClientError
-from apps.inventory.models import InventoryMovement, MovementType
+from apps.inventory.models import InventoryMovement, Lot, LotStatus, MovementType, SourceType
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
 from apps.purchasing.models import GoodsReceipt, Invoice
 from apps.purchasing.services.reconciliation_auto_match import auto_match_invoice_lines
@@ -429,6 +429,154 @@ def _ensure_invoice_fallback_movements(invoice: Invoice):
     }
 
 
+def _delete_linked_ingest_record(instance: IntegrationDocument):
+    metadata = _as_dict(instance.metadata)
+    ingest = _as_dict(metadata.get("ingest"))
+    target = str(ingest.get("target") or "").strip()
+    record_id = str(ingest.get("record_id") or "").strip()
+    if not target or not record_id:
+        return
+
+    if target == "invoice":
+        invoice = Invoice.objects.prefetch_related("lines").filter(pk=record_id).first()
+        if not invoice:
+            return
+        line_ids = [str(line.id) for line in invoice.lines.all()]
+        if line_ids:
+            InventoryMovement.objects.filter(ref_type="invoice_line_fallback", ref_id__in=line_ids).delete()
+        invoice.delete()
+        return
+
+    if target == "goods_receipt":
+        receipt = GoodsReceipt.objects.prefetch_related("lines").filter(pk=record_id).first()
+        if not receipt:
+            return
+        line_ids = [str(line.id) for line in receipt.lines.all()]
+        if line_ids:
+            InventoryMovement.objects.filter(ref_type="goods_receipt_line", ref_id__in=line_ids).delete()
+        receipt.delete()
+
+
+def _sync_traceability_lot_allocation(decision: TraceabilityReconciliationDecision):
+    _delete_traceability_lot_allocation(decision.event_id)
+    if decision.decision_status != "matched":
+        return
+
+    metadata = _as_dict(decision.metadata)
+    source_document_id = str(metadata.get("source_document_id") or "").strip()
+    if not source_document_id:
+        return
+    source_document = IntegrationDocument.objects.filter(pk=source_document_id, site=decision.site).first()
+    if not source_document:
+        return
+    extraction = source_document.extractions.order_by("-created_at").first()
+    payload = _as_dict(extraction.normalized_payload if extraction else {})
+    if not payload:
+        return
+
+    qty_text = _normalize_decimal_text(metadata.get("allocated_qty") or payload.get("weight_value") or payload.get("quantity"))
+    qty_unit = _normalize_unit(metadata.get("allocated_unit") or payload.get("weight_unit") or payload.get("unit"))
+    if not qty_text or not qty_unit:
+        return
+
+    internal_lot_code = str(
+        metadata.get("internal_lot_code")
+        or payload.get("origin_lot_code")
+        or payload.get("source_lot_code")
+        or payload.get("supplier_lot_code")
+        or f"AUTO-{decision.event_id[-8:]}"
+    ).strip()
+    supplier_lot_code = str(
+        metadata.get("supplier_lot_code")
+        or payload.get("supplier_lot_code")
+        or payload.get("lot_code")
+        or ""
+    ).strip() or None
+    production_date = _normalize_date_text(metadata.get("production_date") or payload.get("production_date"))
+    dlc_date = _normalize_date_text(metadata.get("dlc_date") or payload.get("dlc_date") or payload.get("expiry_date"))
+    product_label = str(metadata.get("product_label") or payload.get("product_guess") or payload.get("product_name") or source_document.filename).strip()
+    supplier_code = str(metadata.get("supplier_code") or payload.get("supplier_code") or "").strip() or None
+    happened_at = _normalize_datetime_text(metadata.get("happened_at")) or timezone.now().isoformat().replace("+00:00", "Z")
+
+    lot, _created = Lot.objects.get_or_create(
+        site=decision.site,
+        internal_lot_code=internal_lot_code,
+        defaults={
+            "source_type": SourceType.SUPPLIER_PRODUCT,
+            "supplier_lot_code": supplier_lot_code,
+            "production_date": production_date,
+            "dlc_date": dlc_date,
+            "qty_value": Decimal(qty_text),
+            "qty_unit": qty_unit,
+            "status": LotStatus.ACTIVE,
+            "metadata": {
+                "source": "traceability_reconciliation",
+                "source_document_id": str(source_document.id),
+            },
+        },
+    )
+    lot_changed = False
+    if supplier_lot_code and lot.supplier_lot_code != supplier_lot_code:
+        lot.supplier_lot_code = supplier_lot_code
+        lot_changed = True
+    if production_date and str(lot.production_date or "") != str(production_date):
+        lot.production_date = production_date
+        lot_changed = True
+    if dlc_date and str(lot.dlc_date or "") != str(dlc_date):
+        lot.dlc_date = dlc_date
+        lot_changed = True
+    if lot.qty_unit != qty_unit:
+        lot.qty_unit = qty_unit
+        lot_changed = True
+
+    InventoryMovement.objects.create(
+        site=decision.site,
+        lot=lot,
+        supplier_product=None,
+        supplier_code=supplier_code,
+        raw_product_name=product_label,
+        movement_type=MovementType.IN,
+        qty_value=Decimal(qty_text),
+        qty_unit=qty_unit,
+        happened_at=parse_datetime(happened_at) or timezone.now(),
+        ref_type="traceability_label_allocation",
+        ref_id=decision.event_id,
+    )
+
+    current_qty = Decimal("0")
+    for movement in lot.movements.all():
+        movement_qty = Decimal(str(movement.qty_value or "0"))
+        if movement.movement_type == MovementType.OUT:
+            current_qty -= movement_qty
+        else:
+            current_qty += movement_qty
+    if lot.qty_value != current_qty:
+        lot.qty_value = current_qty
+        lot_changed = True
+    if lot_changed:
+        lot.save(update_fields=["supplier_lot_code", "production_date", "dlc_date", "qty_value", "qty_unit"])
+
+
+def _delete_traceability_lot_allocation(event_id: str):
+    movements = list(InventoryMovement.objects.select_related("lot").filter(ref_type="traceability_label_allocation", ref_id=event_id))
+    impacted_lots = [movement.lot for movement in movements if movement.lot_id]
+    if movements:
+        InventoryMovement.objects.filter(id__in=[movement.id for movement in movements]).delete()
+    for lot in impacted_lots:
+        if not lot:
+            continue
+        current_qty = Decimal("0")
+        for movement in lot.movements.all():
+            movement_qty = Decimal(str(movement.qty_value or "0"))
+            if movement.movement_type == MovementType.OUT:
+                current_qty -= movement_qty
+            else:
+                current_qty += movement_qty
+        if lot.qty_value != current_qty:
+            lot.qty_value = current_qty
+            lot.save(update_fields=["qty_value"])
+
+
 class IntegrationDocumentViewSet(
     mixins.CreateModelMixin,
     mixins.ListModelMixin,
@@ -441,6 +589,7 @@ class IntegrationDocumentViewSet(
     parser_classes = (MultiPartParser, FormParser)
 
     def perform_destroy(self, instance: IntegrationDocument):
+        _delete_linked_ingest_record(instance)
         if instance.file:
             instance.file.delete(save=False)
         instance.delete()
@@ -805,7 +954,22 @@ class TraceabilityReconciliationDecisionListCreateView(APIView):
                 "metadata": validated.get("metadata", {}),
             },
         )
+        _sync_traceability_lot_allocation(decision)
         return Response(TraceabilityReconciliationDecisionSerializer(decision).data, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        site_id = str(request.query_params.get("site") or "").strip()
+        event_id = str(request.query_params.get("event_id") or "").strip()
+        if not site_id or not event_id:
+            return Response(
+                {"detail": "site and event_id query parameters are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        deleted, _ = TraceabilityReconciliationDecision.objects.filter(site_id=site_id, event_id=event_id).delete()
+        if deleted == 0:
+            return Response({"detail": "decision not found."}, status=status.HTTP_404_NOT_FOUND)
+        _delete_traceability_lot_allocation(event_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class FicheRecipeTitleListView(APIView):

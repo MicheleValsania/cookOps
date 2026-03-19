@@ -774,6 +774,12 @@ th {
   color: #314562;
 }
 
+.status-chip--duplicate {
+  background: #fde9e7;
+  border-color: #ebb0aa;
+  color: #7a2b24;
+}
+
 .intake-progress {
   display: flex;
   flex-wrap: wrap;
@@ -828,6 +834,19 @@ th {
   grid-template-columns: repeat(2, minmax(180px, 1fr));
   gap: 8px 12px;
   margin-bottom: 10px;
+}
+
+.duplicate-note {
+  margin: 0 0 10px;
+  color: #7a2b24;
+  font-size: 0.9rem;
+}
+
+.doc-listing-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .doc-preview__grid span {
@@ -1011,6 +1030,66 @@ th {
 
 .reconciliation-actions--secondary {
   grid-template-columns: repeat(2, minmax(180px, max-content));
+}
+
+.reconciliation-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.reconciliation-operate-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 14px;
+}
+
+.reconciliation-operate-panel__main,
+.reconciliation-operate-panel__side {
+  display: grid;
+  gap: 12px;
+}
+
+.reconciliation-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.reconciliation-candidate-list {
+  display: grid;
+  gap: 10px;
+}
+
+.reconciliation-candidate-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  padding: 12px;
+  background: #fcfcfb;
+}
+
+.reconciliation-candidate-card__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 6px;
+}
+
+.reconciliation-warning {
+  color: #7a2b24;
+  font-size: 0.84rem;
+}
+
+.reconciliation-sidepanel__chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.traceability-image--compact {
+  max-height: 320px;
 }
 
 .status-chip--decision-matched {
