@@ -2,19 +2,20 @@
 from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import ValidationError
 import json
-from datetime import datetime, time, timezone
+import uuid
+from datetime import datetime, time, timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 
 from django.core.files.base import ContentFile
 from django.db import IntegrityError
-from django.utils import timezone
+from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.catalog.models import Supplier
+from apps.catalog.models import Supplier, SupplierProduct
 from apps.core.models import Site
 from apps.integration.api.v1.serializers import (
     ClaudeExtractSerializer,
@@ -36,6 +37,7 @@ from apps.integration.import_batches import complete_batch, fail_batch, find_com
 from apps.integration.models import (
     DocumentExtraction,
     DocumentSource,
+    DocumentStatus,
     DocumentType,
     IntegrationDocument,
     TraceabilityReconciliationDecision,
@@ -56,6 +58,12 @@ def _as_dict(value):
 
 def _as_list(value):
     return value if isinstance(value, list) else []
+
+def _safe_uuid(value):
+    try:
+        return str(uuid.UUID(str(value)))
+    except Exception:
+        return None
 
 
 def _pick_first(data: dict, *keys, default=None):
@@ -196,15 +204,15 @@ def _normalize_datetime_text(value):
     parsed_dt = parse_datetime(raw)
     if parsed_dt:
         if parsed_dt.tzinfo is None:
-            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+            parsed_dt = parsed_dt.replace(tzinfo=dt_timezone.utc)
         return parsed_dt.isoformat().replace("+00:00", "Z")
     parsed_date = parse_date(raw)
     if parsed_date:
-        return datetime.combine(parsed_date, time.min, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        return datetime.combine(parsed_date, time.min, tzinfo=dt_timezone.utc).isoformat().replace("+00:00", "Z")
     for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
         try:
             parsed = datetime.strptime(raw, fmt).date()
-            return datetime.combine(parsed, time.min, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+            return datetime.combine(parsed, time.min, tzinfo=dt_timezone.utc).isoformat().replace("+00:00", "Z")
         except ValueError:
             continue
     return None
@@ -214,12 +222,16 @@ def _normalize_lines(lines, target: str):
     normalized = []
     for raw in _as_list(lines):
         line = _as_dict(raw)
+        line_category = str(_pick_first(line, "product_category", "category", "product_category_label") or "").strip()
+        supplier_product_raw = _pick_first(line, "supplier_product", "supplier_product_id")
+        supplier_product_id = _safe_uuid(supplier_product_raw)
         row = {
-            "supplier_product": _pick_first(line, "supplier_product", "supplier_product_id"),
+            "supplier_product": supplier_product_id,
             "supplier_code": _pick_first(line, "supplier_code", "supplier_sku", "code", "sku", "article_code"),
             "raw_product_name": _pick_first(
                 line, "raw_product_name", "description", "name", "product_name", "ingredient"
             ),
+            "product_category": line_category,
             "qty_value": _normalize_decimal_text(
                 _pick_first(line, "qty_value", "quantity", "qty", "qte", "qta"),
                 places=3,
@@ -251,9 +263,82 @@ def _normalize_lines(lines, target: str):
             row["note"] = _pick_first(line, "note", "line_note")
 
         if row.get("qty_value") and row.get("qty_unit"):
+            if row["product_category"] == "":
+                row["product_category"] = None
             cleaned = {k: v for k, v in row.items() if v not in (None, "")}
             normalized.append(cleaned)
     return normalized
+
+
+def _apply_supplier_product_categories(lines, supplier_id: str | None):
+    if not supplier_id or not lines:
+        return
+    supplier_ids = []
+    try:
+        supplier_ids.append(uuid.UUID(str(supplier_id)))
+    except Exception:
+        return
+    codes = {
+        str(line.get("supplier_code")).strip()
+        for line in lines
+        if isinstance(line, dict) and str(line.get("supplier_code") or "").strip()
+    }
+    if not codes:
+        return
+    products = SupplierProduct.objects.filter(supplier_id__in=supplier_ids, supplier_sku__in=codes)
+    by_code = {str(p.supplier_sku or "").strip(): p for p in products}
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        if line.get("product_category"):
+            continue
+        code = str(line.get("supplier_code") or "").strip()
+        if not code:
+            continue
+        product = by_code.get(code)
+        if not product or not product.category:
+            continue
+        line["product_category"] = product.category
+
+
+def _is_unique_constraint_duplicate(exc: ValidationError) -> bool:
+    field_errors = exc.detail if isinstance(exc.detail, dict) else {}
+    non_field = field_errors.get("non_field_errors") if isinstance(field_errors, dict) else None
+    if not non_field:
+        return False
+    message = " ".join([str(item) for item in non_field]) if isinstance(non_field, list) else str(non_field)
+    return "must make a unique set" in message
+
+
+def _mark_document_duplicate(
+    document: IntegrationDocument,
+    *,
+    target: str,
+    duplicate_record_id: str,
+    duplicate_key: str,
+    flow_summary: dict,
+    reason: str,
+):
+    metadata = document.metadata if isinstance(document.metadata, dict) else {}
+    metadata["duplicate"] = {
+        "target": target,
+        "duplicate_of": duplicate_record_id,
+        "duplicate_key": duplicate_key,
+        "reason": reason,
+    }
+    metadata["ingest"] = {
+        "status": "completed",
+        "target": target,
+        "record_id": duplicate_record_id,
+        "duplicate_of": duplicate_record_id,
+        "duplicate_key": duplicate_key,
+        "duplicate_reason": reason,
+        "at": datetime.now(dt_timezone.utc).isoformat().replace("+00:00", "Z"),
+        **flow_summary,
+    }
+    document.metadata = metadata
+    document.status = DocumentStatus.ARCHIVED_DUPLICATE
+    document.save(update_fields=["metadata", "status", "updated_at"])
 
 
 def _build_metadata(payload: dict, target: str):
@@ -339,7 +424,7 @@ def _normalize_payload_for_ingest(payload: dict, target: str, document: Integrat
             delivery_note_number = f"BL-{str(document.id)[:8]}"
         received_at = _normalize_datetime_text(_pick_first(source, "received_at", "document_date", "invoice_date"))
         if not received_at:
-            received_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            received_at = datetime.now(dt_timezone.utc).isoformat().replace("+00:00", "Z")
         return {
             "site": site_id,
             "supplier": supplier_id,
@@ -354,7 +439,7 @@ def _normalize_payload_for_ingest(payload: dict, target: str, document: Integrat
         invoice_number = f"INV-{str(document.id)[:8]}"
     invoice_date = _normalize_date_text(_pick_first(source, "invoice_date", "document_date", "received_at"))
     if not invoice_date:
-        invoice_date = datetime.now(timezone.utc).date().isoformat()
+        invoice_date = datetime.now(dt_timezone.utc).date().isoformat()
     due_date = _normalize_date_text(_pick_first(source, "due_date", "payment_due_date"))
     normalized = {
         "site": site_id,
@@ -406,7 +491,7 @@ def _ensure_invoice_fallback_movements(invoice: Invoice):
         ref_id = str(line.id)
         if InventoryMovement.objects.filter(ref_type="invoice_line_fallback", ref_id=ref_id).exists():
             continue
-        happened_at = datetime.combine(invoice.invoice_date, time.min, tzinfo=timezone.utc)
+        happened_at = datetime.combine(invoice.invoice_date, time.min, tzinfo=dt_timezone.utc)
         InventoryMovement.objects.create(
             site=invoice.site,
             lot=None,
@@ -496,7 +581,7 @@ def _sync_traceability_lot_allocation(decision: TraceabilityReconciliationDecisi
     dlc_date = _normalize_date_text(metadata.get("dlc_date") or payload.get("dlc_date") or payload.get("expiry_date"))
     product_label = str(metadata.get("product_label") or payload.get("product_guess") or payload.get("product_name") or source_document.filename).strip()
     supplier_code = str(metadata.get("supplier_code") or payload.get("supplier_code") or "").strip() or None
-    happened_at = _normalize_datetime_text(metadata.get("happened_at")) or timezone.now().isoformat().replace("+00:00", "Z")
+    happened_at = _normalize_datetime_text(metadata.get("happened_at")) or dj_timezone.now().isoformat().replace("+00:00", "Z")
 
     lot, _created = Lot.objects.get_or_create(
         site=decision.site,
@@ -538,7 +623,7 @@ def _sync_traceability_lot_allocation(decision: TraceabilityReconciliationDecisi
         movement_type=MovementType.IN,
         qty_value=Decimal(qty_text),
         qty_unit=qty_unit,
-        happened_at=parse_datetime(happened_at) or timezone.now(),
+        happened_at=parse_datetime(happened_at) or dj_timezone.now(),
         ref_type="traceability_label_allocation",
         ref_id=decision.event_id,
     )
@@ -587,6 +672,13 @@ class IntegrationDocumentViewSet(
     queryset = IntegrationDocument.objects.all()
     serializer_class = IntegrationDocumentSerializer
     parser_classes = (MultiPartParser, FormParser)
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        site_id = (self.request.query_params.get("site") or "").strip()
+        if site_id:
+            queryset = queryset.filter(site_id=site_id)
+        return queryset.order_by("-updated_at", "-created_at")
 
     def perform_destroy(self, instance: IntegrationDocument):
         _delete_linked_ingest_record(instance)
@@ -804,9 +896,41 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 
         import_serializer_class = GoodsReceiptSerializer if target == "goods_receipt" else InvoiceSerializer
         try:
+            _apply_supplier_product_categories(lines, supplier_id)
             import_serializer = import_serializer_class(data=payload)
             import_serializer.is_valid(raise_exception=True)
             instance = import_serializer.save()
+            for line_payload, line_obj in zip(lines, instance.lines.all()):
+                category = str(line_payload.get("product_category") or "").strip()
+                if not line_obj.supplier_product_id:
+                    supplier_code = str(line_payload.get("supplier_code") or line_obj.supplier_code or "").strip()
+                    raw_name = str(line_payload.get("raw_product_name") or line_obj.raw_product_name or "").strip()
+                    uom = str(line_obj.qty_unit or "").strip() or None
+                    product = None
+                    if supplier_id and supplier_code:
+                        product = SupplierProduct.objects.filter(
+                            supplier_id=supplier_id,
+                            supplier_sku=supplier_code,
+                        ).first()
+                    if not product and supplier_id and raw_name:
+                        product = SupplierProduct.objects.filter(
+                            supplier_id=supplier_id,
+                            name__iexact=raw_name,
+                        ).first()
+                    if not product and supplier_id and raw_name and uom:
+                        product = SupplierProduct.objects.create(
+                            supplier_id=supplier_id,
+                            name=raw_name[:255],
+                            supplier_sku=supplier_code or None,
+                            uom=uom,
+                            category=category or None,
+                        )
+                    if product:
+                        line_obj.supplier_product = product
+                        line_obj.save(update_fields=["supplier_product", "updated_at"])
+                if category and line_obj.supplier_product and not line_obj.supplier_product.category:
+                    line_obj.supplier_product.category = category
+                    line_obj.supplier_product.save(update_fields=["category", "updated_at"])
             flow_summary = {}
             if target == "goods_receipt":
                 flow_summary = _ensure_goods_receipt_stock_movements(instance)
@@ -817,7 +941,7 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
                 "status": "completed",
                 "target": target,
                 "record_id": str(getattr(instance, "id", "")),
-                "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "at": datetime.now(dt_timezone.utc).isoformat().replace("+00:00", "Z"),
                 **flow_summary,
             }
             document.metadata = metadata
@@ -826,6 +950,55 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             complete_batch(batch, status.HTTP_201_CREATED, data)
             return Response(data, status=status.HTTP_201_CREATED)
         except ValidationError as exc:
+            if _is_unique_constraint_duplicate(exc):
+                site_id = str(payload.get("site") or "").strip()
+                supplier_id = str(payload.get("supplier") or "").strip()
+                if target == "invoice":
+                    invoice_number = str(payload.get("invoice_number") or "").strip()
+                    if site_id and supplier_id and invoice_number:
+                        existing = (
+                            Invoice.objects
+                            .prefetch_related("lines")
+                            .filter(site_id=site_id, supplier_id=supplier_id, invoice_number=invoice_number)
+                            .first()
+                        )
+                        if existing:
+                            flow_summary = _ensure_invoice_fallback_movements(existing)
+                            duplicate_key = f"{site_id}:{supplier_id}:{invoice_number}"
+                            _mark_document_duplicate(
+                                document,
+                                target=target,
+                                duplicate_record_id=str(existing.id),
+                                duplicate_key=duplicate_key,
+                                flow_summary=flow_summary,
+                                reason="invoice_unique_constraint",
+                            )
+                            data = import_serializer_class(existing).data
+                            complete_batch(batch, status.HTTP_200_OK, data)
+                            return Response(data, status=status.HTTP_200_OK)
+                if target == "goods_receipt":
+                    delivery_note_number = str(payload.get("delivery_note_number") or "").strip()
+                    if site_id and supplier_id and delivery_note_number:
+                        existing = (
+                            GoodsReceipt.objects
+                            .prefetch_related("lines")
+                            .filter(site_id=site_id, supplier_id=supplier_id, delivery_note_number=delivery_note_number)
+                            .first()
+                        )
+                        if existing:
+                            flow_summary = _ensure_goods_receipt_stock_movements(existing)
+                            duplicate_key = f"{site_id}:{supplier_id}:{delivery_note_number}"
+                            _mark_document_duplicate(
+                                document,
+                                target=target,
+                                duplicate_record_id=str(existing.id),
+                                duplicate_key=duplicate_key,
+                                flow_summary=flow_summary,
+                                reason="goods_receipt_unique_constraint",
+                            )
+                            data = import_serializer_class(existing).data
+                            complete_batch(batch, status.HTTP_200_OK, data)
+                            return Response(data, status=status.HTTP_200_OK)
             fail_batch(batch, status.HTTP_400_BAD_REQUEST, exc.detail)
             raise
         except Exception as exc:
@@ -909,7 +1082,7 @@ class DocumentReviewView(APIView):
         metadata = document.metadata.copy() if isinstance(document.metadata, dict) else {}
         metadata["review_status"] = serializer.validated_data["status"]
         metadata["review_notes"] = serializer.validated_data.get("notes", "")
-        metadata["reviewed_at"] = timezone.now().isoformat()
+        metadata["reviewed_at"] = dj_timezone.now().isoformat()
         document.metadata = metadata
         corrected_payload = serializer.validated_data.get("corrected_payload")
         if corrected_payload is not None:
@@ -991,6 +1164,7 @@ class FicheSnapshotImportView(APIView):
 
         query = serializer.validated_data.get("query", "")
         limit = serializer.validated_data.get("limit", 500)
+        refresh_existing = serializer.validated_data.get("refresh_existing", False)
         idempotency_key = (
             serializer.validated_data.get("idempotency_key")
             or request.headers.get("Idempotency-Key", "")
@@ -1009,7 +1183,7 @@ class FicheSnapshotImportView(APIView):
             {"query": query, "limit": limit},
         )
         try:
-            result = import_recipe_snapshots(query=query, limit=limit)
+            result = import_recipe_snapshots(query=query, limit=limit, refresh_existing=refresh_existing)
             if not result.get("ok"):
                 fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
                 return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)
@@ -1039,6 +1213,7 @@ class FicheSnapshotEnvelopeImportView(APIView):
             return Response({"detail": "Provide 'envelope' JSON or upload 'file'."}, status=status.HTTP_400_BAD_REQUEST)
 
         exported_at = str(envelope.get("exported_at") or "").strip()
+        refresh_existing = serializer.validated_data.get("refresh_existing", False)
         fiches_count = len(envelope.get("fiches") or []) if isinstance(envelope.get("fiches"), list) else 0
         idempotency_key = (
             serializer.validated_data.get("idempotency_key")
@@ -1058,7 +1233,7 @@ class FicheSnapshotEnvelopeImportView(APIView):
             {"exported_at": exported_at, "fiches_count": fiches_count},
         )
         try:
-            result = import_recipe_snapshots_from_v11_envelope(envelope)
+            result = import_recipe_snapshots_from_v11_envelope(envelope, refresh_existing=refresh_existing)
             if not result.get("ok"):
                 fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
                 return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)

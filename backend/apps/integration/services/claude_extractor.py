@@ -41,6 +41,7 @@ def _build_schema_hint(document_type: str) -> dict[str, Any]:
         "supplier_product": None,
         "supplier_code": None,
         "raw_product_name": "string",
+        "product_category": None,
         "description": None,
         "qty_value": "0.000",
         "qty_unit": "kg|g|l|ml|cl|pc",

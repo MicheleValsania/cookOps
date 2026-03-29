@@ -77,7 +77,93 @@ def _normalize_fiche_payload_from_v11(fiche: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+def _normalize_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def _enrich_payload_supplier_codes(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    ingredients = payload.get("ingredients")
+    if not isinstance(ingredients, list):
+        return payload
+    if "fiches" not in connections.databases:
+        return payload
+
+    product_ids: set[str] = set()
+    supplier_ids: set[str] = set()
+    ingredient_names: set[str] = set()
+    for item in ingredients:
+        if not isinstance(item, dict):
+            continue
+        supplier_code = str(item.get("supplierCode") or item.get("supplier_code") or "").strip()
+        if supplier_code:
+            continue
+        product_id = str(item.get("supplierProductId") or item.get("supplier_product_id") or "").strip()
+        if product_id:
+            product_ids.add(product_id)
+        supplier_id = str(item.get("supplierId") or item.get("supplier_id") or "").strip()
+        if supplier_id:
+            supplier_ids.add(supplier_id)
+        name = str(item.get("name") or item.get("ingredient") or item.get("ingredient_name_raw") or "").strip()
+        if name:
+            ingredient_names.add(_normalize_text(name))
+
+    id_lookup: dict[str, str] = {}
+    name_lookup: dict[tuple[str, str], str] = {}
+    try:
+        with connections["fiches"].cursor() as cursor:
+            if product_ids:
+                cursor.execute(
+                    "SELECT id, source_code FROM supplier_products WHERE id = ANY(%s) AND source_code IS NOT NULL",
+                    [list(product_ids)],
+                )
+                for prod_id, source_code in cursor.fetchall():
+                    if source_code:
+                        id_lookup[str(prod_id)] = str(source_code).strip()
+
+            if supplier_ids and ingredient_names:
+                cursor.execute(
+                    "SELECT supplier_id, name, source_code FROM supplier_products WHERE supplier_id = ANY(%s) AND source_code IS NOT NULL",
+                    [list(supplier_ids)],
+                )
+                for supplier_id, name, source_code in cursor.fetchall():
+                    if not source_code:
+                        continue
+                    name_key = _normalize_text(name)
+                    if not name_key:
+                        continue
+                    name_lookup[(str(supplier_id), name_key)] = str(source_code).strip()
+    except Exception:
+        return payload
+
+    if not id_lookup and not name_lookup:
+        return payload
+
+    for item in ingredients:
+        if not isinstance(item, dict):
+            continue
+        current_code = str(item.get("supplierCode") or item.get("supplier_code") or "").strip()
+        if current_code:
+            continue
+        product_id = str(item.get("supplierProductId") or item.get("supplier_product_id") or "").strip()
+        if product_id and product_id in id_lookup:
+            item["supplierCode"] = id_lookup[product_id]
+            continue
+        supplier_id = str(item.get("supplierId") or item.get("supplier_id") or "").strip()
+        name = str(item.get("name") or item.get("ingredient") or item.get("ingredient_name_raw") or "").strip()
+        if supplier_id and name:
+            name_key = _normalize_text(name)
+            candidate = name_lookup.get((supplier_id, name_key))
+            if candidate:
+                item["supplierCode"] = candidate
+
+    return payload
+
+
+def import_recipe_snapshots_from_v11_envelope(
+    envelope: dict[str, Any], refresh_existing: bool = False
+) -> dict[str, Any]:
     export_version = str(envelope.get("export_version") or "").strip()
     if export_version != "1.1":
         return {"ok": False, "detail": "Unsupported export_version. Expected '1.1'."}
@@ -91,6 +177,7 @@ def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[
         return {"ok": False, "detail": "Invalid envelope: 'fiches' must be an array."}
 
     created = 0
+    refreshed = 0
     skipped_existing = 0
     invalid_ids = 0
     remapped_ids = 0
@@ -111,12 +198,13 @@ def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[
             remapped_ids += 1
 
         payload = _normalize_fiche_payload_from_v11(fiche)
+        payload = _enrich_payload_supplier_codes(payload)
         snapshot_hash = _snapshot_hash(payload)
         title = str(fiche.get("title") or "").strip()
         source_updated_at = parse_datetime(str(fiche.get("updated_at") or "")) if fiche.get("updated_at") else None
         portions = _to_decimal(fiche.get("portions"))
 
-        _, was_created = RecipeSnapshot.objects.get_or_create(
+        snapshot, was_created = RecipeSnapshot.objects.get_or_create(
             fiche_product_id=fiche_id,
             snapshot_hash=snapshot_hash,
             defaults={
@@ -132,12 +220,36 @@ def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[
             if len(examples) < 5:
                 examples.append(title or str(fiche_id))
         else:
-            skipped_existing += 1
+            if refresh_existing:
+                update_fields: list[str] = []
+                if snapshot.title != title:
+                    snapshot.title = title
+                    update_fields.append("title")
+                if snapshot.category != fiche.get("category"):
+                    snapshot.category = fiche.get("category")
+                    update_fields.append("category")
+                if snapshot.portions != portions:
+                    snapshot.portions = portions
+                    update_fields.append("portions")
+                if snapshot.source_updated_at != source_updated_at:
+                    snapshot.source_updated_at = source_updated_at
+                    update_fields.append("source_updated_at")
+                if snapshot.payload != payload:
+                    snapshot.payload = payload
+                    update_fields.append("payload")
+                if update_fields:
+                    snapshot.save(update_fields=update_fields)
+                    refreshed += 1
+                else:
+                    skipped_existing += 1
+            else:
+                skipped_existing += 1
 
     return {
         "ok": True,
         "total_read": len(fiches),
         "created": created,
+        "refreshed": refreshed,
         "skipped_existing": skipped_existing,
         "invalid_ids": invalid_ids,
         "remapped_ids": remapped_ids,
@@ -146,7 +258,7 @@ def import_recipe_snapshots_from_v11_envelope(envelope: dict[str, Any]) -> dict[
     }
 
 
-def import_recipe_snapshots(query: str = "", limit: int = 500) -> dict[str, Any]:
+def import_recipe_snapshots(query: str = "", limit: int = 500, refresh_existing: bool = False) -> dict[str, Any]:
     if "fiches" not in connections.databases:
         return {"ok": False, "detail": "FICHES DB non configurato."}
 
@@ -178,6 +290,7 @@ def import_recipe_snapshots(query: str = "", limit: int = 500) -> dict[str, Any]
         return {"ok": False, "detail": f"Impossibile leggere DB fiches: {exc}"}
 
     created = 0
+    refreshed = 0
     skipped_existing = 0
     invalid_ids = 0
     remapped_ids = 0
@@ -203,12 +316,13 @@ def import_recipe_snapshots(query: str = "", limit: int = 500) -> dict[str, Any]
             invalid_payloads += 1
             continue
 
+        payload = _enrich_payload_supplier_codes(payload)
         snapshot_hash = _snapshot_hash(payload)
         source_updated_at = None
         if updated_at:
             source_updated_at = updated_at if not isinstance(updated_at, str) else parse_datetime(updated_at)
 
-        _, was_created = RecipeSnapshot.objects.get_or_create(
+        snapshot, was_created = RecipeSnapshot.objects.get_or_create(
             fiche_product_id=fiche_id,
             snapshot_hash=snapshot_hash,
             defaults={
@@ -224,12 +338,39 @@ def import_recipe_snapshots(query: str = "", limit: int = 500) -> dict[str, Any]
             if len(examples) < 5:
                 examples.append(str(title or payload.get("title") or fiche_id))
         else:
-            skipped_existing += 1
+            if refresh_existing:
+                next_title = str(title or payload.get("title") or "").strip()
+                next_category = payload.get("category")
+                next_portions = _to_decimal(payload.get("portions"))
+                update_fields: list[str] = []
+                if snapshot.title != next_title:
+                    snapshot.title = next_title
+                    update_fields.append("title")
+                if snapshot.category != next_category:
+                    snapshot.category = next_category
+                    update_fields.append("category")
+                if snapshot.portions != next_portions:
+                    snapshot.portions = next_portions
+                    update_fields.append("portions")
+                if snapshot.source_updated_at != source_updated_at:
+                    snapshot.source_updated_at = source_updated_at
+                    update_fields.append("source_updated_at")
+                if snapshot.payload != payload:
+                    snapshot.payload = payload
+                    update_fields.append("payload")
+                if update_fields:
+                    snapshot.save(update_fields=update_fields)
+                    refreshed += 1
+                else:
+                    skipped_existing += 1
+            else:
+                skipped_existing += 1
 
     return {
         "ok": True,
         "total_read": len(rows),
         "created": created,
+        "refreshed": refreshed,
         "skipped_existing": skipped_existing,
         "invalid_ids": invalid_ids,
         "remapped_ids": remapped_ids,

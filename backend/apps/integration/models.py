@@ -108,6 +108,7 @@ class DocumentStatus(models.TextChoices):
     PROCESSING = "processing", "processing"
     EXTRACTED = "extracted", "extracted"
     FAILED = "failed", "failed"
+    ARCHIVED_DUPLICATE = "archived_duplicate", "archived_duplicate"
 
 
 class IntegrationDocument(models.Model):
@@ -120,7 +121,7 @@ class IntegrationDocument(models.Model):
     file_size = models.BigIntegerField(blank=True, null=True)
     file = models.FileField(upload_to="integration/documents/%Y/%m/%d", blank=True, null=True)
     storage_path = models.CharField(max_length=500, blank=True, null=True)
-    status = models.CharField(max_length=16, choices=DocumentStatus.choices, default=DocumentStatus.UPLOADED)
+    status = models.CharField(max_length=24, choices=DocumentStatus.choices, default=DocumentStatus.UPLOADED)
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

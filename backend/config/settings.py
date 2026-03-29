@@ -1,5 +1,6 @@
-﻿import os
+import os
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -71,6 +72,25 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
+def parse_database_url(raw_url: str) -> dict:
+    parsed = urlparse(raw_url)
+    if not parsed.scheme:
+        return {}
+    if parsed.scheme not in ("postgres", "postgresql"):
+        return {}
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": unquote(parsed.path.lstrip("/")),
+        "USER": unquote(parsed.username or ""),
+        "PASSWORD": unquote(parsed.password or ""),
+        "HOST": parsed.hostname or "",
+        "PORT": str(parsed.port or ""),
+    }
+
+
+database_url = os.getenv("DATABASE_URL", "").strip()
+database_from_url = parse_database_url(database_url) if database_url else {}
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -81,6 +101,9 @@ DATABASES = {
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
     }
 }
+
+if database_from_url:
+    DATABASES["default"].update({k: v for k, v in database_from_url.items() if v})
 
 if os.getenv("FICHES_DB_NAME"):
     DATABASES["fiches"] = {

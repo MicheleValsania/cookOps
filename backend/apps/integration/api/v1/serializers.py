@@ -170,6 +170,7 @@ class FicheSnapshotImportSerializer(serializers.Serializer):
     query = serializers.CharField(required=False, allow_blank=True, default="")
     limit = serializers.IntegerField(required=False, min_value=1, max_value=5000, default=500)
     idempotency_key = serializers.CharField(required=False, allow_blank=True, default="")
+    refresh_existing = serializers.BooleanField(required=False, default=False)
 
 
 class FicheCatalogImportSerializer(serializers.Serializer):
@@ -179,6 +180,7 @@ class FicheCatalogImportSerializer(serializers.Serializer):
 class FicheSnapshotEnvelopeImportSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(required=False, allow_blank=True, default="")
     envelope = serializers.JSONField(required=False)
+    refresh_existing = serializers.BooleanField(required=False, default=False)
 
 
 class HaccpOcrValidationSerializer(serializers.Serializer):

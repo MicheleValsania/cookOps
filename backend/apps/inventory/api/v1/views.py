@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 import uuid
 
@@ -9,8 +9,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.inventory.api.v1.serializers import InventoryMovementSerializer
-from apps.inventory.models import InventoryMovement
+from apps.inventory.models import InventoryMovement, MovementType
 from apps.core.models import Site
+from apps.purchasing.models import GoodsReceipt, Invoice
 
 
 class InventoryMovementViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -40,6 +41,14 @@ def _movement_label(m: InventoryMovement) -> str:
     return "UNSPECIFIED"
 
 
+def _movement_display_name(m: InventoryMovement) -> str:
+    if m.supplier_product_id and m.supplier_product:
+        return m.supplier_product.name
+    if m.raw_product_name:
+        return m.raw_product_name
+    return ""
+
+
 class InventoryStockSummaryView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
@@ -47,7 +56,7 @@ class InventoryStockSummaryView(APIView):
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         movements = (
-            InventoryMovement.objects.select_related("supplier_product")
+            InventoryMovement.objects.select_related("supplier_product", "supplier_product__supplier")
             .filter(Q(site_id=site_id) | Q(lot__site_id=site_id))
             .order_by("-happened_at", "-id")
         )
@@ -55,6 +64,9 @@ class InventoryStockSummaryView(APIView):
             lambda: {
                 "product_key": "",
                 "product_label": "",
+                "product_name": "",
+                "supplier_name": "",
+                "product_category": "",
                 "qty_unit": "",
                 "total_in": Decimal("0"),
                 "total_out": Decimal("0"),
@@ -74,6 +86,12 @@ class InventoryStockSummaryView(APIView):
             row["product_key"] = label
             row["product_label"] = label
             row["qty_unit"] = unit
+            if not row["product_name"]:
+                row["product_name"] = _movement_display_name(m)
+            if not row["supplier_name"] and m.supplier_product_id and m.supplier_product and m.supplier_product.supplier:
+                row["supplier_name"] = m.supplier_product.supplier.name
+            if not row["product_category"] and m.supplier_product_id and m.supplier_product and m.supplier_product.category:
+                row["product_category"] = str(m.supplier_product.category or "")
             qty = Decimal(str(m.qty_value or "0"))
             if row["last_movement_at"] is None or m.happened_at > row["last_movement_at"]:
                 row["last_movement_at"] = m.happened_at
@@ -98,6 +116,9 @@ class InventoryStockSummaryView(APIView):
             {
                 "product_key": row["product_key"],
                 "product_label": row["product_label"],
+                "product_name": row["product_name"],
+                "supplier_name": row["supplier_name"],
+                "product_category": row["product_category"],
                 "qty_unit": row["qty_unit"],
                 "total_in": f"{row['total_in']:.3f}",
                 "total_out": f"{row['total_out']:.3f}",
@@ -202,4 +223,77 @@ class InventoryApplyView(APIView):
                 "applied": applied,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class InventoryRebuildFromPurchasingView(APIView):
+    def post(self, request):
+        payload = request.data if isinstance(request.data, dict) else {}
+        site_id = str(payload.get("site") or request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not Site.objects.filter(pk=site_id).exists():
+            return Response({"detail": "site not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        created_goods = 0
+        created_invoices = 0
+        skipped_goods = 0
+        skipped_invoices = 0
+
+        receipts = GoodsReceipt.objects.prefetch_related("lines").filter(site_id=site_id)
+        for receipt in receipts:
+            for line in receipt.lines.all():
+                ref_id = str(line.id)
+                if InventoryMovement.objects.filter(ref_type="goods_receipt_line", ref_id=ref_id).exists():
+                    skipped_goods += 1
+                    continue
+                InventoryMovement.objects.create(
+                    site=receipt.site,
+                    lot=None,
+                    supplier_product=line.supplier_product,
+                    supplier_code=line.supplier_code,
+                    raw_product_name=line.raw_product_name,
+                    movement_type=MovementType.IN,
+                    qty_value=line.qty_value,
+                    qty_unit=line.qty_unit,
+                    happened_at=receipt.received_at,
+                    ref_type="goods_receipt_line",
+                    ref_id=ref_id,
+                )
+                created_goods += 1
+
+        invoices = Invoice.objects.prefetch_related("lines").filter(site_id=site_id)
+        for invoice in invoices:
+            for line in invoice.lines.all():
+                if line.goods_receipt_line_id:
+                    continue
+                ref_id = str(line.id)
+                if InventoryMovement.objects.filter(ref_type="invoice_line_fallback", ref_id=ref_id).exists():
+                    skipped_invoices += 1
+                    continue
+                happened_at = datetime.combine(invoice.invoice_date, time.min, tzinfo=timezone.utc)
+                InventoryMovement.objects.create(
+                    site=invoice.site,
+                    lot=None,
+                    supplier_product=line.supplier_product,
+                    supplier_code=line.supplier_code,
+                    raw_product_name=line.raw_product_name,
+                    movement_type=MovementType.IN,
+                    qty_value=line.qty_value,
+                    qty_unit=line.qty_unit,
+                    happened_at=happened_at,
+                    ref_type="invoice_line_fallback",
+                    ref_id=ref_id,
+                )
+                created_invoices += 1
+
+        return Response(
+            {
+                "site": site_id,
+                "created_goods_receipts": created_goods,
+                "created_invoice_fallbacks": created_invoices,
+                "skipped_goods_receipts": skipped_goods,
+                "skipped_invoice_fallbacks": skipped_invoices,
+            },
+            status=status.HTTP_200_OK,
         )

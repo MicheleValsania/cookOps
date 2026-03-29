@@ -26,6 +26,7 @@ class SupplierProductSerializer(serializers.ModelSerializer):
             "pack_qty",
             "active",
             "traceability_flag",
+            "category",
             "allergens",
             "metadata",
             "created_at",

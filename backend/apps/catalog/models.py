@@ -41,6 +41,7 @@ class SupplierProduct(models.Model):
     pack_qty = models.DecimalField(max_digits=12, decimal_places=3, blank=True, null=True)
     active = models.BooleanField(default=True)
     traceability_flag = models.BooleanField(default=False)
+    category = models.CharField(max_length=128, blank=True, null=True)
     allergens = models.JSONField(default=list, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

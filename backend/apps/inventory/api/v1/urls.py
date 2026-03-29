@@ -1,6 +1,11 @@
 from django.urls import path
 
-from apps.inventory.api.v1.views import InventoryApplyView, InventoryMovementViewSet, InventoryStockSummaryView
+from apps.inventory.api.v1.views import (
+    InventoryApplyView,
+    InventoryMovementViewSet,
+    InventoryRebuildFromPurchasingView,
+    InventoryStockSummaryView,
+)
 
 
 urlpatterns = [
@@ -18,5 +23,10 @@ urlpatterns = [
         "inventory/inventories/apply/",
         InventoryApplyView.as_view(),
         name="inventory-apply",
+    ),
+    path(
+        "inventory/rebuild-from-purchasing/",
+        InventoryRebuildFromPurchasingView.as_view(),
+        name="inventory-rebuild-from-purchasing",
     ),
 ]

@@ -71,6 +71,7 @@ def extract_ingredients(payload: dict[str, Any]) -> list[dict[str, Any]]:
             or item.get("title")
             or item.get("ingredient")
             or item.get("product_name")
+            or item.get("ingredient_name_raw")
             or ""
         )
         if not name:
@@ -80,6 +81,7 @@ def extract_ingredients(payload: dict[str, Any]) -> list[dict[str, Any]]:
             or item.get("qty")
             or item.get("amount")
             or item.get("value")
+            or item.get("quantity_raw")
             or 0
         )
         parsed_qty, parsed_unit = _parse_qty_and_unit(qty)
@@ -87,6 +89,8 @@ def extract_ingredients(payload: dict[str, Any]) -> list[dict[str, Any]]:
         supplier = item.get("supplier") or item.get("supplier_name") or item.get("vendor") or ""
         supplier_code = (
             item.get("supplier_code")
+            or item.get("supplierCode")
+            or item.get("supplier_product_code")
             or item.get("supplier_sku")
             or item.get("vendor_code")
             or item.get("article_code")

@@ -4,6 +4,10 @@ import { HaccpWorkspace } from "./components/HaccpWorkspace";
 import { TraceabilityWorkspace } from "./components/TraceabilityWorkspace";
 import { getInitialLang, LANG_STORAGE_KEY, t as translate, type Lang } from "./i18n";
 
+const FICHES_RECETTES_URL = (import.meta.env.VITE_FICHES_RECETTES_URL ?? "").toString().trim();
+const LANDING_FICHES_FALLBACK = "https://fiches-recettes.netlify.app";
+const LANDING_SKIP_STORAGE_KEY = "cookops_landing_skip_v1";
+
 type NavKey =
   | "dashboard"
   | "inventario"
@@ -95,6 +99,9 @@ type InventoryMovementItem = {
 type StockSummaryItem = {
   product_key: string;
   product_label: string;
+  product_name?: string | null;
+  supplier_name?: string | null;
+  product_category?: string | null;
   qty_unit: string;
   total_in: string;
   total_out: string;
@@ -591,6 +598,27 @@ function normalizeDocumentDateToken(value: unknown): string {
   return normalizeDocumentToken(raw);
 }
 
+function describeValidationError(body: Record<string, unknown> | null) {
+  if (!body || typeof body !== "object") return "";
+  const detail = String(body.detail ?? "").trim();
+  const fieldErrors = body.field_errors as Record<string, unknown> | undefined;
+  if (fieldErrors && typeof fieldErrors === "object") {
+    const parts = Object.entries(fieldErrors).map(([field, messages]) => {
+      if (Array.isArray(messages)) {
+        const rendered = messages.map((msg) =>
+          typeof msg === "string" ? msg : JSON.stringify(msg)
+        );
+        return `${field}: ${rendered.join(", ")}`;
+      }
+      return `${field}: ${typeof messages === "string" ? messages : JSON.stringify(messages)}`;
+    });
+    if (parts.length > 0) {
+      return detail ? `${detail} (${parts.join(" | ")})` : parts.join(" | ");
+    }
+  }
+  return detail;
+}
+
 function normalizeReferenceToken(value: unknown): string {
   return normalizeDocumentToken(value).replace(/[^a-z0-9]/g, "");
 }
@@ -943,6 +971,10 @@ function normalizeHaccpReconciliationOverview(body: unknown, context?: { siteId?
 
 function App() {
   const [lang, setLang] = useState<Lang>(() => getInitialLang());
+  const [isLandingDismissed, setIsLandingDismissed] = useState(
+    () => localStorage.getItem(LANDING_SKIP_STORAGE_KEY) === "true"
+  );
+  const [isLandingSkipChecked, setIsLandingSkipChecked] = useState(false);
   const [nav, setNav] = useState<NavKey>("dashboard");
   const [isTraceabilityReconciliationPage, setIsTraceabilityReconciliationPage] = useState(
     () => parseTraceabilityReconciliationHash(window.location.hash).active
@@ -982,9 +1014,21 @@ function App() {
   const [suppliers, setSuppliers] = useState<SupplierItem[]>([]);
   const [registeredInvoices, setRegisteredInvoices] = useState<InvoiceRecord[]>([]);
   const [newSupplierName, setNewSupplierName] = useState("");
+  const [supplierSearchText, setSupplierSearchText] = useState("");
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
+  const [newSupplierProductSupplierId, setNewSupplierProductSupplierId] = useState("");
+  const [newSupplierProductName, setNewSupplierProductName] = useState("");
+  const [newSupplierProductSku, setNewSupplierProductSku] = useState("");
+  const [newSupplierProductUom, setNewSupplierProductUom] = useState("kg");
+  const [newSupplierProductPackQty, setNewSupplierProductPackQty] = useState("");
+  const [newSupplierProductCategory, setNewSupplierProductCategory] = useState("");
+  const [supplierProducts, setSupplierProducts] = useState<Array<Record<string, unknown>>>([]);
+  const [isSupplierProductsLoading, setIsSupplierProductsLoading] = useState(false);
+  const [fichesSyncStatus, setFichesSyncStatus] = useState("");
   const [isFichesSyncing, setIsFichesSyncing] = useState(false);
   const [isFichesJsonImporting, setIsFichesJsonImporting] = useState(false);
   const [fichesJsonFile, setFichesJsonFile] = useState<File | null>(null);
+  const [refreshFichesSnapshots, setRefreshFichesSnapshots] = useState(true);
 
   const [salesDate, setSalesDate] = useState(getTodayIsoDate());
   const [posSourceId, setPosSourceId] = useState("");
@@ -993,10 +1037,14 @@ function App() {
   const [stockSummaryRows, setStockSummaryRows] = useState<StockSummaryItem[]>([]);
   const [isInventoryLoading, setIsInventoryLoading] = useState(false);
   const [isApplyingInventory, setIsApplyingInventory] = useState(false);
+  const [isRebuildingStock, setIsRebuildingStock] = useState(false);
   const [inventoryScope, setInventoryScope] = useState("total");
   const [inventoryLinesJson, setInventoryLinesJson] = useState('[{"supplier_code":"82233","raw_product_name":"LIEU NOIR VDK 2/4 A.N.E","qty_unit":"kg","qty_value":"40.000"}]');
   const [stockSearch, setStockSearch] = useState("");
   const [lastInventoryApplied, setLastInventoryApplied] = useState<Array<Record<string, unknown>>>([]);
+  const [isBulkIngesting, setIsBulkIngesting] = useState<"goods_receipt" | "invoice" | null>(null);
+  const [bulkIngestErrors, setBulkIngestErrors] = useState<Record<string, string[]>>({});
+  const [lastIngestError, setLastIngestError] = useState("");
   const [haccpOcrQueue, setHaccpOcrQueue] = useState<HaccpOcrQueueItem[]>([]);
   const [haccpLifecycleEvents, setHaccpLifecycleEvents] = useState<HaccpLifecycleEvent[]>([]);
   const [haccpSchedules, setHaccpSchedules] = useState<HaccpScheduleItem[]>([]);
@@ -1195,8 +1243,12 @@ function App() {
 
   useEffect(() => {
     if (nav !== "acquisti" && nav !== "haccp" && nav !== "tracciabilita" && nav !== "dashboard" && nav !== "report") return;
+    if (!siteId) {
+      setDocuments([]);
+      return;
+    }
     void loadDocuments();
-  }, [nav]);
+  }, [nav, siteId]);
 
   useEffect(() => {
     if (nav !== "inventario" && nav !== "inventari") return;
@@ -1240,6 +1292,10 @@ function App() {
     }
     setSelectedHaccpSectorId(haccpSectors[0].id);
   }, [haccpSectors, selectedHaccpSectorId]);
+
+  useEffect(() => {
+    void loadSupplierProductsForSupplier(newSupplierProductSupplierId);
+  }, [newSupplierProductSupplierId]);
 
   useEffect(() => {
     if (!filteredHaccpColdPoints.length) {
@@ -1329,6 +1385,20 @@ function App() {
       active = false;
       if (nextBlobUrl) URL.revokeObjectURL(nextBlobUrl);
     };
+  }, [documents, selectedDocId]);
+
+  useEffect(() => {
+    const selected = documents.find((doc) => doc.id === selectedDocId) ?? null;
+    const latest = selected?.latest_extraction;
+    if (latest?.status === "succeeded") {
+      if (latest.id) {
+        setSelectedExtractionId(latest.id);
+      }
+      setNormalizedPayload(JSON.stringify(latest.normalized_payload ?? {}, null, 2));
+      setIntakeStage("review");
+    } else if (!latest) {
+      setSelectedExtractionId("");
+    }
   }, [documents, selectedDocId]);
 
   useEffect(() => {
@@ -2030,30 +2100,107 @@ function App() {
     await loadSuppliers();
   }
 
+  async function onCreateSupplierProduct(e: FormEvent) {
+    e.preventDefault();
+    const supplierId = newSupplierProductSupplierId.trim();
+    const name = newSupplierProductName.trim();
+    if (!supplierId) {
+      setNotice(t("suppliers.selectSupplierNotice"));
+      return;
+    }
+    if (!name) {
+      setNotice(t("suppliers.enterProductName"));
+      return;
+    }
+    const payload: Record<string, unknown> = {
+      name,
+      supplier_sku: newSupplierProductSku.trim() || null,
+      uom: newSupplierProductUom,
+      pack_qty: newSupplierProductPackQty.trim() || null,
+      category: newSupplierProductCategory.trim() || null,
+    };
+    const res = await apiFetch(`/suppliers/${encodeURIComponent(supplierId)}/products/`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(errorWithDetail("error.supplierCreate", body.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setNotice(t("suppliers.productCreated"));
+    setNewSupplierProductSupplierId("");
+    setNewSupplierProductName("");
+    setNewSupplierProductSku("");
+    setNewSupplierProductUom("kg");
+    setNewSupplierProductPackQty("");
+    setNewSupplierProductCategory("");
+    await loadSupplierProductSuggestions();
+    await loadSupplierProductsForSupplier(supplierId);
+  }
+
+  async function loadSupplierProductsForSupplier(supplierId: string) {
+    if (!supplierId) {
+      setSupplierProducts([]);
+      return;
+    }
+    setIsSupplierProductsLoading(true);
+    try {
+      const res = await apiFetch(`/suppliers/${encodeURIComponent(supplierId)}/products/`);
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.suppliersLoad", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setSupplierProducts(Array.isArray(body) ? body : []);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsSupplierProductsLoading(false);
+    }
+  }
+
+  const filteredSuppliers = useMemo(() => {
+    const q = supplierSearchText.trim().toLowerCase();
+    if (!q) return suppliers;
+    return suppliers.filter((supplier) => supplier.name.toLowerCase().includes(q));
+  }, [suppliers, supplierSearchText]);
+
   async function onSyncFichesSnapshots() {
     if (isFichesSyncing) return;
     setIsFichesSyncing(true);
+    setFichesSyncStatus(t("suppliers.fichesSyncRunning"));
     try {
       const idempotencyKey = `fiches-auto-${new Date().toISOString()}`;
       const res = await apiFetch("/integration/fiches/snapshots/import/", {
         method: "POST",
-        body: JSON.stringify({ query: "", limit: 5000, idempotency_key: idempotencyKey }),
+        body: JSON.stringify({
+          query: "",
+          limit: 5000,
+          idempotency_key: idempotencyKey,
+          refresh_existing: refreshFichesSnapshots,
+        }),
       });
       const body = await res.json();
       if (!res.ok) {
-        setNotice(errorWithDetail("error.fichesSync", body.detail ?? JSON.stringify(body)));
+        const detail = body.detail ?? JSON.stringify(body);
+        setNotice(errorWithDetail("error.fichesSync", detail));
+        setFichesSyncStatus(t("suppliers.fichesSyncError", { detail }));
         return;
       }
-      setNotice(
-        t("notice.fichesSynced", {
-          read: body.total_read ?? 0,
-          created: body.created ?? 0,
-          unchanged: body.skipped_existing ?? 0,
-        })
-      );
+      const statusMessage = t("notice.fichesSynced", {
+        read: body.total_read ?? 0,
+        created: body.created ?? 0,
+        refreshed: body.refreshed ?? 0,
+        unchanged: body.skipped_existing ?? 0,
+      });
+      setNotice(statusMessage);
+      setFichesSyncStatus(statusMessage);
       await loadRecipeTitleSuggestions("");
     } catch {
-      setNotice(t("error.fichesSyncConnection"));
+      const msg = t("error.fichesSyncConnection");
+      setNotice(msg);
+      setFichesSyncStatus(msg);
     } finally {
       setIsFichesSyncing(false);
     }
@@ -2106,7 +2253,11 @@ function App() {
       const idempotencyKey = `fiches-envelope-${new Date().toISOString()}`;
       const res = await apiFetch("/integration/fiches/snapshots/import-envelope/", {
         method: "POST",
-        body: JSON.stringify({ envelope, idempotency_key: idempotencyKey }),
+        body: JSON.stringify({
+          envelope,
+          idempotency_key: idempotencyKey,
+          refresh_existing: refreshFichesSnapshots,
+        }),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -2117,6 +2268,7 @@ function App() {
         t("notice.fichesJsonImported", {
           read: body.total_read ?? 0,
           created: body.created ?? 0,
+          refreshed: body.refreshed ?? 0,
           unchanged: body.skipped_existing ?? 0,
         })
       );
@@ -2129,11 +2281,14 @@ function App() {
     }
   }
 
-  async function loadDocuments() {
-    const res = await apiFetch("/integration/documents/");
+  async function loadDocuments(options?: { silent?: boolean }) {
+    const siteParam = siteId ? `?site=${encodeURIComponent(siteId)}` : "";
+    const res = await apiFetch(`/integration/documents/${siteParam}`);
     const body = await res.json();
     if (!res.ok) {
-      setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+      if (!options?.silent) {
+        setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+      }
       return;
     }
     const data = body as DocumentItem[];
@@ -2146,7 +2301,9 @@ function App() {
       });
       setSelectedDocType(intakeDocs[0].document_type);
     }
-    setNotice(t("notice.documentsLoaded", { count: data.length }));
+    if (!options?.silent) {
+      setNotice(t("notice.documentsLoaded", { count: data.length }));
+    }
   }
 
   function onUploadFileSelected(file: File | null) {
@@ -2319,10 +2476,13 @@ function App() {
     });
     const body = await res.json();
     if (!res.ok) {
-      setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+      const detail = describeValidationError(body as Record<string, unknown>) || JSON.stringify(body);
+      setNotice(errorWithDetail("error.ingest", detail));
+      setLastIngestError(detail);
       setIntakeStage("review");
       return;
     }
+    setLastIngestError("");
     if (selectedDocType === "invoice" && body.id) {
       setAutoMatchInvoiceId(String(body.id));
       if (invoiceIngestMode === "invoice_after_delivery") {
@@ -2336,6 +2496,73 @@ function App() {
     }
     setIntakeStage("review");
     setNotice(t("notice.documentIngested", { id: body.id }));
+    if (siteId && (selectedDocType === "invoice" || selectedDocType === "goods_receipt")) {
+      await Promise.all([loadStockSummary(), loadInventoryMovements()]);
+    }
+  }
+
+  function isDocumentIngested(doc: DocumentItem) {
+    const ingest = asRecord(doc.metadata?.ingest);
+    return String(ingest.status || "") === "completed";
+  }
+
+  async function onBulkIngestDocuments(targetType: "goods_receipt" | "invoice") {
+    if (!siteId) return;
+    setIsBulkIngesting(targetType);
+    try {
+      setBulkIngestErrors((prev) => ({ ...prev, [targetType]: [] }));
+      const candidates = documents.filter(
+        (doc) =>
+          doc.site === siteId
+          && doc.document_type === targetType
+          && !isDocumentIngested(doc)
+          && String(doc.latest_extraction?.status || "") === "succeeded"
+          && String(doc.latest_extraction?.id || "").trim().length > 0
+      );
+      if (candidates.length === 0) {
+        setNotice("Aucun document a enregistrer.");
+        return;
+      }
+      let ingested = 0;
+      const failures: string[] = [];
+      for (const doc of candidates) {
+        const extractionId = String(doc.latest_extraction?.id || "");
+        if (!extractionId) continue;
+        const res = await apiFetch(`/integration/documents/${doc.id}/ingest/`, {
+          method: "POST",
+          body: JSON.stringify({
+            extraction_id: extractionId,
+            idempotency_key: `ui-ingest-${extractionId}`,
+            target: targetType,
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          const detail = describeValidationError(body as Record<string, unknown>) || JSON.stringify(body);
+          failures.push(`${doc.filename}: ${detail}`);
+          continue;
+        }
+        ingested += 1;
+      }
+      if (failures.length > 0) {
+        setBulkIngestErrors((prev) => ({ ...prev, [targetType]: failures }));
+      }
+      if (failures.length > 0) {
+        const preview = failures.slice(0, 3).join(" | ");
+        const more = failures.length > 3 ? ` (+${failures.length - 3} autres)` : "";
+        setNotice(`Documents enregistres: ${ingested}/${candidates.length}. Erreurs: ${preview}${more}`);
+      } else {
+        setNotice(`Documents enregistres: ${ingested}/${candidates.length}.`);
+      }
+      await loadDocuments({ silent: true });
+      if (siteId && ingested > 0) {
+        await Promise.all([loadStockSummary(), loadInventoryMovements()]);
+      }
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsBulkIngesting(null);
+    }
   }
 
   async function onDeleteIntakeDocument(doc: DocumentItem) {
@@ -2517,6 +2744,30 @@ function App() {
       setNotice(t("error.documentsLoad"));
     } finally {
       setIsInventoryLoading(false);
+    }
+  }
+
+  async function rebuildStockFromPurchasing() {
+    if (!siteId) return;
+    setIsRebuildingStock(true);
+    try {
+      const res = await apiFetch("/inventory/rebuild-from-purchasing/", {
+        method: "POST",
+        body: JSON.stringify({ site: siteId }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(
+        `Stock ricostruito. BL creati: ${body.created_goods_receipts}, fatture fallback: ${body.created_invoice_fallbacks}.`
+      );
+      await Promise.all([loadStockSummary(), loadInventoryMovements()]);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsRebuildingStock(false);
     }
   }
 
@@ -3817,13 +4068,25 @@ function App() {
     [documents, selectedHaccpQueueItem]
   );
   const selectedHaccpDocumentUrl = useMemo(() => getDocumentFileUrl(selectedHaccpDocument), [selectedHaccpDocument]);
+  const duplicateDocuments = useMemo(
+    () => documents.filter((doc) => doc.status === "archived_duplicate"),
+    [documents]
+  );
   const archivedDeliveryNotes = useMemo(
-    () => documents.filter((doc) => doc.document_type === "goods_receipt"),
+    () => documents.filter((doc) => doc.document_type === "goods_receipt" && doc.status !== "archived_duplicate"),
     [documents]
   );
   const archivedInvoices = useMemo(
-    () => documents.filter((doc) => doc.document_type === "invoice"),
+    () => documents.filter((doc) => doc.document_type === "invoice" && doc.status !== "archived_duplicate"),
     [documents]
+  );
+  const duplicateDeliveryNotes = useMemo(
+    () => duplicateDocuments.filter((doc) => doc.document_type === "goods_receipt"),
+    [duplicateDocuments]
+  );
+  const duplicateInvoices = useMemo(
+    () => duplicateDocuments.filter((doc) => doc.document_type === "invoice"),
+    [duplicateDocuments]
   );
   const documentDuplicateCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -4143,7 +4406,10 @@ function App() {
       return (
         String(row.product_label ?? "").toLowerCase().includes(q) ||
         String(row.product_key ?? "").toLowerCase().includes(q) ||
-        String(row.qty_unit ?? "").toLowerCase().includes(q)
+        String(row.qty_unit ?? "").toLowerCase().includes(q) ||
+        String(row.product_name ?? "").toLowerCase().includes(q) ||
+        String(row.supplier_name ?? "").toLowerCase().includes(q) ||
+        String(row.product_category ?? "").toLowerCase().includes(q)
       );
     });
   }, [stockSummaryRows, stockSearch]);
@@ -4157,6 +4423,11 @@ function App() {
         PR: {sourceRecipeTitle || t("orders.internalPrep")}
       </span>
     );
+  }
+
+  function getProductCode(row: Record<string, unknown>): string {
+    const code = row.supplier_code ?? row.supplier_sku ?? row.code;
+    return String(code ?? "").trim();
   }
 
   function flowLabelForDocument(doc: DocumentItem): string {
@@ -4238,7 +4509,7 @@ function App() {
     }
     headers.push(t("table.remaining"), t("table.toOrder"));
     const rows = group.rows.map((row) => {
-      const cells = [String(row.ingredient ?? "-"), String(row.supplier_code ?? "-")];
+      const cells = [String(row.ingredient ?? "-"), getProductCode(row) || "NC"];
       if (quantityMode === "with_qty") {
         cells.push(String(row.qty_total ?? "-"), String(row.unit ?? "-"));
       }
@@ -4255,7 +4526,7 @@ function App() {
     }
     headers.push(t("table.remaining"), t("table.toOrder"));
     const rows = group.rows.map((row) => {
-      const cells = [String(row.ingredient ?? "-"), String(row.supplier ?? "-"), String(row.supplier_code ?? "-")];
+      const cells = [String(row.ingredient ?? "-"), String(row.supplier ?? "-"), getProductCode(row) || "NC"];
       if (quantityMode === "with_qty") {
         cells.push(String(row.qty_total ?? "-"), String(row.unit ?? "-"));
       }
@@ -4280,7 +4551,7 @@ function App() {
         const cells = [
           String(item.ingredient ?? "-"),
           String(item.supplier ?? "-"),
-          String(item.supplier_code ?? "-"),
+          getProductCode(item) || "NC",
         ];
         if (quantityMode === "with_qty") {
           cells.push(String(item.qty_total ?? "-"), String(item.unit ?? "-"));
@@ -4772,7 +5043,57 @@ function App() {
     }
   }
 
-  return (
+  const landingFichesUrl = FICHES_RECETTES_URL || LANDING_FICHES_FALLBACK;
+  const showLanding = !isLandingDismissed;
+  const enterApp = () => {
+    if (isLandingSkipChecked) {
+      localStorage.setItem(LANDING_SKIP_STORAGE_KEY, "true");
+    }
+    setIsLandingDismissed(true);
+  };
+
+  return showLanding ? (
+    <div className="landing-shell">
+      <header className="landing-top">
+        <div className="landing-brand">
+          <img className="landing-logo" src="/chefside-logo.svg" alt="Chef Side" />
+          <div>
+            <p className="landing-kicker">Chefside</p>
+            <p className="landing-subtitle">Accesso riservato</p>
+          </div>
+        </div>
+        <span className="landing-badge">Private preview</span>
+      </header>
+      <main className="landing-main">
+        <div className="landing-hero">
+          <h1 className="landing-title">CookOps</h1>
+          <p className="landing-lead">
+            Workspace operativo per gestione menu, acquisti, inventario e tracciabilita.
+          </p>
+        </div>
+        <div className="landing-actions">
+          <button type="button" className="landing-primary-btn" onClick={enterApp}>
+            Entra in CookOps
+          </button>
+          <a className="landing-secondary-btn" href={landingFichesUrl} target="_blank" rel="noreferrer">
+            Apri Fiches Recettes
+          </a>
+        </div>
+        <label className="landing-checkbox">
+          <input
+            type="checkbox"
+            checked={isLandingSkipChecked}
+            onChange={(e) => setIsLandingSkipChecked(e.target.checked)}
+          />
+          Non mostrare piu questa pagina
+        </label>
+      </main>
+      <footer className="landing-footer">
+        <span>chefside.fr</span>
+        <span>Supporto interno</span>
+      </footer>
+    </div>
+  ) : (
     <div className="shell">
       <header className="topbar">
         <div className="brand">
@@ -4782,7 +5103,7 @@ function App() {
             onClick={() => setIsSidebarOpenMobile((prev) => !prev)}
             aria-label={t("app.menuToggle")}
           >
-            Menu
+            {t("app.menuShort")}
           </button>
           <img className="brand-logo-image" src="/chefside-logo.svg" alt="Chef Side" />
           <p className="brand-sub">{t("app.brandSub")}</p>
@@ -4802,7 +5123,7 @@ function App() {
             ))}
           </select>
           <button type="button" className="nav-gear-btn" onClick={() => setIsSettingsOpen(true)} aria-label={t("app.settings")}>
-            Cfg
+            {t("app.configShort")}
           </button>
         </div>
       </header>
@@ -4833,6 +5154,17 @@ function App() {
               <small>{t(item.helpKey)}</small>
             </button>
           ))}
+          {FICHES_RECETTES_URL ? (
+            <a
+              className="side-btn side-btn--link"
+              href={FICHES_RECETTES_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <span>{t("app.fichesLinkTitle")}</span>
+              <small>{t("app.fichesLinkDesc")}</small>
+            </a>
+          ) : null}
         </aside>
         ) : null}
 
@@ -5249,7 +5581,7 @@ function App() {
                 </>
               )}
             </div>
-          ) : nav !== "ricette" && nav !== "comande" && nav !== "acquisti" && nav !== "inventario" && nav !== "inventari" && nav !== "haccp" && nav !== "tracciabilita" ? (
+          ) : nav !== "ricette" && nav !== "comande" && nav !== "acquisti" && nav !== "inventario" && nav !== "inventari" && nav !== "haccp" && nav !== "tracciabilita" && nav !== "fornitori" ? (
             <section className="panel page-head">
               <h2>{t(NAV_ITEMS.find((item) => item.key === nav)?.labelKey ?? "")}</h2>
               <p>{t("app.pageHead", { site: activeSite?.name ?? t("app.siteNotSelected"), api: getApiBase() })}</p>
@@ -5264,41 +5596,41 @@ function App() {
                 <article className="panel metric-card"><strong>{sites.filter((s) => s.is_active).length}</strong><span>{t("dashboard.activeSites")}</span></article>
                 <article className="panel metric-card"><strong>{documents.length}</strong><span>{t("dashboard.importedDocs")}</span></article>
                 <article className="panel metric-card"><strong>{vociCartaTotali}</strong><span>{t("dashboard.activeMenuItems")}</span></article>
-                <article className="panel metric-card"><strong>{dashboardPendingReviewCount}</strong><span>Foto da validare</span></article>
-                <article className="panel metric-card"><strong>{dashboardFailedOcrCount}</strong><span>OCR in errore</span></article>
-                <article className="panel metric-card"><strong>{dashboardTemperatureAlertCount}</strong><span>Temperature fuori soglia</span></article>
+                <article className="panel metric-card"><strong>{dashboardPendingReviewCount}</strong><span>{t("dashboard.pendingPhotos")}</span></article>
+                <article className="panel metric-card"><strong>{dashboardFailedOcrCount}</strong><span>{t("dashboard.ocrErrors")}</span></article>
+                <article className="panel metric-card"><strong>{dashboardTemperatureAlertCount}</strong><span>{t("dashboard.temperatureAlerts")}</span></article>
               </section>
               <section className="grid">
                 <article className="panel">
                   <div className="doc-preview__head">
-                    <h3>Tracciabilita</h3>
-                    <button type="button" onClick={() => setNav("report")}>Apri report</button>
+                    <h3>{t("dashboard.traceabilityTitle")}</h3>
+                    <button type="button" onClick={() => setNav("report")}>{t("dashboard.openReport")}</button>
                   </div>
-                  <p className="muted">Pilotaggio rapido delle estrazioni e delle convalide.</p>
+                  <p className="muted">{t("dashboard.traceabilityDesc")}</p>
                   <ul className="clean-list">
-                    <li>{dashboardPendingReviewCount} documenti da validare</li>
-                    <li>{dashboardValidatedCount} documenti gia confermati</li>
-                    <li>{dashboardFailedOcrCount} OCR da rilanciare</li>
+                    <li>{t("dashboard.docsToValidate", { count: dashboardPendingReviewCount })}</li>
+                    <li>{t("dashboard.docsValidated", { count: dashboardValidatedCount })}</li>
+                    <li>{t("dashboard.ocrToRetry", { count: dashboardFailedOcrCount })}</li>
                   </ul>
                   <div className="entry-actions">
-                    <button type="button" onClick={() => setNav("tracciabilita")}>Vai a Tracciabilita</button>
-                    <button type="button" onClick={() => setNav("report")}>Vai ai report</button>
+                    <button type="button" onClick={() => setNav("tracciabilita")}>{t("dashboard.goTraceability")}</button>
+                    <button type="button" onClick={() => setNav("report")}>{t("dashboard.goReports")}</button>
                   </div>
                 </article>
                 <article className="panel">
                   <div className="doc-preview__head">
-                    <h3>HACCP</h3>
-                    <button type="button" onClick={() => setNav("haccp")}>Apri HACCP</button>
+                    <h3>{t("dashboard.haccpTitle")}</h3>
+                    <button type="button" onClick={() => setNav("haccp")}>{t("dashboard.openHaccp")}</button>
                   </div>
-                  <p className="muted">Sintesi temperature e anomalie operative.</p>
+                  <p className="muted">{t("dashboard.haccpDesc")}</p>
                   <ul className="clean-list">
-                    <li>{temperatureReportRows.length} rilevazioni temperatura disponibili</li>
-                    <li>{dashboardTemperatureAlertCount} misure sopra riferimento</li>
-                    <li>{haccpAnomalyRows.length} anomalie aggregate</li>
+                    <li>{t("dashboard.temperatureReadings", { count: temperatureReportRows.length })}</li>
+                    <li>{t("dashboard.temperatureAbove", { count: dashboardTemperatureAlertCount })}</li>
+                    <li>{t("dashboard.anomaliesAggregated", { count: haccpAnomalyRows.length })}</li>
                   </ul>
                   <div className="entry-actions">
-                    <button type="button" onClick={() => setNav("report")}>Report temperature</button>
-                    <button type="button" onClick={() => setNav("haccp")}>Vai a HACCP</button>
+                    <button type="button" onClick={() => setNav("report")}>{t("dashboard.temperatureReport")}</button>
+                    <button type="button" onClick={() => setNav("haccp")}>{t("dashboard.goHaccp")}</button>
                   </div>
                 </article>
               </section>
@@ -5309,6 +5641,25 @@ function App() {
             <div className="grid grid-single">
               <section className="panel menu-space-panel">
                 <h2>{t("recipes.menuSpaces")}</h2>
+                <div className="doc-preview__head">
+                  <h3>{t("recipes.title")}</h3>
+                  <div className="entry-actions">
+                    <button type="button" onClick={onSyncFichesSnapshots} disabled={isFichesSyncing}>
+                      {isFichesSyncing ? t("suppliers.fichesSyncLoading") : t("suppliers.fichesSync")}
+                    </button>
+                  </div>
+                </div>
+                <p className="muted">{t("suppliers.fichesSyncDesc")}</p>
+                <label className="option-inline">
+                  <input
+                    type="checkbox"
+                    checked={refreshFichesSnapshots}
+                    onChange={(e) => setRefreshFichesSnapshots(e.target.checked)}
+                  />
+                  <span>{t("suppliers.fichesSyncRefresh")}</span>
+                </label>
+                {fichesSyncStatus ? <p className="muted">{fichesSyncStatus}</p> : null}
+                <p className="muted">La sincronizzazione fornitori/prodotti verrà attivata dopo il modello di coordinazione.</p>
                 <div className="grid grid-2">
                   <div>
                     <label>{t("recipes.serviceDate")}</label>
@@ -5552,7 +5903,7 @@ function App() {
                             {group.rows.map((row, idx) => (
                               <li key={`${group.supplier}-${idx}`}>
                                 {String(row.ingredient ?? "-")}
-                                {row.supplier_code ? ` [${String(row.supplier_code)}]` : ""}
+                                {` · ${t("orders.productCodeLabel")}: ${getProductCode(row) || "NC"}`}
                                 {quantityMode === "with_qty"
                                   ? ` - ${formatDisplayNumber(lang, row.qty_total ?? "-")} ${String(row.unit ?? "-")}`
                                   : ""}
@@ -5583,7 +5934,7 @@ function App() {
                             {group.rows.map((row, idx) => (
                               <li key={`${group.section}-${idx}`}>
                                 {String(row.ingredient ?? "-")} ({String(row.supplier ?? "-")})
-                                {row.supplier_code ? ` [${String(row.supplier_code)}]` : ""}
+                                {` · ${t("orders.productCodeLabel")}: ${getProductCode(row) || "NC"}`}
                                 {quantityMode === "with_qty"
                                   ? ` - ${formatDisplayNumber(lang, row.qty_total ?? "-")} ${String(row.unit ?? "-")}`
                                   : ""}
@@ -5622,7 +5973,7 @@ function App() {
                                     return (
                                       <li key={`${group.title}-${rowIdx}-${ingIdx}`}>
                                         {String(item.ingredient ?? "-")} ({String(item.supplier ?? "-")})
-                                        {item.supplier_code ? ` [${String(item.supplier_code)}]` : ""}
+                                        {` · ${t("orders.productCodeLabel")}: ${getProductCode(item) || "NC"}`}
                                         {quantityMode === "with_qty"
                                           ? ` - ${formatDisplayNumber(lang, item.qty_total ?? "-")} ${String(item.unit ?? "-")}`
                                           : ""}
@@ -5646,36 +5997,145 @@ function App() {
           {nav === "fornitori" && (
             <div className="grid">
               <section className="panel">
-                <h2>{t("suppliers.manage")}</h2>
-                <form onSubmit={onCreateSupplier}>
-                  <label>{t("suppliers.newSupplier")}</label>
-                  <input value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder={t("suppliers.namePlaceholder")} />
-                  <button type="submit">{t("suppliers.addSupplier")}</button>
+                <div className="library-header">
+                  <div>
+                    <h2 className="section-title">{t("suppliers.sectionTitle")}</h2>
+                    <p className="muted">{t("suppliers.sectionDesc")}</p>
+                  </div>
+                  <div className="library-actions">
+                    <input
+                      className="input"
+                      value={supplierSearchText}
+                      onChange={(e) => setSupplierSearchText(e.target.value)}
+                      placeholder={t("suppliers.searchPlaceholder")}
+                    />
+                    <button type="button" className="btn btn-outline" onClick={loadSuppliers}>
+                      {t("suppliers.refreshList")}
+                    </button>
+                  </div>
+                </div>
+                <form className="supplier-add supplier-add--simple" onSubmit={onCreateSupplier}>
+                  <input
+                    className="input"
+                    value={newSupplierName}
+                    onChange={(e) => setNewSupplierName(e.target.value)}
+                    placeholder={t("suppliers.namePlaceholder")}
+                  />
+                  <button type="submit" className="btn btn-primary">
+                    {t("suppliers.addSupplier")}
+                  </button>
                 </form>
-                <button type="button" onClick={loadSuppliers}>{t("suppliers.refreshList")}</button>
-                <hr />
-                <h3>Fiches-recettes</h3>
-                <p className="muted">{t("suppliers.fichesSyncDesc")}</p>
-                <button type="button" onClick={onSyncFichesSnapshots} disabled={isFichesSyncing}>
-                  {isFichesSyncing ? t("suppliers.fichesSyncLoading") : t("suppliers.fichesSync")}
-                </button>
-                <p className="muted">{t("suppliers.fichesImportDesc")}</p>
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  onChange={(e) => setFichesJsonFile(e.target.files?.[0] ?? null)}
-                />
-                <button type="button" onClick={onImportFichesJsonEnvelope} disabled={isFichesJsonImporting || !fichesJsonFile}>
-                  {isFichesJsonImporting ? t("suppliers.fichesImportLoading") : t("suppliers.fichesImport")}
-                </button>
+                <div className="supplier-list">
+                  {filteredSuppliers.length === 0 ? (
+                    <div className="library-empty">{t("suppliers.empty")}</div>
+                  ) : (
+                    filteredSuppliers.map((supplier) => (
+                      <div key={supplier.id} className="supplier-card">
+                        <button
+                          className="supplier-card-content"
+                          type="button"
+                          onClick={() => {
+                            setSelectedSupplierId(supplier.id);
+                            setNewSupplierProductSupplierId(supplier.id);
+                          }}
+                        >
+                          <div className="supplier-title">{supplier.name}</div>
+                          <div className="supplier-meta">
+                            {supplier.vat_number
+                              ? t("suppliers.vatValue", { value: supplier.vat_number })
+                              : t("suppliers.vatMissing")}
+                          </div>
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
               </section>
               <section className="panel">
-                <h2>{t("suppliers.list")}</h2>
-                <ul className="clean-list">
-                  {suppliers.map((s) => (
-                    <li key={s.id}>{s.name}{s.vat_number ? ` - ${t("suppliers.vat")} ${s.vat_number}` : ""}</li>
-                  ))}
-                </ul>
+                <div className="library-header">
+                  <div>
+                    <h2 className="section-title">
+                      {selectedSupplierId ? t("suppliers.detailTitle") : t("suppliers.selectSupplierTitle")}
+                    </h2>
+                    <p className="muted">
+                      {selectedSupplierId ? t("suppliers.detailDesc") : t("suppliers.selectSupplierDesc")}
+                    </p>
+                  </div>
+                  <div className="library-actions">
+                    <button type="button" className="btn btn-outline" disabled>
+                      {t("suppliers.syncPreview")}
+                    </button>
+                  </div>
+                </div>
+                {selectedSupplierId ? (
+                  <>
+                    <form onSubmit={onCreateSupplierProduct}>
+                      <label>{t("suppliers.productFormSupplier")}</label>
+                      <select value={newSupplierProductSupplierId} onChange={(e) => setNewSupplierProductSupplierId(e.target.value)}>
+                        <option value="">{t("suppliers.selectSupplierOption")}</option>
+                        {suppliers.map((supplier) => (
+                          <option key={supplier.id} value={supplier.id}>
+                            {supplier.name}
+                          </option>
+                        ))}
+                      </select>
+                      <label>{t("suppliers.productFormName")}</label>
+                      <input value={newSupplierProductName} onChange={(e) => setNewSupplierProductName(e.target.value)} />
+                      <label>{t("suppliers.productFormSku")}</label>
+                      <input value={newSupplierProductSku} onChange={(e) => setNewSupplierProductSku(e.target.value)} />
+                      <label>{t("suppliers.productFormUom")}</label>
+                      <select value={newSupplierProductUom} onChange={(e) => setNewSupplierProductUom(e.target.value)}>
+                        <option value="kg">kg</option>
+                        <option value="g">g</option>
+                        <option value="l">l</option>
+                        <option value="ml">ml</option>
+                        <option value="cl">cl</option>
+                        <option value="pc">pc</option>
+                      </select>
+                      <label>{t("suppliers.productFormPackQty")}</label>
+                      <input value={newSupplierProductPackQty} onChange={(e) => setNewSupplierProductPackQty(e.target.value)} placeholder={t("suppliers.productFormPackQtyPlaceholder")} />
+                      <label>{t("suppliers.productFormCategory")}</label>
+                      <input value={newSupplierProductCategory} onChange={(e) => setNewSupplierProductCategory(e.target.value)} />
+                      <button type="submit">{t("suppliers.productFormCreate")}</button>
+                    </form>
+                    <div className="sheet-wrap">
+                      <table className="sheet-table">
+                        <thead>
+                          <tr>
+                            <th>{t("suppliers.tableProduct")}</th>
+                            <th>{t("suppliers.tableSku")}</th>
+                            <th>{t("suppliers.tableUom")}</th>
+                            <th>{t("suppliers.tableCategory")}</th>
+                            <th>{t("suppliers.tableActive")}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {isSupplierProductsLoading ? (
+                            <tr>
+                              <td colSpan={5}>{t("suppliers.loadingProducts")}</td>
+                            </tr>
+                          ) : supplierProducts.length === 0 ? (
+                            <tr>
+                              <td colSpan={5}>{t("suppliers.emptyProducts")}</td>
+                            </tr>
+                          ) : (
+                            supplierProducts.map((item, idx) => (
+                              <tr key={`sp-${idx}`}>
+                                <td>{String(item.name ?? "-")}</td>
+                                <td>{String(item.supplier_sku ?? "-")}</td>
+                                <td>{String(item.uom ?? "-")}</td>
+                                <td>{String(item.category ?? "-")}</td>
+                                <td>{String(item.active ?? "-")}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <p className="muted">{t("suppliers.selectSupplierHint")}</p>
+                )}
               </section>
             </div>
           )}
@@ -5821,12 +6281,32 @@ function App() {
                       {t("purchases.registerDocument")}
                     </button>
                   </div>
+                  {lastIngestError ? (
+                    <p className="muted">Erreur enregistrement: {lastIngestError}</p>
+                  ) : null}
                 </section>
               </div>
 
               <div className="grid grid-2">
                 <section className="panel">
-                  <h3>Bons de livraison archives</h3>
+                  <div className="doc-preview__head">
+                    <h3>Bons de livraison archives</h3>
+                    <div className="entry-actions">
+                      <button
+                        type="button"
+                        onClick={() => void onBulkIngestDocuments("goods_receipt")}
+                        disabled={!siteId || isBulkIngesting === "goods_receipt"}
+                      >
+                        {isBulkIngesting === "goods_receipt" ? t("purchases.processing") : "Enregistrer tous"}
+                      </button>
+                    </div>
+                  </div>
+                  {bulkIngestErrors.goods_receipt && bulkIngestErrors.goods_receipt.length > 0 ? (
+                    <div className="reconciliation-warning">
+                      {bulkIngestErrors.goods_receipt.slice(0, 5).join(" | ")}
+                      {bulkIngestErrors.goods_receipt.length > 5 ? " (+ autres)" : ""}
+                    </div>
+                  ) : null}
                   {archivedDeliveryNotes.length === 0 ? (
                     <p className="muted">Aucun bon archive.</p>
                   ) : (
@@ -5888,7 +6368,24 @@ function App() {
                 </section>
 
                 <section className="panel">
-                  <h3>Factures archives</h3>
+                  <div className="doc-preview__head">
+                    <h3>Factures archives</h3>
+                    <div className="entry-actions">
+                      <button
+                        type="button"
+                        onClick={() => void onBulkIngestDocuments("invoice")}
+                        disabled={!siteId || isBulkIngesting === "invoice"}
+                      >
+                        {isBulkIngesting === "invoice" ? t("purchases.processing") : "Enregistrer tous"}
+                      </button>
+                    </div>
+                  </div>
+                  {bulkIngestErrors.invoice && bulkIngestErrors.invoice.length > 0 ? (
+                    <div className="reconciliation-warning">
+                      {bulkIngestErrors.invoice.slice(0, 5).join(" | ")}
+                      {bulkIngestErrors.invoice.length > 5 ? " (+ autres)" : ""}
+                    </div>
+                  ) : null}
                   {archivedInvoices.length === 0 ? (
                     <p className="muted">Aucune facture archivee.</p>
                   ) : (
@@ -5915,6 +6412,136 @@ function App() {
                                 </div>
                               </td>
                               <td>{flowLabelForDocument(doc)}</td>
+                              <td>
+                                <div className="entry-actions">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedDocId(doc.id);
+                                      setSelectedDocType(doc.document_type);
+                                    }}
+                                  >
+                                    Ouvrir
+                                  </button>
+                                  {url ? (
+                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                      PDF
+                                    </a>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    className="danger-btn"
+                                    onClick={() => void onDeleteIntakeDocument(doc)}
+                                    disabled={isDeletingDocumentId === doc.id}
+                                  >
+                                    {isDeletingDocumentId === doc.id ? "Suppression..." : "Supprimer"}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+              </div>
+              <div className="grid grid-2">
+                <section className="panel">
+                  <div className="doc-preview__head">
+                    <h3>Duplicati BL (archivio)</h3>
+                  </div>
+                  {duplicateDeliveryNotes.length === 0 ? (
+                    <p className="muted">Aucun doublon BL.</p>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date import</th>
+                          <th>Document</th>
+                          <th>Duplicato di</th>
+                          <th>Motivo</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {duplicateDeliveryNotes.map((doc) => {
+                          const url = getDocumentFileUrl(doc);
+                          const meta = asRecord(doc.metadata);
+                          const dup = asRecord(meta.duplicate);
+                          const ingest = asRecord(meta.ingest);
+                          const duplicateOf = String(dup.duplicate_of ?? ingest.duplicate_of ?? "-");
+                          const reason = String(dup.reason ?? ingest.duplicate_reason ?? "-");
+                          return (
+                            <tr key={doc.id}>
+                              <td>{String(doc.created_at ?? "").slice(0, 10) || "-"}</td>
+                              <td>{doc.filename}</td>
+                              <td>{duplicateOf || "-"}</td>
+                              <td>{reason || "-"}</td>
+                              <td>
+                                <div className="entry-actions">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedDocId(doc.id);
+                                      setSelectedDocType(doc.document_type);
+                                    }}
+                                  >
+                                    Ouvrir
+                                  </button>
+                                  {url ? (
+                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                      PDF
+                                    </a>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    className="danger-btn"
+                                    onClick={() => void onDeleteIntakeDocument(doc)}
+                                    disabled={isDeletingDocumentId === doc.id}
+                                  >
+                                    {isDeletingDocumentId === doc.id ? "Suppression..." : "Supprimer"}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+                <section className="panel">
+                  <div className="doc-preview__head">
+                    <h3>Duplicati factures (archivio)</h3>
+                  </div>
+                  {duplicateInvoices.length === 0 ? (
+                    <p className="muted">Aucun doublon facture.</p>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date import</th>
+                          <th>Document</th>
+                          <th>Duplicato di</th>
+                          <th>Motivo</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {duplicateInvoices.map((doc) => {
+                          const url = getDocumentFileUrl(doc);
+                          const meta = asRecord(doc.metadata);
+                          const dup = asRecord(meta.duplicate);
+                          const ingest = asRecord(meta.ingest);
+                          const duplicateOf = String(dup.duplicate_of ?? ingest.duplicate_of ?? "-");
+                          const reason = String(dup.reason ?? ingest.duplicate_reason ?? "-");
+                          return (
+                            <tr key={doc.id}>
+                              <td>{String(doc.created_at ?? "").slice(0, 10) || "-"}</td>
+                              <td>{doc.filename}</td>
+                              <td>{duplicateOf || "-"}</td>
+                              <td>{reason || "-"}</td>
                               <td>
                                 <div className="entry-actions">
                                   <button
@@ -5982,9 +6609,14 @@ function App() {
             <section className="panel">
               <div className="doc-preview__head">
                 <h2>Stock - resultats entrees/sorties</h2>
-                <button type="button" onClick={loadStockSummary} disabled={!siteId || isInventoryLoading}>
-                  {isInventoryLoading ? t("purchases.processing") : t("suppliers.refreshList")}
-                </button>
+                <div className="entry-actions">
+                  <button type="button" onClick={rebuildStockFromPurchasing} disabled={!siteId || isRebuildingStock}>
+                    {isRebuildingStock ? t("purchases.processing") : "Ricostruisci stock da acquisti"}
+                  </button>
+                  <button type="button" onClick={loadStockSummary} disabled={!siteId || isInventoryLoading}>
+                    {isInventoryLoading ? t("purchases.processing") : t("suppliers.refreshList")}
+                  </button>
+                </div>
               </div>
               <div className="sheet-toolbar">
                 <input
@@ -6001,6 +6633,9 @@ function App() {
                   <thead>
                     <tr>
                       <th>Code fournisseur / Produit</th>
+                      <th>Nom article</th>
+                      <th>Fournisseur</th>
+                      <th>Categorie produit</th>
                       <th>{t("table.unit")}</th>
                       <th>Entrees BL/Facture</th>
                       <th>Entrees fallback facture</th>
@@ -6016,6 +6651,9 @@ function App() {
                     {filteredStockRows.map((row) => (
                       <tr key={`${row.product_key}-${row.qty_unit}`}>
                         <td>{row.product_label}</td>
+                        <td>{row.product_name || "-"}</td>
+                        <td>{row.supplier_name || "-"}</td>
+                        <td>{row.product_category || "-"}</td>
                         <td>{row.qty_unit}</td>
                         <td>{row.in_from_docs ?? "0.000"}</td>
                         <td>{row.in_from_invoice_fallback ?? "0.000"}</td>

@@ -480,9 +480,9 @@ class ServiceIngredientsView(APIView):
             if self._normalize_text(str(item.get("supplier") or ""))
         }
         ingredient_names = {
-            self._normalize_text(str(item.get("ingredient") or ""))
+            self._normalize_text(str(item.get("name") or item.get("ingredient") or ""))
             for item in ingredients
-            if self._normalize_text(str(item.get("ingredient") or ""))
+            if self._normalize_text(str(item.get("name") or item.get("ingredient") or ""))
         }
         if not supplier_names or not ingredient_names:
             return {}
@@ -527,7 +527,7 @@ class ServiceIngredientsView(APIView):
         if raw_code:
             return raw_code
         supplier_key = self._normalize_text(str(ingredient_item.get("supplier") or ""))
-        ingredient_key = self._normalize_text(str(ingredient_item.get("ingredient") or ""))
+        ingredient_key = self._normalize_text(str(ingredient_item.get("name") or ingredient_item.get("ingredient") or ""))
         if not supplier_key or not ingredient_key:
             return ""
         return code_lookup.get((supplier_key, ingredient_key), "")
