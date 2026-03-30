@@ -896,6 +896,8 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 
         import_serializer_class = GoodsReceiptSerializer if target == "goods_receipt" else InvoiceSerializer
         try:
+            lines = payload.get("lines") or []
+            supplier_id = str(payload.get("supplier") or "").strip()
             _apply_supplier_product_categories(lines, supplier_id)
             import_serializer = import_serializer_class(data=payload)
             import_serializer.is_valid(raise_exception=True)
