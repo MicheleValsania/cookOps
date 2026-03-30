@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from django.core.files.base import ContentFile
 
 from apps.core.models import Site
-from apps.integration.models import IntegrationDocument
+from apps.integration.models import DocumentExtraction, DocumentStatus, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
 from apps.integration.services.drive_client import DriveClient, DriveClientError
 
@@ -122,7 +122,24 @@ def import_drive_assets_for_site(
                 "extraction_status": "skipped",
             }
             if auto_extract:
-                extraction = run_claude_extraction(document)
+                result = run_claude_extraction(document)
+                extraction = DocumentExtraction.objects.create(
+                    document=document,
+                    extractor_name="claude",
+                    extractor_version=result.extractor_version,
+                    status=result.status,
+                    raw_payload=result.raw_payload,
+                    normalized_payload=result.normalized_payload,
+                    confidence=result.confidence,
+                    error_message=result.error_message,
+                )
+                document.status = (
+                    DocumentStatus.EXTRACTED
+                    if result.status == "succeeded"
+                    else DocumentStatus.FAILED
+                )
+                document.save(update_fields=["status", "updated_at"])
+                created_row["extraction_id"] = str(extraction.id)
                 created_row["extraction_status"] = extraction.status
                 if extraction.error_message:
                     created_row["extraction_error"] = extraction.error_message
