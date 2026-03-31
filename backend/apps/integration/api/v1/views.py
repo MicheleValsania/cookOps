@@ -301,6 +301,35 @@ def _apply_supplier_product_categories(lines, supplier_id: str | None):
         line["product_category"] = product.category
 
 
+def _apply_supplier_product_refs(lines, supplier_id: str | None):
+    if not supplier_id or not lines:
+        return
+    supplier_uuid = _safe_uuid(supplier_id)
+    if not supplier_uuid:
+        return
+    codes = {
+        str(line.get("supplier_code")).strip()
+        for line in lines
+        if isinstance(line, dict) and str(line.get("supplier_code") or "").strip()
+    }
+    if not codes:
+        return
+    products = SupplierProduct.objects.filter(supplier_id=supplier_uuid, supplier_sku__in=codes)
+    by_code = {str(p.supplier_sku or "").strip(): p for p in products}
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        code = str(line.get("supplier_code") or "").strip()
+        if not code:
+            line.pop("supplier_product", None)
+            continue
+        product = by_code.get(code)
+        if not product:
+            line.pop("supplier_product", None)
+            continue
+        line["supplier_product"] = str(product.id)
+
+
 def _is_unique_constraint_duplicate(exc: ValidationError) -> bool:
     field_errors = exc.detail if isinstance(exc.detail, dict) else {}
     non_field = field_errors.get("non_field_errors") if isinstance(field_errors, dict) else None
@@ -417,6 +446,7 @@ def _normalize_payload_for_ingest(payload: dict, target: str, document: Integrat
     site_id = _pick_first(source, "site", default=str(document.site_id))
     supplier_id = _resolve_supplier_id(source, _pick_first(source, "supplier"))
     lines = _normalize_lines(source.get("lines"), target)
+    _apply_supplier_product_refs(lines, supplier_id)
 
     if target == "goods_receipt":
         delivery_note_number = _pick_first(source, "delivery_note_number", "document_number", "invoice_number")
