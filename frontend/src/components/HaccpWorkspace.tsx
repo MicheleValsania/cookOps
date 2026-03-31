@@ -43,7 +43,7 @@ type HaccpScheduleItem = {
   starts_at: string;
   ends_at?: string | null;
   status: "planned" | "done" | "skipped" | "cancelled";
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | null;
 };
 
 type CleaningCategory = {
