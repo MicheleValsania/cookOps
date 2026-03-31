@@ -1097,7 +1097,11 @@ export function HaccpWorkspace(props: Props) {
             <h4>{t("cleaning.newElementTitle")}</h4>
             <form onSubmit={(e) => void onCreateCleaningElement(e)}>
               <label>{t("cleaning.elementName")}</label>
-              <input value={newCleaningElementName} onChange={(e) => setNewCleaningElementName(e.target.value)} placeholder="Es. Forno" />
+              <input
+                value={newCleaningElementName}
+                onChange={(e) => setNewCleaningElementName(e.target.value)}
+                placeholder={t("cleaning.elementNamePlaceholder")}
+              />
               <label>{t("cleaning.elementCategory")}</label>
               <select value={newCleaningElementCategory} onChange={(e) => setNewCleaningElementCategory(e.target.value)}>
                 <option value="">{t("cleaning.noneOption")}</option>
@@ -1146,15 +1150,27 @@ export function HaccpWorkspace(props: Props) {
             <h4>{t("cleaning.categoryTitle")}</h4>
             <form onSubmit={(e) => void onCreateCleaningCategory(e)}>
               <label>{t("cleaning.categoryName")}</label>
-              <input value={newCleaningCategoryName} onChange={(e) => setNewCleaningCategoryName(e.target.value)} placeholder="Es. Piano di lavoro" />
+              <input
+                value={newCleaningCategoryName}
+                onChange={(e) => setNewCleaningCategoryName(e.target.value)}
+                placeholder={t("cleaning.categoryNamePlaceholder")}
+              />
               <label>{t("cleaning.categoryDesc")}</label>
-              <input value={newCleaningCategoryDescription} onChange={(e) => setNewCleaningCategoryDescription(e.target.value)} placeholder="Es. superfici a contatto" />
+              <input
+                value={newCleaningCategoryDescription}
+                onChange={(e) => setNewCleaningCategoryDescription(e.target.value)}
+                placeholder={t("cleaning.categoryDescPlaceholder")}
+              />
               <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createCategory")}</button>
             </form>
             <h4>{t("cleaning.procedureTitle")}</h4>
             <form onSubmit={(e) => void onCreateCleaningProcedure(e)}>
               <label>{t("cleaning.procedureName")}</label>
-              <input value={newCleaningProcedureName} onChange={(e) => setNewCleaningProcedureName(e.target.value)} placeholder="Es. Sanificazione standard" />
+              <input
+                value={newCleaningProcedureName}
+                onChange={(e) => setNewCleaningProcedureName(e.target.value)}
+                placeholder={t("cleaning.procedureNamePlaceholder")}
+              />
               <label>{t("cleaning.procedureCategory")}</label>
               <select value={newCleaningProcedureCategory} onChange={(e) => setNewCleaningProcedureCategory(e.target.value)}>
                 <option value="">{t("cleaning.noneOption")}</option>
@@ -1165,7 +1181,11 @@ export function HaccpWorkspace(props: Props) {
               <label>{t("cleaning.procedureSteps")}</label>
               <textarea value={newCleaningProcedureSteps} onChange={(e) => setNewCleaningProcedureSteps(e.target.value)} rows={4} placeholder={t("cleaning.procedureStepsPlaceholder")} />
               <label>{t("cleaning.procedureNotes")}</label>
-              <input value={newCleaningProcedureNotes} onChange={(e) => setNewCleaningProcedureNotes(e.target.value)} placeholder="Es. usare guanti" />
+              <input
+                value={newCleaningProcedureNotes}
+                onChange={(e) => setNewCleaningProcedureNotes(e.target.value)}
+                placeholder={t("cleaning.procedureNotesPlaceholder")}
+              />
               <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createProcedure")}</button>
             </form>
           </section>
