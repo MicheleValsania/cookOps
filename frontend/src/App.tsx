@@ -3069,6 +3069,9 @@ function App() {
   async function onCreateCleaningPlan(e: FormEvent) {
     e.preventDefault();
     if (!siteId || !newCleaningPlanElementId) return;
+    if (isCleaningLoading) return;
+    setIsCleaningLoading(true);
+    try {
     const element = cleaningElements.find((item) => item.id === newCleaningPlanElementId);
     if (!element) return;
     const areaIds = newCleaningPlanAreaIds.length ? newCleaningPlanAreaIds : element.areas.map((area) => area.sector_id);
@@ -3078,6 +3081,15 @@ function App() {
     }
     for (const areaId of areaIds.length ? areaIds : [""]) {
       const area = haccpSectors.find((item) => item.id === areaId);
+      const existing = cleaningPlans.find((plan) => (
+        plan.element === element.id
+        && plan.cadence === newCleaningCadence
+        && String(plan.sector_id || "") === String(area ? area.id : "")
+      ));
+      if (existing) {
+        setNotice(t("cleaning.planAlreadyExists"));
+        continue;
+      }
       const res = await apiFetch("/haccp/cleaning/plans/", {
         method: "POST",
         body: JSON.stringify({
@@ -3100,7 +3112,7 @@ function App() {
       if (newCleaningCadence !== "after_use") {
         await apiFetch("/haccp/cleaning/plans/generate/", {
           method: "POST",
-          body: JSON.stringify({ plan_id: (body as CleaningPlan).id, horizon_days: 60 }),
+          body: JSON.stringify({ plan_id: (body as CleaningPlan).id, horizon_days: 14 }),
         });
       }
     }
@@ -3110,6 +3122,9 @@ function App() {
     setNewCleaningPlanAreaIds([]);
     await loadCleaningData();
     await loadHaccpData();
+    } finally {
+      setIsCleaningLoading(false);
+    }
   }
 
   async function onCompleteCleaningSchedules(scheduleIds: string[]) {

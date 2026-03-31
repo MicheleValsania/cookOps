@@ -460,8 +460,16 @@ export function HaccpWorkspace(props: Props) {
     onCreateHaccpLabelSession,
     t,
   } = props;
+  const [showCleaningFuture, setShowCleaningFuture] = useState(false);
+  const now = new Date();
   const cleaningSchedules = haccpSchedules.filter((item) => item.task_type === "cleaning");
-  const cleaningPlanned = cleaningSchedules.filter((item) => item.status === "planned");
+  const cleaningPlanned = cleaningSchedules.filter((item) => {
+    if (item.status !== "planned") return false;
+    if (showCleaningFuture) return true;
+    const startsAt = new Date(item.starts_at);
+    if (Number.isNaN(startsAt.getTime())) return false;
+    return startsAt <= now;
+  });
   const cleaningAfterUsePlans = cleaningPlans.filter((plan) => plan.cadence === "after_use");
   const cleaningGroups = cleaningPlanned.reduce((acc, item) => {
     const meta = (item.metadata || {}) as Record<string, unknown>;
@@ -1209,6 +1217,14 @@ export function HaccpWorkspace(props: Props) {
               <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createPlan")}</button>
             </form>
             <h4>{t("cleaning.groupValidateTitle")}</h4>
+            <label className="inline-check" style={{ marginBottom: 12 }}>
+              <input
+                type="checkbox"
+                checked={showCleaningFuture}
+                onChange={(event) => setShowCleaningFuture(event.target.checked)}
+              />
+              {t("cleaning.showFuture")}
+            </label>
             {cleaningGroupRows.length === 0 ? (
               <p className="muted">{t("cleaning.noPending")}</p>
             ) : (
