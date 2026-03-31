@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { FormEvent } from "react";
 
 type HaccpOcrQueueItem = {
@@ -42,6 +43,57 @@ type HaccpScheduleItem = {
   starts_at: string;
   ends_at?: string | null;
   status: "planned" | "done" | "skipped" | "cancelled";
+  metadata?: Record<string, unknown>;
+};
+
+type CleaningCategory = {
+  id: string;
+  name: string;
+  description?: string | null;
+  is_active?: boolean;
+};
+
+type CleaningProcedure = {
+  id: string;
+  category?: string | null;
+  name: string;
+  steps?: string[];
+  notes?: string | null;
+  is_active?: boolean;
+};
+
+type CleaningElementArea = {
+  id?: string;
+  sector_id: string;
+  sector_name: string;
+  sort_order?: number;
+  is_active?: boolean;
+};
+
+type CleaningElement = {
+  id: string;
+  site: string;
+  name: string;
+  category?: string | null;
+  procedure?: string | null;
+  is_global?: boolean;
+  is_active?: boolean;
+  metadata?: Record<string, unknown>;
+  areas: CleaningElementArea[];
+};
+
+type CleaningPlan = {
+  id: string;
+  site: string;
+  element: string;
+  sector_id?: string | null;
+  sector_name?: string | null;
+  cadence: string;
+  due_time: string;
+  start_date: string;
+  timezone?: string | null;
+  is_active?: boolean;
+  metadata?: Record<string, unknown>;
 };
 
 type HaccpLabelProfile = {
@@ -147,10 +199,10 @@ type HaccpAnomalyRow = {
   severity: string;
 };
 
-export const HACCP_VIEWS: Array<{ key: HaccpViewKey; label: string; desc: string }> = [
-  { key: "temperature", label: "Temperature", desc: "Programmazione per settore e punto freddo" },
-  { key: "labels", label: "Etichette", desc: "Profili e sessioni di stampa" },
-  { key: "cleaning", label: "Pulizie", desc: "Programmazione e convalida" },
+export const HACCP_VIEWS: Array<{ key: HaccpViewKey; labelKey: string; descKey: string }> = [
+  { key: "temperature", labelKey: "haccp.view.temperature", descKey: "haccp.view.temperatureDesc" },
+  { key: "labels", labelKey: "haccp.view.labels", descKey: "haccp.view.labelsDesc" },
+  { key: "cleaning", labelKey: "haccp.view.cleaning", descKey: "haccp.view.cleaningDesc" },
 ];
 
 type Props = {
@@ -173,6 +225,48 @@ type Props = {
   haccpAnomalyRows: HaccpAnomalyRow[];
   haccpSectors: HaccpSectorItem[];
   haccpColdPoints: HaccpColdPointItem[];
+  cleaningCategories: CleaningCategory[];
+  cleaningProcedures: CleaningProcedure[];
+  cleaningElements: CleaningElement[];
+  cleaningPlans: CleaningPlan[];
+  isCleaningLoading: boolean;
+  newCleaningCategoryName: string;
+  setNewCleaningCategoryName: (value: string) => void;
+  newCleaningCategoryDescription: string;
+  setNewCleaningCategoryDescription: (value: string) => void;
+  newCleaningProcedureName: string;
+  setNewCleaningProcedureName: (value: string) => void;
+  newCleaningProcedureCategory: string;
+  setNewCleaningProcedureCategory: (value: string) => void;
+  newCleaningProcedureSteps: string;
+  setNewCleaningProcedureSteps: (value: string) => void;
+  newCleaningProcedureNotes: string;
+  setNewCleaningProcedureNotes: (value: string) => void;
+  newCleaningElementName: string;
+  setNewCleaningElementName: (value: string) => void;
+  newCleaningElementCategory: string;
+  setNewCleaningElementCategory: (value: string) => void;
+  newCleaningElementProcedure: string;
+  setNewCleaningElementProcedure: (value: string) => void;
+  newCleaningElementIsGlobal: boolean;
+  setNewCleaningElementIsGlobal: (value: boolean) => void;
+  newCleaningElementAreaIds: string[];
+  setNewCleaningElementAreaIds: (value: string[]) => void;
+  newCleaningCadence: string;
+  setNewCleaningCadence: (value: string) => void;
+  newCleaningDueTime: string;
+  setNewCleaningDueTime: (value: string) => void;
+  newCleaningStartDate: string;
+  setNewCleaningStartDate: (value: string) => void;
+  newCleaningPlanElementId: string;
+  setNewCleaningPlanElementId: (value: string) => void;
+  newCleaningPlanAreaIds: string[];
+  setNewCleaningPlanAreaIds: (value: string[]) => void;
+  onCreateCleaningCategory: (e: FormEvent) => void | Promise<void>;
+  onCreateCleaningProcedure: (e: FormEvent) => void | Promise<void>;
+  onCreateCleaningElement: (e: FormEvent) => void | Promise<void>;
+  onCreateCleaningPlan: (e: FormEvent) => void | Promise<void>;
+  onCompleteCleaningSchedules: (scheduleIds: string[]) => void | Promise<void>;
   newHaccpTitle: string;
   setNewHaccpTitle: (value: string) => void;
   newHaccpArea: string;
@@ -261,6 +355,48 @@ export function HaccpWorkspace(props: Props) {
     haccpAnomalyRows,
     haccpSectors,
     haccpColdPoints,
+    cleaningCategories,
+    cleaningProcedures,
+    cleaningElements,
+    cleaningPlans,
+    isCleaningLoading,
+    newCleaningCategoryName,
+    setNewCleaningCategoryName,
+    newCleaningCategoryDescription,
+    setNewCleaningCategoryDescription,
+    newCleaningProcedureName,
+    setNewCleaningProcedureName,
+    newCleaningProcedureCategory,
+    setNewCleaningProcedureCategory,
+    newCleaningProcedureSteps,
+    setNewCleaningProcedureSteps,
+    newCleaningProcedureNotes,
+    setNewCleaningProcedureNotes,
+    newCleaningElementName,
+    setNewCleaningElementName,
+    newCleaningElementCategory,
+    setNewCleaningElementCategory,
+    newCleaningElementProcedure,
+    setNewCleaningElementProcedure,
+    newCleaningElementIsGlobal,
+    setNewCleaningElementIsGlobal,
+    newCleaningElementAreaIds,
+    setNewCleaningElementAreaIds,
+    newCleaningCadence,
+    setNewCleaningCadence,
+    newCleaningDueTime,
+    setNewCleaningDueTime,
+    newCleaningStartDate,
+    setNewCleaningStartDate,
+    newCleaningPlanElementId,
+    setNewCleaningPlanElementId,
+    newCleaningPlanAreaIds,
+    setNewCleaningPlanAreaIds,
+    onCreateCleaningCategory,
+    onCreateCleaningProcedure,
+    onCreateCleaningElement,
+    onCreateCleaningPlan,
+    onCompleteCleaningSchedules,
     newHaccpTitle,
     setNewHaccpTitle,
     newHaccpArea,
@@ -324,6 +460,22 @@ export function HaccpWorkspace(props: Props) {
     onCreateHaccpLabelSession,
     t,
   } = props;
+  const cleaningSchedules = haccpSchedules.filter((item) => item.task_type === "cleaning");
+  const cleaningPlanned = cleaningSchedules.filter((item) => item.status === "planned");
+  const cleaningAfterUsePlans = cleaningPlans.filter((plan) => plan.cadence === "after_use");
+  const cleaningGroups = cleaningPlanned.reduce((acc, item) => {
+    const meta = (item.metadata || {}) as Record<string, unknown>;
+    const cadence = String(meta.cleaning_cadence ?? "").trim() || "daily";
+    const areaLabel = String(item.sector_label || item.area || meta.cleaning_sector_name || "-");
+    const key = `${areaLabel}::${cadence}`;
+    const entry = acc.get(key) ?? { key, areaLabel, cadence, items: [] as HaccpScheduleItem[] };
+    entry.items.push(item);
+    acc.set(key, entry);
+    return acc;
+  }, new Map<string, { key: string; areaLabel: string; cadence: string; items: HaccpScheduleItem[] }>());
+  const cleaningGroupRows = Array.from(cleaningGroups.values());
+  const availableAreas = haccpSectors;
+  const [cleaningSelection, setCleaningSelection] = useState<Record<string, boolean>>({});
   const labelProfileGroups = haccpLabelProfiles.reduce<Record<string, HaccpLabelProfile[]>>((acc, item) => {
     const key = (item.category || "").trim() || "Senza categoria";
     if (!acc[key]) acc[key] = [];
@@ -365,11 +517,16 @@ export function HaccpWorkspace(props: Props) {
               className={haccpView === item.key ? "space-tab-btn space-tab-btn--active" : "space-tab-btn"}
               onClick={() => setHaccpView(item.key)}
             >
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </div>
-        <p className="muted">{HACCP_VIEWS.find((item) => item.key === haccpView)?.desc}</p>
+        <p className="muted">
+          {(() => {
+            const item = HACCP_VIEWS.find((entry) => entry.key === haccpView);
+            return item ? t(item.descKey) : "";
+          })()}
+        </p>
         <p className="muted">La gestione foto, OCR e dati estratti e stata spostata nella sezione Tracciabilita.</p>
         <p className="muted">Structure cible: site -&gt; secteur -&gt; point froid, avec planning saisi ici et execute dans Traccia.</p>
       </section>
@@ -896,38 +1053,219 @@ export function HaccpWorkspace(props: Props) {
       ) : (
         <div className="grid">
           <section className="panel">
-            <h2>7. Programmazione pulizie</h2>
-            <p className="muted">{t("haccp.cleaningDesc")}</p>
+            <h2>{t("cleaning.setupTitle")}</h2>
+            <p className="muted">{t("cleaning.setupDesc")}</p>
+            <h4>{t("cleaning.areasTitle")}</h4>
             <ul className="clean-list">
-              {haccpSchedules
-                .filter((item) => item.task_type === "cleaning")
-                .slice(0, 12)
-                .map((item) => (
-                  <li key={item.id}>
-                    {item.title} - {String(item.starts_at).replace("T", " ").slice(0, 16)} [{item.status}]
-                    <span className="entry-actions">
-                      <button type="button" onClick={() => onSetHaccpScheduleStatus(item.id, "done")}>Convalida esecuzione</button>
-                      <button type="button" className="danger-btn" onClick={() => onDeleteHaccpSchedule(item.id)}>Elimina</button>
-                    </span>
-                  </li>
-                ))}
+              {availableAreas.length === 0 ? (
+                <li className="muted">{t("cleaning.noAreas")}</li>
+              ) : (
+                availableAreas.map((area) => (
+                  <li key={area.id}>{area.name}</li>
+                ))
+              )}
             </ul>
-          </section>
-          <section className="panel">
-            <h2>Nuovo piano pulizie</h2>
-            <form onSubmit={(e) => void onCreateHaccpSchedule(e, "cleaning")}>
-              <label>Titolo</label>
-              <input value={newHaccpTitle} onChange={(e) => setNewHaccpTitle(e.target.value)} placeholder="Es. Sanificazione banco salumi" />
-              <label>Area / attrezzatura</label>
-              <input value={newHaccpArea} onChange={(e) => setNewHaccpArea(e.target.value)} placeholder="Es. Banco frigo esposizione" />
-              <label>Inizio</label>
-              <input type="datetime-local" value={newHaccpStartsAt} onChange={(e) => setNewHaccpStartsAt(e.target.value)} />
-              <label>Fine</label>
-              <input type="datetime-local" value={newHaccpEndsAt} onChange={(e) => setNewHaccpEndsAt(e.target.value)} />
-              <button type="submit" disabled={isHaccpSaving}>{isHaccpSaving ? t("action.loading") : "Pianifica pulizia"}</button>
+            <h4>{t("cleaning.elementsTitle")}</h4>
+            <ul className="clean-list">
+              {cleaningElements.length === 0 ? (
+                <li className="muted">{t("cleaning.noElements")}</li>
+              ) : (
+                cleaningElements.map((element) => (
+                  <li key={element.id}>
+                    <strong>{element.name}</strong>
+                    {element.category ? ` ? ${cleaningCategories.find((cat) => cat.id === element.category)?.name ?? ""}` : ""}
+                    {element.procedure ? ` ? ${cleaningProcedures.find((proc) => proc.id === element.procedure)?.name ?? ""}` : ""}
+                    <div className="muted">
+                      {t("cleaning.elementAreas")}: {element.areas.map((area) => area.sector_name).join(", ") || "-"}
+                    </div>
+                  </li>
+                ))
+              )}
+            </ul>
+            <h4>{t("cleaning.newElementTitle")}</h4>
+            <form onSubmit={(e) => void onCreateCleaningElement(e)}>
+              <label>{t("cleaning.elementName")}</label>
+              <input value={newCleaningElementName} onChange={(e) => setNewCleaningElementName(e.target.value)} placeholder="Es. Forno" />
+              <label>{t("cleaning.elementCategory")}</label>
+              <select value={newCleaningElementCategory} onChange={(e) => setNewCleaningElementCategory(e.target.value)}>
+                <option value="">{t("cleaning.noneOption")}</option>
+                {cleaningCategories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>{cat.name}</option>
+                ))}
+              </select>
+              <label>{t("cleaning.elementProcedure")}</label>
+              <select value={newCleaningElementProcedure} onChange={(e) => setNewCleaningElementProcedure(e.target.value)}>
+                <option value="">{t("cleaning.noneOption")}</option>
+                {cleaningProcedures.map((proc) => (
+                  <option key={proc.id} value={proc.id}>{proc.name}</option>
+                ))}
+              </select>
+              <label className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={newCleaningElementIsGlobal}
+                  onChange={(e) => setNewCleaningElementIsGlobal(e.target.checked)}
+                />
+                {t("cleaning.elementGlobal")}
+              </label>
+              <label>{t("cleaning.elementAreas")}</label>
+              <div className="inline-options">
+                {availableAreas.map((area) => {
+                  const checked = newCleaningElementAreaIds.includes(area.id);
+                  return (
+                    <label key={area.id} className="inline-check">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const next = checked
+                            ? newCleaningElementAreaIds.filter((id) => id !== area.id)
+                            : [...newCleaningElementAreaIds, area.id];
+                          setNewCleaningElementAreaIds(next);
+                        }}
+                      />
+                      {area.name}
+                    </label>
+                  );
+                })}
+              </div>
+              <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createElement")}</button>
+            </form>
+            <h4>{t("cleaning.categoryTitle")}</h4>
+            <form onSubmit={(e) => void onCreateCleaningCategory(e)}>
+              <label>{t("cleaning.categoryName")}</label>
+              <input value={newCleaningCategoryName} onChange={(e) => setNewCleaningCategoryName(e.target.value)} placeholder="Es. Piano di lavoro" />
+              <label>{t("cleaning.categoryDesc")}</label>
+              <input value={newCleaningCategoryDescription} onChange={(e) => setNewCleaningCategoryDescription(e.target.value)} placeholder="Es. superfici a contatto" />
+              <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createCategory")}</button>
+            </form>
+            <h4>{t("cleaning.procedureTitle")}</h4>
+            <form onSubmit={(e) => void onCreateCleaningProcedure(e)}>
+              <label>{t("cleaning.procedureName")}</label>
+              <input value={newCleaningProcedureName} onChange={(e) => setNewCleaningProcedureName(e.target.value)} placeholder="Es. Sanificazione standard" />
+              <label>{t("cleaning.procedureCategory")}</label>
+              <select value={newCleaningProcedureCategory} onChange={(e) => setNewCleaningProcedureCategory(e.target.value)}>
+                <option value="">{t("cleaning.noneOption")}</option>
+                {cleaningCategories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>{cat.name}</option>
+                ))}
+              </select>
+              <label>{t("cleaning.procedureSteps")}</label>
+              <textarea value={newCleaningProcedureSteps} onChange={(e) => setNewCleaningProcedureSteps(e.target.value)} rows={4} placeholder={t("cleaning.procedureStepsPlaceholder")} />
+              <label>{t("cleaning.procedureNotes")}</label>
+              <input value={newCleaningProcedureNotes} onChange={(e) => setNewCleaningProcedureNotes(e.target.value)} placeholder="Es. usare guanti" />
+              <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createProcedure")}</button>
             </form>
           </section>
+          <section className="panel">
+            <h2>{t("cleaning.planTitle")}</h2>
+            <p className="muted">{t("cleaning.planDesc")}</p>
+            <form onSubmit={(e) => void onCreateCleaningPlan(e)}>
+              <label>{t("cleaning.planElement")}</label>
+              <select value={newCleaningPlanElementId} onChange={(e) => setNewCleaningPlanElementId(e.target.value)}>
+                <option value="">{t("cleaning.selectElement")}</option>
+                {cleaningElements.map((element) => (
+                  <option key={element.id} value={element.id}>{element.name}</option>
+                ))}
+              </select>
+              <label>{t("cleaning.cadence")}</label>
+              <select value={newCleaningCadence} onChange={(e) => setNewCleaningCadence(e.target.value)}>
+                <option value="after_use">{t("cleaning.cadence.after_use")}</option>
+                <option value="end_of_service">{t("cleaning.cadence.end_of_service")}</option>
+                <option value="daily">{t("cleaning.cadence.daily")}</option>
+                <option value="twice_weekly">{t("cleaning.cadence.twice_weekly")}</option>
+                <option value="weekly">{t("cleaning.cadence.weekly")}</option>
+                <option value="fortnightly">{t("cleaning.cadence.fortnightly")}</option>
+                <option value="monthly">{t("cleaning.cadence.monthly")}</option>
+                <option value="quarterly">{t("cleaning.cadence.quarterly")}</option>
+                <option value="semiannual">{t("cleaning.cadence.semiannual")}</option>
+                <option value="annual">{t("cleaning.cadence.annual")}</option>
+              </select>
+              <label>{t("cleaning.planAreas")}</label>
+              <div className="inline-options">
+                {availableAreas.map((area) => {
+                  const checked = newCleaningPlanAreaIds.includes(area.id);
+                  return (
+                    <label key={area.id} className="inline-check">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const next = checked
+                            ? newCleaningPlanAreaIds.filter((id) => id !== area.id)
+                            : [...newCleaningPlanAreaIds, area.id];
+                          setNewCleaningPlanAreaIds(next);
+                        }}
+                      />
+                      {area.name}
+                    </label>
+                  );
+                })}
+              </div>
+              <label>{t("cleaning.planStartDate")}</label>
+              <input type="date" value={newCleaningStartDate} onChange={(e) => setNewCleaningStartDate(e.target.value)} />
+              <label>{t("cleaning.planDueTime")}</label>
+              <input type="time" value={newCleaningDueTime} onChange={(e) => setNewCleaningDueTime(e.target.value)} />
+              <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createPlan")}</button>
+            </form>
+            <h4>{t("cleaning.groupValidateTitle")}</h4>
+            {cleaningGroupRows.length === 0 ? (
+              <p className="muted">{t("cleaning.noPending")}</p>
+            ) : (
+              cleaningGroupRows.map((group) => (
+                <div key={group.key} style={{ marginBottom: 16 }}>
+                  <strong>{group.areaLabel} ? {t(`cleaning.cadence.${group.cadence}`)}</strong>
+                  <ul className="clean-list">
+                    {group.items.map((item) => (
+                      <li key={item.id}>
+                        <label className="inline-check">
+                          {(() => {
+                          const checked = cleaningSelection[item.id] ?? true;
+                          return (
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setCleaningSelection((prev) => ({ ...prev, [item.id]: !checked }));
+                              }}
+                            />
+                          );
+                        })()}
+                          {item.title} ({String(item.starts_at).replace("T", " ").slice(0, 16)})
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const selected = group.items.filter((item) => cleaningSelection[item.id] ?? true).map((item) => item.id);
+                      void onCompleteCleaningSchedules(selected);
+                    }}
+                  >
+                    {t("cleaning.confirmGroup")}
+                  </button>
+                </div>
+              ))
+            )}
+            <h4>{t("cleaning.afterUseTitle")}</h4>
+            {cleaningAfterUsePlans.length === 0 ? (
+              <p className="muted">{t("cleaning.noAfterUse")}</p>
+            ) : (
+              <ul className="clean-list">
+                {cleaningAfterUsePlans.map((plan) => {
+                  const element = cleaningElements.find((item) => item.id === plan.element);
+                  return (
+                    <li key={plan.id}>
+                      {element?.name || plan.element} ? {plan.sector_name || "-"}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
         </div>
+      )}        </div>
       )}
     </div>
   );

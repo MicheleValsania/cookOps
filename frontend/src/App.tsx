@@ -167,6 +167,57 @@ type HaccpScheduleItem = {
   starts_at: string;
   ends_at?: string | null;
   status: "planned" | "done" | "skipped" | "cancelled";
+  metadata?: Record<string, unknown>;
+};
+
+type CleaningCategory = {
+  id: string;
+  name: string;
+  description?: string | null;
+  is_active?: boolean;
+};
+
+type CleaningProcedure = {
+  id: string;
+  category?: string | null;
+  name: string;
+  steps?: string[];
+  notes?: string | null;
+  is_active?: boolean;
+};
+
+type CleaningElementArea = {
+  id?: string;
+  sector_id: string;
+  sector_name: string;
+  sort_order?: number;
+  is_active?: boolean;
+};
+
+type CleaningElement = {
+  id: string;
+  site: string;
+  name: string;
+  category?: string | null;
+  procedure?: string | null;
+  is_global?: boolean;
+  is_active?: boolean;
+  metadata?: Record<string, unknown>;
+  areas: CleaningElementArea[];
+};
+
+type CleaningPlan = {
+  id: string;
+  site: string;
+  element: string;
+  sector_id?: string | null;
+  sector_name?: string | null;
+  cadence: string;
+  due_time: string;
+  start_date: string;
+  timezone?: string | null;
+  is_active?: boolean;
+  metadata?: Record<string, unknown>;
 };
 
 type HaccpTemperatureReadingItem = {
@@ -784,6 +835,7 @@ function normalizeHaccpScheduleRows(body: unknown): HaccpScheduleItem[] {
     starts_at: String(row.starts_at ?? row.start_at ?? row.scheduled_for ?? ""),
     ends_at: String(row.ends_at ?? row.end_at ?? ""),
     status: String(row.status ?? "planned") as "planned" | "done" | "skipped" | "cancelled",
+    metadata: (row.metadata ?? null) as Record<string, unknown> | null,
   })).filter((row) => row.id.trim().length > 0);
 }
 
@@ -1048,6 +1100,27 @@ function App() {
   const [haccpOcrQueue, setHaccpOcrQueue] = useState<HaccpOcrQueueItem[]>([]);
   const [haccpLifecycleEvents, setHaccpLifecycleEvents] = useState<HaccpLifecycleEvent[]>([]);
   const [haccpSchedules, setHaccpSchedules] = useState<HaccpScheduleItem[]>([]);
+  const [cleaningCategories, setCleaningCategories] = useState<CleaningCategory[]>([]);
+  const [cleaningProcedures, setCleaningProcedures] = useState<CleaningProcedure[]>([]);
+  const [cleaningElements, setCleaningElements] = useState<CleaningElement[]>([]);
+  const [cleaningPlans, setCleaningPlans] = useState<CleaningPlan[]>([]);
+  const [isCleaningLoading, setIsCleaningLoading] = useState(false);
+  const [newCleaningCategoryName, setNewCleaningCategoryName] = useState("");
+  const [newCleaningCategoryDescription, setNewCleaningCategoryDescription] = useState("");
+  const [newCleaningProcedureName, setNewCleaningProcedureName] = useState("");
+  const [newCleaningProcedureCategory, setNewCleaningProcedureCategory] = useState("");
+  const [newCleaningProcedureSteps, setNewCleaningProcedureSteps] = useState("");
+  const [newCleaningProcedureNotes, setNewCleaningProcedureNotes] = useState("");
+  const [newCleaningElementName, setNewCleaningElementName] = useState("");
+  const [newCleaningElementCategory, setNewCleaningElementCategory] = useState("");
+  const [newCleaningElementProcedure, setNewCleaningElementProcedure] = useState("");
+  const [newCleaningElementIsGlobal, setNewCleaningElementIsGlobal] = useState(false);
+  const [newCleaningElementAreaIds, setNewCleaningElementAreaIds] = useState<string[]>([]);
+  const [newCleaningCadence, setNewCleaningCadence] = useState("daily");
+  const [newCleaningDueTime, setNewCleaningDueTime] = useState("01:00");
+  const [newCleaningStartDate, setNewCleaningStartDate] = useState(getTodayIsoDate());
+  const [newCleaningPlanElementId, setNewCleaningPlanElementId] = useState("");
+  const [newCleaningPlanAreaIds, setNewCleaningPlanAreaIds] = useState<string[]>([]);
   const [haccpLabelProfiles, setHaccpLabelProfiles] = useState<HaccpLabelProfile[]>([]);
   const [haccpLabelSessions, setHaccpLabelSessions] = useState<HaccpLabelSession[]>([]);
   const [haccpSectors, setHaccpSectors] = useState<HaccpSectorItem[]>([]);
@@ -2823,6 +2896,7 @@ function App() {
         setHaccpColdPoints(normalizeHaccpColdPointRows(coldPoints.body));
         setHaccpTemperatureReadings(normalizeHaccpTemperatureReadingRows(temperatureReadings.body));
         setHaccpReconciliationOverview(overview.ok ? normalizeHaccpReconciliationOverview(overview.body) : null);
+        await loadCleaningData();
         return;
       }
 
@@ -2883,6 +2957,176 @@ function App() {
       setIsHaccpLoading(false);
     }
   }
+  async function loadCleaningData() {
+    if (!siteId) return;
+    setIsCleaningLoading(true);
+    try {
+      const [categoriesRes, proceduresRes, elementsRes, plansRes] = await Promise.all([
+        apiFetch("/haccp/cleaning/categories/"),
+        apiFetch("/haccp/cleaning/procedures/"),
+        apiFetch(`/haccp/cleaning/elements/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/haccp/cleaning/plans/?site=${encodeURIComponent(siteId)}`),
+      ]);
+      const [categories, procedures, elements, plans] = await Promise.all([
+        categoriesRes.json().catch(() => []),
+        proceduresRes.json().catch(() => []),
+        elementsRes.json().catch(() => []),
+        plansRes.json().catch(() => []),
+      ]);
+      if (categoriesRes.ok) setCleaningCategories(categories as CleaningCategory[]);
+      if (proceduresRes.ok) setCleaningProcedures(procedures as CleaningProcedure[]);
+      if (elementsRes.ok) setCleaningElements(elements as CleaningElement[]);
+      if (plansRes.ok) setCleaningPlans(plans as CleaningPlan[]);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsCleaningLoading(false);
+    }
+  }
+
+  async function onCreateCleaningCategory(e: FormEvent) {
+    e.preventDefault();
+    const name = newCleaningCategoryName.trim();
+    if (!name) return;
+    const res = await apiFetch("/haccp/cleaning/categories/", {
+      method: "POST",
+      body: JSON.stringify({ name, description: newCleaningCategoryDescription.trim() || null, is_active: true }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setNewCleaningCategoryName("");
+    setNewCleaningCategoryDescription("");
+    await loadCleaningData();
+  }
+
+  async function onCreateCleaningProcedure(e: FormEvent) {
+    e.preventDefault();
+    const name = newCleaningProcedureName.trim();
+    if (!name) return;
+    const steps = newCleaningProcedureSteps
+      .split("
+")
+      .map((row) => row.trim())
+      .filter(Boolean);
+    const res = await apiFetch("/haccp/cleaning/procedures/", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        category: newCleaningProcedureCategory || null,
+        steps,
+        notes: newCleaningProcedureNotes.trim() || null,
+        is_active: true,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setNewCleaningProcedureName("");
+    setNewCleaningProcedureCategory("");
+    setNewCleaningProcedureSteps("");
+    setNewCleaningProcedureNotes("");
+    await loadCleaningData();
+  }
+
+  async function onCreateCleaningElement(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId) return;
+    const name = newCleaningElementName.trim();
+    if (!name) return;
+    const selectedAreas = (newCleaningElementAreaIds.length ? newCleaningElementAreaIds : []).map((sectorId, index) => {
+      const sector = haccpSectors.find((item) => item.id === sectorId);
+      return sector ? { sector_id: sector.id, sector_name: sector.name, sort_order: index } : null;
+    }).filter(Boolean) as Array<{ sector_id: string; sector_name: string; sort_order: number }>;
+    const res = await apiFetch("/haccp/cleaning/elements/", {
+      method: "POST",
+      body: JSON.stringify({
+        site: siteId,
+        name,
+        category: newCleaningElementCategory || null,
+        procedure: newCleaningElementProcedure || null,
+        is_global: newCleaningElementIsGlobal,
+        is_active: true,
+        areas: selectedAreas,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setNewCleaningElementName("");
+    setNewCleaningElementCategory("");
+    setNewCleaningElementProcedure("");
+    setNewCleaningElementIsGlobal(false);
+    setNewCleaningElementAreaIds([]);
+    await loadCleaningData();
+  }
+
+  async function onCreateCleaningPlan(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId || !newCleaningPlanElementId) return;
+    const element = cleaningElements.find((item) => item.id === newCleaningPlanElementId);
+    if (!element) return;
+    const areaIds = newCleaningPlanAreaIds.length ? newCleaningPlanAreaIds : element.areas.map((area) => area.sector_id);
+    if (!areaIds.length && newCleaningCadence !== "after_use") {
+      setNotice(t("validation.selectArea"));
+      return;
+    }
+    for (const areaId of areaIds.length ? areaIds : [""]) {
+      const area = haccpSectors.find((item) => item.id === areaId);
+      const res = await apiFetch("/haccp/cleaning/plans/", {
+        method: "POST",
+        body: JSON.stringify({
+          site: siteId,
+          element: element.id,
+          sector_id: area ? area.id : null,
+          sector_name: area ? area.name : null,
+          cadence: newCleaningCadence,
+          due_time: newCleaningDueTime,
+          start_date: newCleaningStartDate,
+          timezone: "Europe/Paris",
+          is_active: true,
+        }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+        return;
+      }
+      if (newCleaningCadence !== "after_use") {
+        await apiFetch("/haccp/cleaning/plans/generate/", {
+          method: "POST",
+          body: JSON.stringify({ plan_id: (body as CleaningPlan).id, horizon_days: 60 }),
+        });
+      }
+    }
+    setNewCleaningCadence("daily");
+    setNewCleaningDueTime("01:00");
+    setNewCleaningStartDate(getTodayIsoDate());
+    setNewCleaningPlanAreaIds([]);
+    await loadCleaningData();
+    await loadHaccpData();
+  }
+
+  async function onCompleteCleaningSchedules(scheduleIds: string[]) {
+    if (!scheduleIds.length) return;
+    const res = await apiFetch("/haccp/cleaning/schedules/complete/", {
+      method: "POST",
+      body: JSON.stringify({ schedule_ids: scheduleIds }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+      return;
+    }
+    await loadHaccpData();
+  }
+
 
   async function loadCentralTraceabilityReconciliation() {
     if (sites.length === 0) return;
@@ -6779,6 +7023,43 @@ function App() {
               haccpAnomalyRows={haccpAnomalyRows}
               haccpSectors={haccpSectors}
               haccpColdPoints={filteredHaccpColdPoints}
+              cleaningCategories={cleaningCategories}
+              cleaningProcedures={cleaningProcedures}
+              cleaningElements={cleaningElements}
+              cleaningPlans={cleaningPlans}
+              isCleaningLoading={isCleaningLoading}
+              newCleaningCategoryName={newCleaningCategoryName}
+              setNewCleaningCategoryName={setNewCleaningCategoryName}
+              newCleaningCategoryDescription={newCleaningCategoryDescription}
+              setNewCleaningCategoryDescription={setNewCleaningCategoryDescription}
+              newCleaningProcedureName={newCleaningProcedureName}
+              setNewCleaningProcedureName={setNewCleaningProcedureName}
+              newCleaningProcedureCategory={newCleaningProcedureCategory}
+              setNewCleaningProcedureCategory={setNewCleaningProcedureCategory}
+              newCleaningProcedureSteps={newCleaningProcedureSteps}
+              setNewCleaningProcedureSteps={setNewCleaningProcedureSteps}
+              newCleaningProcedureNotes={newCleaningProcedureNotes}
+              setNewCleaningProcedureNotes={setNewCleaningProcedureNotes}
+              newCleaningElementName={newCleaningElementName}
+              setNewCleaningElementName={setNewCleaningElementName}
+              newCleaningElementCategory={newCleaningElementCategory}
+              setNewCleaningElementCategory={setNewCleaningElementCategory}
+              newCleaningElementProcedure={newCleaningElementProcedure}
+              setNewCleaningElementProcedure={setNewCleaningElementProcedure}
+              newCleaningElementIsGlobal={newCleaningElementIsGlobal}
+              setNewCleaningElementIsGlobal={setNewCleaningElementIsGlobal}
+              newCleaningElementAreaIds={newCleaningElementAreaIds}
+              setNewCleaningElementAreaIds={setNewCleaningElementAreaIds}
+              newCleaningCadence={newCleaningCadence}
+              setNewCleaningCadence={setNewCleaningCadence}
+              newCleaningDueTime={newCleaningDueTime}
+              setNewCleaningDueTime={setNewCleaningDueTime}
+              newCleaningStartDate={newCleaningStartDate}
+              setNewCleaningStartDate={setNewCleaningStartDate}
+              newCleaningPlanElementId={newCleaningPlanElementId}
+              setNewCleaningPlanElementId={setNewCleaningPlanElementId}
+              newCleaningPlanAreaIds={newCleaningPlanAreaIds}
+              setNewCleaningPlanAreaIds={setNewCleaningPlanAreaIds}
               newHaccpTitle={newHaccpTitle}
               setNewHaccpTitle={setNewHaccpTitle}
               newHaccpArea={newHaccpArea}
@@ -6832,6 +7113,11 @@ function App() {
               onCreateHaccpSector={onCreateHaccpSector}
               onEditHaccpSector={onEditHaccpSector}
               onDeleteHaccpSector={onDeleteHaccpSector}
+              onCreateCleaningCategory={onCreateCleaningCategory}
+              onCreateCleaningProcedure={onCreateCleaningProcedure}
+              onCreateCleaningElement={onCreateCleaningElement}
+              onCreateCleaningPlan={onCreateCleaningPlan}
+              onCompleteCleaningSchedules={onCompleteCleaningSchedules}
               onCreateHaccpColdPoint={onCreateHaccpColdPoint}
               onEditHaccpColdPoint={onEditHaccpColdPoint}
               onDeleteHaccpColdPoint={onDeleteHaccpColdPoint}

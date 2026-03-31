@@ -20,6 +20,18 @@ from apps.integration.api.v1.haccp_views import (
     HaccpScheduleDetailView,
     HaccpScheduleListCreateView,
 )
+from apps.integration.api.v1.cleaning_views import (
+    CleaningBatchCompleteView,
+    CleaningCategoryDetailView,
+    CleaningCategoryListCreateView,
+    CleaningElementDetailView,
+    CleaningElementListCreateView,
+    CleaningPlanDetailView,
+    CleaningPlanGenerateView,
+    CleaningPlanListCreateView,
+    CleaningProcedureDetailView,
+    CleaningProcedureListCreateView,
+)
 from apps.integration.api.v1.views import (
     DriveAssetImportView,
     DocumentClaudeExtractView,
@@ -164,6 +176,56 @@ urlpatterns = [
         "haccp/schedules/<uuid:schedule_id>/",
         HaccpScheduleDetailView.as_view(),
         name="haccp-schedule-detail",
+    ),
+    path(
+        "haccp/cleaning/categories/",
+        CleaningCategoryListCreateView.as_view(),
+        name="haccp-cleaning-category-list-create",
+    ),
+    path(
+        "haccp/cleaning/categories/<uuid:category_id>/",
+        CleaningCategoryDetailView.as_view(),
+        name="haccp-cleaning-category-detail",
+    ),
+    path(
+        "haccp/cleaning/procedures/",
+        CleaningProcedureListCreateView.as_view(),
+        name="haccp-cleaning-procedure-list-create",
+    ),
+    path(
+        "haccp/cleaning/procedures/<uuid:procedure_id>/",
+        CleaningProcedureDetailView.as_view(),
+        name="haccp-cleaning-procedure-detail",
+    ),
+    path(
+        "haccp/cleaning/elements/",
+        CleaningElementListCreateView.as_view(),
+        name="haccp-cleaning-element-list-create",
+    ),
+    path(
+        "haccp/cleaning/elements/<uuid:element_id>/",
+        CleaningElementDetailView.as_view(),
+        name="haccp-cleaning-element-detail",
+    ),
+    path(
+        "haccp/cleaning/plans/",
+        CleaningPlanListCreateView.as_view(),
+        name="haccp-cleaning-plan-list-create",
+    ),
+    path(
+        "haccp/cleaning/plans/<uuid:plan_id>/",
+        CleaningPlanDetailView.as_view(),
+        name="haccp-cleaning-plan-detail",
+    ),
+    path(
+        "haccp/cleaning/plans/generate/",
+        CleaningPlanGenerateView.as_view(),
+        name="haccp-cleaning-plan-generate",
+    ),
+    path(
+        "haccp/cleaning/schedules/complete/",
+        CleaningBatchCompleteView.as_view(),
+        name="haccp-cleaning-schedule-complete",
     ),
     path(
         "haccp/label-profiles/",

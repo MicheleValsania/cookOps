@@ -203,3 +203,138 @@ class TraceabilityReconciliationDecision(models.Model):
 
     def __str__(self) -> str:
         return f"{self.site_id}:{self.event_id}:{self.decision_status}"
+
+
+class CleaningCadence(models.TextChoices):
+    AFTER_USE = "after_use", "after_use"
+    END_OF_SERVICE = "end_of_service", "end_of_service"
+    DAILY = "daily", "daily"
+    TWICE_WEEKLY = "twice_weekly", "twice_weekly"
+    WEEKLY = "weekly", "weekly"
+    FORTNIGHTLY = "fortnightly", "fortnightly"
+    MONTHLY = "monthly", "monthly"
+    QUARTERLY = "quarterly", "quarterly"
+    SEMIANNUAL = "semiannual", "semiannual"
+    ANNUAL = "annual", "annual"
+
+
+class CleaningCategory(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=160)
+    description = models.TextField(blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "cleaning_category"
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class CleaningProcedure(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    category = models.ForeignKey(
+        CleaningCategory,
+        on_delete=models.SET_NULL,
+        related_name="procedures",
+        blank=True,
+        null=True,
+    )
+    name = models.CharField(max_length=200)
+    steps = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "cleaning_procedure"
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class CleaningElement(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name="cleaning_elements")
+    name = models.CharField(max_length=200)
+    category = models.ForeignKey(
+        CleaningCategory,
+        on_delete=models.SET_NULL,
+        related_name="elements",
+        blank=True,
+        null=True,
+    )
+    procedure = models.ForeignKey(
+        CleaningProcedure,
+        on_delete=models.SET_NULL,
+        related_name="elements",
+        blank=True,
+        null=True,
+    )
+    is_global = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "cleaning_element"
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.site_id})"
+
+
+class CleaningElementArea(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    element = models.ForeignKey(CleaningElement, on_delete=models.CASCADE, related_name="areas")
+    sector_id = models.UUIDField()
+    sector_name = models.CharField(max_length=160)
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "cleaning_element_area"
+        ordering = ["sort_order", "sector_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["element", "sector_id"],
+                name="uq_cleaning_element_area_element_sector",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.element_id}:{self.sector_name}"
+
+
+class CleaningPlan(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name="cleaning_plans")
+    element = models.ForeignKey(CleaningElement, on_delete=models.CASCADE, related_name="plans")
+    sector_id = models.UUIDField(blank=True, null=True)
+    sector_name = models.CharField(max_length=160, blank=True, null=True)
+    cadence = models.CharField(max_length=32, choices=CleaningCadence.choices, default=CleaningCadence.DAILY)
+    due_time = models.TimeField()
+    start_date = models.DateField()
+    timezone = models.CharField(max_length=64, default="Europe/Paris")
+    is_active = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "cleaning_plan"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["site", "cadence"], name="idx_cleaning_plan_site_cadence"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.site_id}:{self.element_id}:{self.cadence}"

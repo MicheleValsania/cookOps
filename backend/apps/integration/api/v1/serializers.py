@@ -1,6 +1,11 @@
 ﻿from rest_framework import serializers
 
 from apps.integration.models import (
+    CleaningCategory,
+    CleaningElement,
+    CleaningElementArea,
+    CleaningPlan,
+    CleaningProcedure,
     DocumentExtraction,
     ExtractionStatus,
     IntegrationDocument,
@@ -258,6 +263,113 @@ class HaccpLabelSessionSerializer(serializers.Serializer):
     source_lot_code = serializers.CharField(required=False, allow_blank=True, default="", max_length=128)
     quantity = serializers.IntegerField(min_value=1)
     status = serializers.ChoiceField(choices=("planned", "done", "cancelled"), required=False, default="planned")
+
+
+class CleaningCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CleaningCategory
+        fields = ("id", "name", "description", "is_active", "created_at", "updated_at")
+        read_only_fields = ("id", "created_at", "updated_at")
+
+
+class CleaningProcedureSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CleaningProcedure
+        fields = ("id", "category", "name", "steps", "notes", "is_active", "created_at", "updated_at")
+        read_only_fields = ("id", "created_at", "updated_at")
+
+
+class CleaningElementAreaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CleaningElementArea
+        fields = ("id", "sector_id", "sector_name", "sort_order", "is_active")
+        read_only_fields = ("id",)
+
+
+class CleaningElementSerializer(serializers.ModelSerializer):
+    areas = CleaningElementAreaSerializer(many=True, required=False)
+
+    class Meta:
+        model = CleaningElement
+        fields = (
+            "id",
+            "site",
+            "name",
+            "category",
+            "procedure",
+            "is_global",
+            "is_active",
+            "metadata",
+            "areas",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def create(self, validated_data):
+        areas_data = validated_data.pop("areas", [])
+        element = super().create(validated_data)
+        self._sync_areas(element, areas_data)
+        return element
+
+    def update(self, instance, validated_data):
+        areas_data = validated_data.pop("areas", None)
+        element = super().update(instance, validated_data)
+        if areas_data is not None:
+            self._sync_areas(element, areas_data)
+        return element
+
+    def _sync_areas(self, element: CleaningElement, areas_data: list[dict]):
+        existing = {str(area.id): area for area in element.areas.all()}
+        incoming = []
+        for raw in areas_data:
+            sector_id = raw.get("sector_id")
+            sector_name = str(raw.get("sector_name") or "").strip()
+            if not sector_id or not sector_name:
+                continue
+            incoming.append(
+                {
+                    "sector_id": sector_id,
+                    "sector_name": sector_name,
+                    "sort_order": int(raw.get("sort_order") or 0),
+                    "is_active": bool(raw.get("is_active", True)),
+                }
+            )
+        # Replace strategy for simplicity
+        element.areas.all().delete()
+        CleaningElementArea.objects.bulk_create(
+            [CleaningElementArea(element=element, **row) for row in incoming]
+        )
+
+
+class CleaningPlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CleaningPlan
+        fields = (
+            "id",
+            "site",
+            "element",
+            "sector_id",
+            "sector_name",
+            "cadence",
+            "due_time",
+            "start_date",
+            "timezone",
+            "is_active",
+            "metadata",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+
+class CleaningPlanGenerateSerializer(serializers.Serializer):
+    plan_id = serializers.UUIDField()
+    horizon_days = serializers.IntegerField(required=False, min_value=1, max_value=365, default=60)
+
+
+class CleaningBatchCompleteSerializer(serializers.Serializer):
+    schedule_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
 
 
 class TraceabilityReconciliationDecisionSerializer(serializers.ModelSerializer):
