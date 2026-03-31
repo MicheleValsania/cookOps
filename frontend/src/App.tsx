@@ -1121,6 +1121,7 @@ function App() {
   const [newCleaningStartDate, setNewCleaningStartDate] = useState(getTodayIsoDate());
   const [newCleaningPlanElementId, setNewCleaningPlanElementId] = useState("");
   const [newCleaningPlanAreaIds, setNewCleaningPlanAreaIds] = useState<string[]>([]);
+  const [editingCleaningPlanId, setEditingCleaningPlanId] = useState("");
   const [haccpLabelProfiles, setHaccpLabelProfiles] = useState<HaccpLabelProfile[]>([]);
   const [haccpLabelSessions, setHaccpLabelSessions] = useState<HaccpLabelSession[]>([]);
   const [haccpSectors, setHaccpSectors] = useState<HaccpSectorItem[]>([]);
@@ -3081,45 +3082,73 @@ function App() {
     }
     for (const areaId of areaIds.length ? areaIds : [""]) {
       const area = haccpSectors.find((item) => item.id === areaId);
-      const existing = cleaningPlans.find((plan) => (
-        plan.element === element.id
-        && plan.cadence === newCleaningCadence
-        && String(plan.sector_id || "") === String(area ? area.id : "")
-      ));
-      if (existing) {
-        setNotice(t("cleaning.planAlreadyExists"));
-        continue;
-      }
-      const res = await apiFetch("/haccp/cleaning/plans/", {
-        method: "POST",
-        body: JSON.stringify({
-          site: siteId,
-          element: element.id,
-          sector_id: area ? area.id : null,
-          sector_name: area ? area.name : null,
-          cadence: newCleaningCadence,
-          due_time: newCleaningDueTime,
-          start_date: newCleaningStartDate,
-          timezone: "Europe/Paris",
-          is_active: true,
-        }),
-      });
-      const body = await res.json().catch(() => null);
-      if (!res.ok) {
-        setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
-        return;
-      }
-      if (newCleaningCadence !== "after_use") {
-        await apiFetch("/haccp/cleaning/plans/generate/", {
-          method: "POST",
-          body: JSON.stringify({ plan_id: (body as CleaningPlan).id, horizon_days: 14 }),
+      if (editingCleaningPlanId) {
+        const res = await apiFetch(`/haccp/cleaning/plans/${editingCleaningPlanId}/`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            element: element.id,
+            sector_id: area ? area.id : null,
+            sector_name: area ? area.name : null,
+            cadence: newCleaningCadence,
+            due_time: newCleaningDueTime,
+            start_date: newCleaningStartDate,
+            timezone: "Europe/Paris",
+            is_active: true,
+          }),
         });
+        const body = await res.json().catch(() => null);
+        if (!res.ok) {
+          setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+          return;
+        }
+        if (newCleaningCadence !== "after_use") {
+          await apiFetch("/haccp/cleaning/plans/generate/", {
+            method: "POST",
+            body: JSON.stringify({ plan_id: (body as CleaningPlan).id, horizon_days: 14 }),
+          });
+        }
+      } else {
+        const existing = cleaningPlans.find((plan) => (
+          plan.element === element.id
+          && plan.cadence === newCleaningCadence
+          && String(plan.sector_id || "") === String(area ? area.id : "")
+        ));
+        if (existing) {
+          setNotice(t("cleaning.planAlreadyExists"));
+          continue;
+        }
+        const res = await apiFetch("/haccp/cleaning/plans/", {
+          method: "POST",
+          body: JSON.stringify({
+            site: siteId,
+            element: element.id,
+            sector_id: area ? area.id : null,
+            sector_name: area ? area.name : null,
+            cadence: newCleaningCadence,
+            due_time: newCleaningDueTime,
+            start_date: newCleaningStartDate,
+            timezone: "Europe/Paris",
+            is_active: true,
+          }),
+        });
+        const body = await res.json().catch(() => null);
+        if (!res.ok) {
+          setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+          return;
+        }
+        if (newCleaningCadence !== "after_use") {
+          await apiFetch("/haccp/cleaning/plans/generate/", {
+            method: "POST",
+            body: JSON.stringify({ plan_id: (body as CleaningPlan).id, horizon_days: 14 }),
+          });
+        }
       }
     }
     setNewCleaningCadence("daily");
     setNewCleaningDueTime("01:00");
     setNewCleaningStartDate(getTodayIsoDate());
     setNewCleaningPlanAreaIds([]);
+    setEditingCleaningPlanId("");
     await loadCleaningData();
     await loadHaccpData();
     } finally {
@@ -3139,6 +3168,30 @@ function App() {
       return;
     }
     await loadHaccpData();
+  }
+
+  function onEditCleaningPlan(planId: string) {
+    const plan = cleaningPlans.find((item) => item.id === planId);
+    if (!plan) return;
+    setEditingCleaningPlanId(plan.id);
+    setNewCleaningPlanElementId(plan.element);
+    setNewCleaningCadence(plan.cadence);
+    setNewCleaningDueTime(plan.due_time || "01:00");
+    setNewCleaningStartDate(plan.start_date || getTodayIsoDate());
+    setNewCleaningPlanAreaIds(plan.sector_id ? [String(plan.sector_id)] : []);
+  }
+
+  async function onToggleCleaningPlanActive(planId: string, nextActive: boolean) {
+    const res = await apiFetch(`/haccp/cleaning/plans/${planId}/`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: nextActive }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setNotice(errorWithDetail("error.documentsLoad", (body as Record<string, unknown> | null)?.detail ?? JSON.stringify(body)));
+      return;
+    }
+    await loadCleaningData();
   }
 
 
@@ -7074,6 +7127,7 @@ function App() {
               setNewCleaningPlanElementId={setNewCleaningPlanElementId}
               newCleaningPlanAreaIds={newCleaningPlanAreaIds}
               setNewCleaningPlanAreaIds={setNewCleaningPlanAreaIds}
+              editingCleaningPlanId={editingCleaningPlanId}
               newHaccpTitle={newHaccpTitle}
               setNewHaccpTitle={setNewHaccpTitle}
               newHaccpArea={newHaccpArea}
@@ -7132,6 +7186,8 @@ function App() {
               onCreateCleaningElement={onCreateCleaningElement}
               onCreateCleaningPlan={onCreateCleaningPlan}
               onCompleteCleaningSchedules={onCompleteCleaningSchedules}
+              onEditCleaningPlan={onEditCleaningPlan}
+              onToggleCleaningPlanActive={onToggleCleaningPlanActive}
               onCreateHaccpColdPoint={onCreateHaccpColdPoint}
               onEditHaccpColdPoint={onEditHaccpColdPoint}
               onDeleteHaccpColdPoint={onDeleteHaccpColdPoint}

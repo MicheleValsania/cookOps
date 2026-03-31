@@ -262,11 +262,14 @@ type Props = {
   setNewCleaningPlanElementId: (value: string) => void;
   newCleaningPlanAreaIds: string[];
   setNewCleaningPlanAreaIds: (value: string[]) => void;
+  editingCleaningPlanId: string;
   onCreateCleaningCategory: (e: FormEvent) => void | Promise<void>;
   onCreateCleaningProcedure: (e: FormEvent) => void | Promise<void>;
   onCreateCleaningElement: (e: FormEvent) => void | Promise<void>;
   onCreateCleaningPlan: (e: FormEvent) => void | Promise<void>;
   onCompleteCleaningSchedules: (scheduleIds: string[]) => void | Promise<void>;
+  onEditCleaningPlan: (planId: string) => void;
+  onToggleCleaningPlanActive: (planId: string, nextActive: boolean) => void | Promise<void>;
   newHaccpTitle: string;
   setNewHaccpTitle: (value: string) => void;
   newHaccpArea: string;
@@ -392,11 +395,14 @@ export function HaccpWorkspace(props: Props) {
     setNewCleaningPlanElementId,
     newCleaningPlanAreaIds,
     setNewCleaningPlanAreaIds,
+    editingCleaningPlanId,
     onCreateCleaningCategory,
     onCreateCleaningProcedure,
     onCreateCleaningElement,
     onCreateCleaningPlan,
     onCompleteCleaningSchedules,
+    onEditCleaningPlan,
+    onToggleCleaningPlanActive,
     newHaccpTitle,
     setNewHaccpTitle,
     newHaccpArea,
@@ -1214,8 +1220,36 @@ export function HaccpWorkspace(props: Props) {
               <input type="date" value={newCleaningStartDate} onChange={(e) => setNewCleaningStartDate(e.target.value)} />
               <label>{t("cleaning.planDueTime")}</label>
               <input type="time" value={newCleaningDueTime} onChange={(e) => setNewCleaningDueTime(e.target.value)} />
-              <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>{isHaccpSaving ? t("action.loading") : t("cleaning.createPlan")}</button>
+              <button type="submit" disabled={isHaccpSaving || isCleaningLoading}>
+                {isHaccpSaving ? t("action.loading") : editingCleaningPlanId ? t("cleaning.updatePlan") : t("cleaning.createPlan")}
+              </button>
             </form>
+            <h4>{t("cleaning.planListTitle")}</h4>
+            {cleaningPlans.length === 0 ? (
+              <p className="muted">{t("cleaning.noPlans")}</p>
+            ) : (
+              <ul className="clean-list">
+                {cleaningPlans.map((plan) => {
+                  const element = cleaningElements.find((item) => item.id === plan.element);
+                  return (
+                    <li key={plan.id}>
+                      <strong>{element?.name || plan.element}</strong> - {plan.sector_name || "-"} · {t(`cleaning.cadence.${plan.cadence}`)} · {plan.due_time}
+                      <div className="muted">
+                        {plan.is_active ? t("cleaning.planActive") : t("cleaning.planInactive")}
+                      </div>
+                      <div className="entry-actions">
+                        <button type="button" onClick={() => onEditCleaningPlan(plan.id)}>
+                          {t("action.edit")}
+                        </button>
+                        <button type="button" onClick={() => void onToggleCleaningPlanActive(plan.id, !plan.is_active)}>
+                          {plan.is_active ? t("cleaning.deactivatePlan") : t("cleaning.activatePlan")}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
             <h4>{t("cleaning.groupValidateTitle")}</h4>
             <label className="inline-check" style={{ marginBottom: 12 }}>
               <input
