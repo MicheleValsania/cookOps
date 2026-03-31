@@ -239,12 +239,47 @@ class CleaningPlanGenerateView(APIView):
         sector_name = plan.sector_name or ""
 
         client = TracciaClient()
+        existing_keys: set[str] = set()
+        duplicate_ids: list[str] = []
+        try:
+            _, existing_payload = client.request_json(
+                "GET",
+                "/api/v1/haccp/schedules/",
+                params={"site": str(plan.site_id), "task_type": "cleaning", "limit": 500},
+            )
+            existing_rows = existing_payload if isinstance(existing_payload, list) else existing_payload.get("results", [])
+            for row in existing_rows or []:
+                if not isinstance(row, dict):
+                    continue
+                meta = row.get("metadata") or {}
+                if str(meta.get("cleaning_plan_id", "")) != str(plan.id):
+                    continue
+                key = f"{row.get('starts_at', '')}|{str(row.get('sector') or '')}"
+                if key in existing_keys and row.get("id"):
+                    duplicate_ids.append(str(row.get("id")))
+                    continue
+                existing_keys.add(key)
+        except TracciaClientError:
+            existing_keys = set()
+            duplicate_ids = []
         created = 0
         errors: list[dict] = []
+        for schedule_id in duplicate_ids:
+            try:
+                client.request_json(
+                    "PATCH",
+                    f"/api/v1/haccp/schedules/{schedule_id}/",
+                    data={"status": "cancelled"},
+                )
+            except TracciaClientError:
+                errors.append({"schedule_id": schedule_id, "detail": "failed to cancel duplicate"})
         for day in due_dates:
             due_day = day + timedelta(days=1)
             starts_at = datetime.combine(due_day, plan.due_time).replace(tzinfo=timezone.utc)
             ends_at = starts_at + timedelta(hours=1)
+            existing_key = f"{_as_iso(starts_at)}|{str(plan.sector_id) if plan.sector_id else ''}"
+            if existing_key in existing_keys:
+                continue
             payload = {
                 "site": str(plan.site_id),
                 "task_type": "cleaning",
