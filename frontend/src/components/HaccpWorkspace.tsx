@@ -477,19 +477,17 @@ export function HaccpWorkspace(props: Props) {
     return startsAt <= now;
   });
   const cleaningAfterUsePlans = cleaningPlans.filter((plan) => plan.cadence === "after_use");
-  const cleaningGroups = cleaningPlanned.reduce((acc, item) => {
-    const meta = (item.metadata || {}) as Record<string, unknown>;
-    const cadence = String(meta.cleaning_cadence ?? "").trim() || "daily";
-    const areaLabel = String(item.sector_label || item.area || meta.cleaning_sector_name || "-");
-    const key = `${areaLabel}::${cadence}`;
-    const entry = acc.get(key) ?? { key, areaLabel, cadence, items: [] as HaccpScheduleItem[] };
-    entry.items.push(item);
-    acc.set(key, entry);
-    return acc;
-  }, new Map<string, { key: string; areaLabel: string; cadence: string; items: HaccpScheduleItem[] }>());
-  const cleaningGroupRows = Array.from(cleaningGroups.values());
   const availableAreas = haccpSectors;
-  const [cleaningSelection, setCleaningSelection] = useState<Record<string, boolean>>({});
+  const cleaningBySector = cleaningPlanned.reduce<Record<string, HaccpScheduleItem[]>>((acc, item) => {
+    const meta = (item.metadata || {}) as Record<string, unknown>;
+    const areaLabel = String(item.sector_label || item.area || meta.cleaning_sector_name || "-");
+    if (!acc[areaLabel]) acc[areaLabel] = [];
+    acc[areaLabel].push(item);
+    return acc;
+  }, {});
+  const cleaningSectorRows = Object.entries(cleaningBySector)
+    .map(([areaLabel, items]) => ({ areaLabel, items }))
+    .sort((a, b) => a.areaLabel.localeCompare(b.areaLabel));
   const labelProfileGroups = haccpLabelProfiles.reduce<Record<string, HaccpLabelProfile[]>>((acc, item) => {
     const key = (item.category || "").trim() || "Senza categoria";
     if (!acc[key]) acc[key] = [];
@@ -1259,44 +1257,31 @@ export function HaccpWorkspace(props: Props) {
               />
               {t("cleaning.showFuture")}
             </label>
-            {cleaningGroupRows.length === 0 ? (
+            {cleaningPlanned.length === 0 ? (
               <p className="muted">{t("cleaning.noPending")}</p>
             ) : (
-              cleaningGroupRows.map((group) => (
-                <div key={group.key} style={{ marginBottom: 16 }}>
-                  <strong>{group.areaLabel} ? {t(`cleaning.cadence.${group.cadence}`)}</strong>
-                  <ul className="clean-list">
-                    {group.items.map((item) => (
-                      <li key={item.id}>
-                        <label className="inline-check">
-                          {(() => {
-                          const checked = cleaningSelection[item.id] ?? true;
-                          return (
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                setCleaningSelection((prev) => ({ ...prev, [item.id]: !checked }));
-                              }}
-                            />
-                          );
-                        })()}
-                          {item.title} ({String(item.starts_at).replace("T", " ").slice(0, 16)})
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
+              <>
+                <div className="entry-actions" style={{ marginBottom: 12 }}>
                   <button
                     type="button"
-                    onClick={() => {
-                      const selected = group.items.filter((item) => cleaningSelection[item.id] ?? true).map((item) => item.id);
-                      void onCompleteCleaningSchedules(selected);
-                    }}
+                    onClick={() => void onCompleteCleaningSchedules(cleaningPlanned.map((item) => item.id))}
                   >
-                    {t("cleaning.confirmGroup")}
+                    {t("cleaning.confirmSite")}
                   </button>
                 </div>
-              ))
+                {cleaningSectorRows.map((group) => (
+                  <div key={group.areaLabel} style={{ marginBottom: 16 }}>
+                    <strong>{group.areaLabel}</strong>
+                    <div className="muted">{t("cleaning.pendingCount", { count: group.items.length })}</div>
+                    <button
+                      type="button"
+                      onClick={() => void onCompleteCleaningSchedules(group.items.map((item) => item.id))}
+                    >
+                      {t("cleaning.confirmSection")}
+                    </button>
+                  </div>
+                ))}
+              </>
             )}
             <h4>{t("cleaning.afterUseTitle")}</h4>
             {cleaningAfterUsePlans.length === 0 ? (
