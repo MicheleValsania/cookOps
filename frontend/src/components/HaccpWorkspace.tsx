@@ -1265,7 +1265,6 @@ export function HaccpWorkspace(props: Props) {
             )}
           </section>
         </div>
-      )}        </div>
       )}
     </div>
   );

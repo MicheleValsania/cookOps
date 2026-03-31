@@ -3007,8 +3007,7 @@ function App() {
     const name = newCleaningProcedureName.trim();
     if (!name) return;
     const steps = newCleaningProcedureSteps
-      .split("
-")
+      .split("\n")
       .map((row) => row.trim())
       .filter(Boolean);
     const res = await apiFetch("/haccp/cleaning/procedures/", {
