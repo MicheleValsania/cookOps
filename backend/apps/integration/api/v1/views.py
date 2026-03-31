@@ -302,20 +302,35 @@ def _apply_supplier_product_categories(lines, supplier_id: str | None):
 
 
 def _apply_supplier_product_refs(lines, supplier_id: str | None):
-    if not supplier_id or not lines:
+    if not lines:
+        return
+    if not supplier_id:
+        for line in lines:
+            if isinstance(line, dict):
+                line.pop("supplier_product", None)
         return
     supplier_uuid = _safe_uuid(supplier_id)
     if not supplier_uuid:
+        for line in lines:
+            if isinstance(line, dict):
+                line.pop("supplier_product", None)
         return
     codes = {
         str(line.get("supplier_code")).strip()
         for line in lines
         if isinstance(line, dict) and str(line.get("supplier_code") or "").strip()
     }
-    if not codes:
-        return
-    products = SupplierProduct.objects.filter(supplier_id=supplier_uuid, supplier_sku__in=codes)
+    product_ids = {
+        _safe_uuid(line.get("supplier_product"))
+        for line in lines
+        if isinstance(line, dict) and line.get("supplier_product")
+    }
+    product_ids = {pid for pid in product_ids if pid}
+    products = SupplierProduct.objects.filter(supplier_id=supplier_uuid)
+    if codes:
+        products = products.filter(supplier_sku__in=codes)
     by_code = {str(p.supplier_sku or "").strip(): p for p in products}
+    by_id = {str(p.id): p for p in SupplierProduct.objects.filter(id__in=list(product_ids))}
     for line in lines:
         if not isinstance(line, dict):
             continue
@@ -324,10 +339,13 @@ def _apply_supplier_product_refs(lines, supplier_id: str | None):
             line.pop("supplier_product", None)
             continue
         product = by_code.get(code)
-        if not product:
-            line.pop("supplier_product", None)
+        if product:
+            line["supplier_product"] = str(product.id)
             continue
-        line["supplier_product"] = str(product.id)
+        existing_id = str(line.get("supplier_product") or "")
+        existing = by_id.get(existing_id)
+        if not existing or str(existing.supplier_sku or "").strip() != code:
+            line.pop("supplier_product", None)
 
 
 def _is_unique_constraint_duplicate(exc: ValidationError) -> bool:
