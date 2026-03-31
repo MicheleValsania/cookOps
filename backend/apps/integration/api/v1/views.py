@@ -317,10 +317,11 @@ def _apply_supplier_product_refs(lines, supplier_id: str | None):
                 line.pop("supplier_product", None)
         return
     codes = {
-        str(line.get("supplier_code")).strip()
+        _normalize_supplier_code(str(line.get("supplier_code") or "").strip())
         for line in lines
         if isinstance(line, dict) and str(line.get("supplier_code") or "").strip()
     }
+    codes = {code for code in codes if code}
     product_ids = {
         _safe_uuid(line.get("supplier_product"))
         for line in lines
@@ -329,13 +330,12 @@ def _apply_supplier_product_refs(lines, supplier_id: str | None):
     product_ids = {pid for pid in product_ids if pid}
     products = SupplierProduct.objects.filter(supplier_id=supplier_uuid)
     if codes:
-        products = products.filter(supplier_sku__in=codes)
-    by_code = {str(p.supplier_sku or "").strip(): p for p in products}
-    by_id = {str(p.id): p for p in SupplierProduct.objects.filter(id__in=list(product_ids))}
+        products = products.filter(supplier_sku__in=list(codes))
+    by_code = {_normalize_supplier_code(str(p.supplier_sku or "")): p for p in products}
     for line in lines:
         if not isinstance(line, dict):
             continue
-        code = str(line.get("supplier_code") or "").strip()
+        code = _normalize_supplier_code(str(line.get("supplier_code") or "").strip())
         if not code:
             line.pop("supplier_product", None)
             continue
@@ -343,10 +343,7 @@ def _apply_supplier_product_refs(lines, supplier_id: str | None):
         if product:
             line["supplier_product"] = str(product.id)
             continue
-        existing_id = str(line.get("supplier_product") or "")
-        existing = by_id.get(existing_id)
-        if not existing or str(existing.supplier_sku or "").strip() != code:
-            line.pop("supplier_product", None)
+        line.pop("supplier_product", None)
 
 
 def _is_unique_constraint_duplicate(exc: ValidationError) -> bool:
@@ -421,6 +418,15 @@ def _clean_vat(value):
     if value is None:
         return ""
     return "".join(ch for ch in str(value).upper() if ch.isalnum())
+
+
+def _normalize_supplier_code(value):
+    if not value:
+        return ""
+    raw = "".join(ch for ch in str(value).upper() if ch.isalnum())
+    if raw.startswith("P") and raw[1:].isdigit():
+        return raw[1:]
+    return raw
 
 
 def _resolve_supplier_id(source: dict, supplier_id):
