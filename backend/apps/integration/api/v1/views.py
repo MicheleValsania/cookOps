@@ -224,10 +224,10 @@ def _normalize_lines(lines, target: str):
         line = _as_dict(raw)
         line_category = str(_pick_first(line, "product_category", "category", "product_category_label") or "").strip()
         supplier_code = _pick_first(line, "supplier_code", "supplier_sku", "code", "sku", "article_code")
-        supplier_product_raw = _pick_first(line, "supplier_product", "supplier_product_id")
-        supplier_product_id = _safe_uuid(supplier_product_raw) if not supplier_code else None
         row = {
-            "supplier_product": supplier_product_id,
+            # Never trust supplier_product ids coming from OCR/extracted payloads.
+            # We only re-attach a catalog product later from the supplier_code.
+            "supplier_product": None,
             "supplier_code": supplier_code,
             "raw_product_name": _pick_first(
                 line, "raw_product_name", "description", "name", "product_name", "ingredient"
