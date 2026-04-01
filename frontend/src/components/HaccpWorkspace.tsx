@@ -334,7 +334,7 @@ type Props = {
   onEditHaccpLabelProfile: (profileId: string) => void;
   onDeleteHaccpLabelProfile: (profileId: string) => void | Promise<void>;
   onCreateHaccpLabelSession: (e: FormEvent) => void | Promise<void>;
-  t: (key: string) => string;
+  t: (key: string, vars?: Record<string, string | number>) => string;
 };
 
 export function HaccpWorkspace(props: Props) {

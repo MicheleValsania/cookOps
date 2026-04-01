@@ -100,6 +100,7 @@ type StockSummaryItem = {
   product_key: string;
   product_label: string;
   product_name?: string | null;
+  supplier_code?: string | null;
   supplier_name?: string | null;
   product_category?: string | null;
   qty_unit: string;
@@ -6944,6 +6945,7 @@ function App() {
                   <thead>
                     <tr>
                       <th>Code fournisseur / Produit</th>
+                      <th>Code fournisseur</th>
                       <th>Nom article</th>
                       <th>Fournisseur</th>
                       <th>Categorie produit</th>
@@ -6962,6 +6964,7 @@ function App() {
                     {filteredStockRows.map((row) => (
                       <tr key={`${row.product_key}-${row.qty_unit}`}>
                         <td>{row.product_label}</td>
+                        <td>{row.supplier_code || "-"}</td>
                         <td>{row.product_name || "-"}</td>
                         <td>{row.supplier_name || "-"}</td>
                         <td>{row.product_category || "-"}</td>

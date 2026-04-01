@@ -65,6 +65,7 @@ class InventoryStockSummaryView(APIView):
                 "product_key": "",
                 "product_label": "",
                 "product_name": "",
+                "supplier_code": "",
                 "supplier_name": "",
                 "product_category": "",
                 "qty_unit": "",
@@ -86,6 +87,8 @@ class InventoryStockSummaryView(APIView):
             row["product_key"] = label
             row["product_label"] = label
             row["qty_unit"] = unit
+            if not row["supplier_code"] and m.supplier_code:
+                row["supplier_code"] = str(m.supplier_code).strip()
             if not row["product_name"]:
                 row["product_name"] = _movement_display_name(m)
             if not row["supplier_name"] and m.supplier_product_id and m.supplier_product and m.supplier_product.supplier:
@@ -117,6 +120,7 @@ class InventoryStockSummaryView(APIView):
                 "product_key": row["product_key"],
                 "product_label": row["product_label"],
                 "product_name": row["product_name"],
+                "supplier_code": row["supplier_code"] or None,
                 "supplier_name": row["supplier_name"],
                 "product_category": row["product_category"],
                 "qty_unit": row["qty_unit"],
