@@ -2,6 +2,7 @@
 from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import ValidationError
 import json
+import re
 import uuid
 from datetime import datetime, time, timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
@@ -50,6 +51,8 @@ from apps.inventory.models import InventoryMovement, Lot, LotStatus, MovementTyp
 from apps.purchasing.api.v1.serializers import GoodsReceiptSerializer, InvoiceSerializer
 from apps.purchasing.models import GoodsReceipt, Invoice
 from apps.purchasing.services.reconciliation_auto_match import auto_match_invoice_lines
+
+PACKAGING_PREFIX_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b", re.IGNORECASE)
 
 
 def _as_dict(value):
@@ -247,6 +250,45 @@ def _normalize_product_category(value):
         "emballages": "emballages",
     }
     return aliases.get(compact)
+
+
+def _infer_packaging_from_name(raw_name: str):
+    match = PACKAGING_PREFIX_RE.match(str(raw_name or "").strip())
+    if not match:
+        return None, None
+    qty_raw, unit_raw = match.groups()
+    qty_text = _normalize_decimal_text(qty_raw, places=3)
+    unit = _normalize_unit(unit_raw)
+    return qty_text, unit
+
+
+def _canonicalize_line_with_product(line_obj, product: SupplierProduct | None, raw_name: str):
+    inferred_pack_qty, inferred_uom = _infer_packaging_from_name(raw_name)
+    update_fields: list[str] = []
+
+    if product:
+        product_update_fields: list[str] = []
+        canonical_uom = str(product.uom or "").strip().lower() or None
+        current_pack_qty = Decimal(str(product.pack_qty)) if product.pack_qty is not None else None
+        if inferred_uom and canonical_uom != inferred_uom:
+            product.uom = inferred_uom
+            canonical_uom = inferred_uom
+            product_update_fields.append("uom")
+        if inferred_pack_qty is not None:
+            inferred_pack_decimal = Decimal(str(inferred_pack_qty))
+            if current_pack_qty != inferred_pack_decimal:
+                product.pack_qty = inferred_pack_decimal
+                current_pack_qty = inferred_pack_decimal
+                product_update_fields.append("pack_qty")
+        if product_update_fields:
+            product.save(update_fields=product_update_fields + ["updated_at"])
+        if canonical_uom and str(line_obj.qty_unit or "").strip().lower() == "pc" and current_pack_qty is not None:
+            line_obj.qty_value = Decimal(str(line_obj.qty_value or "0")) * current_pack_qty
+            line_obj.qty_unit = canonical_uom
+            update_fields.extend(["qty_value", "qty_unit"])
+
+    if update_fields:
+        line_obj.save(update_fields=update_fields + ["updated_at"])
 
 
 def _normalize_lines(lines, target: str):
@@ -1062,6 +1104,7 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
                     )
                     line_obj.supplier_product = product
                     line_obj.save(update_fields=["supplier_product", "updated_at"])
+                _canonicalize_line_with_product(line_obj, line_obj.supplier_product if line_obj.supplier_product_id else None, raw_name)
                 if category and line_obj.supplier_product:
                     current_category = str(line_obj.supplier_product.category or "").strip()
                     if not current_category:
