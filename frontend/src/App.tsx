@@ -52,6 +52,7 @@ type SupplierItem = {
   id: string;
   name: string;
   vat_number: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 type InvoiceRecord = {
@@ -1069,6 +1070,8 @@ function App() {
   const [newSupplierName, setNewSupplierName] = useState("");
   const [supplierSearchText, setSupplierSearchText] = useState("");
   const [selectedSupplierId, setSelectedSupplierId] = useState("");
+  const [supplierRulePrefixesInput, setSupplierRulePrefixesInput] = useState("");
+  const [supplierRuleExampleInput, setSupplierRuleExampleInput] = useState("P 35302");
   const [newSupplierProductSupplierId, setNewSupplierProductSupplierId] = useState("");
   const [newSupplierProductName, setNewSupplierProductName] = useState("");
   const [newSupplierProductSku, setNewSupplierProductSku] = useState("");
@@ -2175,6 +2178,43 @@ function App() {
     await loadSuppliers();
   }
 
+  async function onSaveSupplierRules(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedSupplier) {
+      setNotice(t("suppliers.selectSupplierNotice"));
+      return;
+    }
+    const existingMetadata = selectedSupplier.metadata && typeof selectedSupplier.metadata === "object"
+      ? selectedSupplier.metadata
+      : {};
+    const existingRules = existingMetadata.integration_rules && typeof existingMetadata.integration_rules === "object"
+      ? existingMetadata.integration_rules as Record<string, unknown>
+      : {};
+    const nextRules: Record<string, unknown> = { ...existingRules };
+    if (normalizedSupplierRulePrefixes.length) {
+      nextRules.strip_supplier_code_prefixes = normalizedSupplierRulePrefixes;
+    } else {
+      delete nextRules.strip_supplier_code_prefixes;
+    }
+    const nextMetadata: Record<string, unknown> = { ...existingMetadata };
+    if (Object.keys(nextRules).length) {
+      nextMetadata.integration_rules = nextRules;
+    } else {
+      delete nextMetadata.integration_rules;
+    }
+    const res = await apiFetch(`/suppliers/${encodeURIComponent(selectedSupplier.id)}/`, {
+      method: "PATCH",
+      body: JSON.stringify({ metadata: nextMetadata }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(errorWithDetail("error.supplierCreate", body.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setSuppliers((prev) => prev.map((supplier) => (supplier.id === body.id ? body as SupplierItem : supplier)));
+    setNotice(t("suppliers.rulesSaved", { name: selectedSupplier.name }));
+  }
+
   async function onCreateSupplierProduct(e: FormEvent) {
     e.preventDefault();
     const supplierId = newSupplierProductSupplierId.trim();
@@ -2240,6 +2280,43 @@ function App() {
     if (!q) return suppliers;
     return suppliers.filter((supplier) => supplier.name.toLowerCase().includes(q));
   }, [suppliers, supplierSearchText]);
+
+  const selectedSupplier = useMemo(
+    () => suppliers.find((supplier) => supplier.id === selectedSupplierId) ?? null,
+    [suppliers, selectedSupplierId],
+  );
+
+  const normalizedSupplierRulePrefixes = useMemo(
+    () =>
+      supplierRulePrefixesInput
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    [supplierRulePrefixesInput],
+  );
+
+  const normalizedSupplierRuleExample = useMemo(() => {
+    let value = supplierRuleExampleInput.trim();
+    for (const prefix of normalizedSupplierRulePrefixes) {
+      if (value.toUpperCase().startsWith(prefix.toUpperCase())) {
+        value = value.slice(prefix.length).trimStart();
+      }
+    }
+    return value || "-";
+  }, [normalizedSupplierRulePrefixes, supplierRuleExampleInput]);
+
+  useEffect(() => {
+    const metadata = selectedSupplier?.metadata;
+    const integrationRules = metadata && typeof metadata === "object"
+      ? (metadata.integration_rules as Record<string, unknown> | undefined)
+      : undefined;
+    const prefixes = Array.isArray(integrationRules?.strip_supplier_code_prefixes)
+      ? integrationRules.strip_supplier_code_prefixes
+          .map((value) => String(value ?? "").trim())
+          .filter(Boolean)
+      : [];
+    setSupplierRulePrefixesInput(prefixes.join(", "));
+  }, [selectedSupplier]);
 
   async function onSyncFichesSnapshots() {
     if (isFichesSyncing) return;
@@ -6381,6 +6458,34 @@ function App() {
                 </div>
                 {selectedSupplierId ? (
                   <>
+                    <section className="panel" style={{ marginBottom: 16 }}>
+                      <h3 className="section-title">{t("suppliers.rulesTitle")}</h3>
+                      <p className="muted">{t("suppliers.rulesDesc")}</p>
+                      <form onSubmit={onSaveSupplierRules}>
+                        <label>{t("suppliers.ruleStripPrefixes")}</label>
+                        <input
+                          value={supplierRulePrefixesInput}
+                          onChange={(e) => setSupplierRulePrefixesInput(e.target.value)}
+                          placeholder={t("suppliers.ruleStripPrefixesPlaceholder")}
+                        />
+                        <div className="muted" style={{ marginTop: 6 }}>
+                          {t("suppliers.ruleStripPrefixesHelp")}
+                        </div>
+                        <label style={{ marginTop: 12 }}>{t("suppliers.ruleExample")}</label>
+                        <input
+                          value={supplierRuleExampleInput}
+                          onChange={(e) => setSupplierRuleExampleInput(e.target.value)}
+                          placeholder="P 35302"
+                        />
+                        <div className="muted" style={{ marginTop: 6 }}>
+                          {t("suppliers.rulePreview", {
+                            input: supplierRuleExampleInput.trim() || "-",
+                            output: normalizedSupplierRuleExample,
+                          })}
+                        </div>
+                        <button type="submit">{t("suppliers.rulesSave")}</button>
+                      </form>
+                    </section>
                     <form onSubmit={onCreateSupplierProduct}>
                       <label>{t("suppliers.productFormSupplier")}</label>
                       <select value={newSupplierProductSupplierId} onChange={(e) => setNewSupplierProductSupplierId(e.target.value)}>
