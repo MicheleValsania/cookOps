@@ -262,6 +262,31 @@ def _infer_packaging_from_name(raw_name: str):
     return qty_text, unit
 
 
+def _preferred_uom_from_history(*, product: SupplierProduct | None, supplier_id: str | None, supplier_code: str, raw_name: str):
+    if product and str(product.uom or "").strip():
+        return str(product.uom).strip().lower()
+
+    supplier_uuid = _safe_uuid(supplier_id)
+    if not supplier_uuid:
+        return None
+
+    rules = _supplier_code_rules(supplier_id)
+    normalized_code = _normalize_supplier_code(supplier_code, rules)
+
+    if normalized_code:
+        code_products = SupplierProduct.objects.filter(supplier_id=supplier_uuid).exclude(supplier_sku__isnull=True)
+        for candidate in code_products:
+            candidate_code = _normalize_supplier_code(str(candidate.supplier_sku or "").strip(), rules)
+            if candidate_code == normalized_code and str(candidate.uom or "").strip():
+                return str(candidate.uom).strip().lower()
+
+    if raw_name:
+        named_product = SupplierProduct.objects.filter(supplier_id=supplier_uuid, name__iexact=raw_name).first()
+        if named_product and str(named_product.uom or "").strip():
+            return str(named_product.uom).strip().lower()
+    return None
+
+
 def _canonicalize_line_with_product(line_obj, product: SupplierProduct | None, raw_name: str):
     inferred_pack_qty, inferred_uom = _infer_packaging_from_name(raw_name)
     update_fields: list[str] = []
@@ -270,7 +295,7 @@ def _canonicalize_line_with_product(line_obj, product: SupplierProduct | None, r
         product_update_fields: list[str] = []
         canonical_uom = str(product.uom or "").strip().lower() or None
         current_pack_qty = Decimal(str(product.pack_qty)) if product.pack_qty is not None else None
-        if inferred_uom and canonical_uom != inferred_uom:
+        if inferred_uom and not canonical_uom:
             product.uom = inferred_uom
             canonical_uom = inferred_uom
             product_update_fields.append("uom")
@@ -1091,6 +1116,16 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
                     raw_name=raw_name,
                     qty_unit=uom,
                 )
+                preferred_uom = _preferred_uom_from_history(
+                    product=expected_product,
+                    supplier_id=supplier_id,
+                    supplier_code=supplier_code,
+                    raw_name=raw_name,
+                )
+                if preferred_uom and line_obj.qty_unit != preferred_uom:
+                    line_obj.qty_unit = preferred_uom
+                    line_obj.save(update_fields=["qty_unit", "updated_at"])
+                    uom = preferred_uom
                 if expected_product and line_obj.supplier_product_id != expected_product.id:
                     line_obj.supplier_product = expected_product
                     line_obj.save(update_fields=["supplier_product", "updated_at"])

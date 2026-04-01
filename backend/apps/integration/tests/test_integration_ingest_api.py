@@ -1,10 +1,10 @@
 ﻿from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.catalog.models import Supplier
+from apps.catalog.models import Supplier, SupplierProduct
 from apps.core.models import Site
 from apps.integration.models import DocumentExtraction, IntegrationDocument, IntegrationImportBatch
-from apps.purchasing.models import GoodsReceipt, Invoice
+from apps.purchasing.models import GoodsReceipt, Invoice, InvoiceLine
 
 
 class IntegrationIngestApiTests(APITestCase):
@@ -193,3 +193,105 @@ class IntegrationIngestApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         receipt = GoodsReceipt.objects.get(delivery_note_number="BL-AUTO-001")
         self.assertEqual(receipt.supplier.name, "Auto Supplier OCR")
+
+    def test_ingest_invoice_preserves_existing_supplier_product_uom_over_packaging_name(self):
+        product = SupplierProduct.objects.create(
+            supplier=self.supplier,
+            name="5KG RIZ BASMATI DAAWAT",
+            supplier_sku="008534",
+            uom="pc",
+        )
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-ocr-history-uom.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "INV-HISTORY-001",
+                "invoice_date": "2026-03-05",
+                "lines": [
+                    {
+                        "supplier_code": "008534",
+                        "raw_product_name": "5KG RIZ BASMATI DAAWAT",
+                        "qty_value": "1.000",
+                        "qty_unit": "kg",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-inv-history-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        product.refresh_from_db()
+        line = InvoiceLine.objects.get(invoice__invoice_number="INV-HISTORY-001")
+        self.assertEqual(line.supplier_product_id, product.id)
+        self.assertEqual(line.qty_unit, "pc")
+        self.assertEqual(product.uom, "pc")
+
+    def test_ingest_invoice_keeps_existing_packaging_uom_when_name_prefix_disagrees(self):
+        product = SupplierProduct.objects.create(
+            supplier=self.supplier,
+            name="700ML SAUCE SOJA SUCREE HEALTHYBOY",
+            supplier_sku="008204",
+            uom="pc",
+            pack_qty="700.000",
+        )
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-ocr-history-uom-2.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "INV-HISTORY-002",
+                "invoice_date": "2026-03-06",
+                "lines": [
+                    {
+                        "supplier_code": "008204",
+                        "raw_product_name": "700ML SAUCE SOJA SUCREE HEALTHYBOY",
+                        "qty_value": "3.000",
+                        "qty_unit": "ml",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-inv-history-002",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        product.refresh_from_db()
+        line = InvoiceLine.objects.get(invoice__invoice_number="INV-HISTORY-002")
+        self.assertEqual(line.qty_unit, "pc")
+        self.assertEqual(product.uom, "pc")
