@@ -1053,7 +1053,7 @@ function App() {
   const [isClaudeExtracting, setIsClaudeExtracting] = useState(false);
   const [intakeStage, setIntakeStage] = useState<IntakeStage>("idle");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploadDocType, setUploadDocType] = useState<"goods_receipt" | "invoice">("goods_receipt");
+  const [uploadDocType, setUploadDocType] = useState<"goods_receipt" | "invoice">("invoice");
   const [invoiceIngestMode] = useState<InvoiceIngestMode>("invoice_direct");
   const [originalDocumentBlobUrl, setOriginalDocumentBlobUrl] = useState("");
   const [isOriginalDocumentLoading, setIsOriginalDocumentLoading] = useState(false);
