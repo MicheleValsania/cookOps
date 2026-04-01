@@ -279,21 +279,27 @@ def _apply_supplier_product_categories(lines, supplier_id: str | None):
         supplier_ids.append(uuid.UUID(str(supplier_id)))
     except Exception:
         return
+    rules = _supplier_code_rules(supplier_id)
     codes = {
-        str(line.get("supplier_code")).strip()
+        _normalize_supplier_code(str(line.get("supplier_code") or "").strip(), rules)
         for line in lines
         if isinstance(line, dict) and str(line.get("supplier_code") or "").strip()
     }
+    codes = {code for code in codes if code}
     if not codes:
         return
-    products = SupplierProduct.objects.filter(supplier_id__in=supplier_ids, supplier_sku__in=codes)
-    by_code = {str(p.supplier_sku or "").strip(): p for p in products}
+    products = SupplierProduct.objects.filter(supplier_id__in=supplier_ids)
+    by_code = {
+        _normalize_supplier_code(str(p.supplier_sku or "").strip(), rules): p
+        for p in products
+        if _normalize_supplier_code(str(p.supplier_sku or "").strip(), rules) in codes
+    }
     for line in lines:
         if not isinstance(line, dict):
             continue
         if line.get("product_category"):
             continue
-        code = str(line.get("supplier_code") or "").strip()
+        code = _normalize_supplier_code(str(line.get("supplier_code") or "").strip(), rules)
         if not code:
             continue
         product = by_code.get(code)
@@ -358,6 +364,27 @@ def _apply_supplier_product_refs(lines, supplier_id: str | None):
             line["supplier_product"] = str(product.id)
             continue
         line.pop("supplier_product", None)
+
+
+def _resolve_supplier_product_by_line(*, supplier_id: str | None, supplier_code: str, raw_name: str, qty_unit: str | None):
+    if not supplier_id:
+        return None
+    supplier_uuid = _safe_uuid(supplier_id)
+    if not supplier_uuid:
+        return None
+    rules = _supplier_code_rules(supplier_id)
+    normalized_code = _normalize_supplier_code(supplier_code, rules)
+    if normalized_code:
+        products = SupplierProduct.objects.filter(supplier_id=supplier_uuid)
+        for product in products:
+            product_code = _normalize_supplier_code(str(product.supplier_sku or "").strip(), rules)
+            if product_code == normalized_code:
+                return product
+    if raw_name:
+        product = SupplierProduct.objects.filter(supplier_id=supplier_uuid, name__iexact=raw_name).first()
+        if product:
+            return product
+    return None
 
 
 def _is_unique_constraint_duplicate(exc: ValidationError) -> bool:
@@ -978,37 +1005,37 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             import_serializer = import_serializer_class(data=payload)
             import_serializer.is_valid(raise_exception=True)
             instance = import_serializer.save()
-            for line_payload, line_obj in zip(lines, instance.lines.all()):
+            created_lines = getattr(instance, "_created_lines", None)
+            line_objects = list(created_lines) if created_lines is not None else list(instance.lines.order_by("id"))
+            for line_payload, line_obj in zip(lines, line_objects):
                 category = str(line_payload.get("product_category") or "").strip()
-                if not line_obj.supplier_product_id:
-                    supplier_code = str(line_payload.get("supplier_code") or line_obj.supplier_code or "").strip()
-                    raw_name = str(line_payload.get("raw_product_name") or line_obj.raw_product_name or "").strip()
-                    uom = str(line_obj.qty_unit or "").strip() or None
-                    product = None
-                    if supplier_id and supplier_code:
-                        product = SupplierProduct.objects.filter(
-                            supplier_id=supplier_id,
-                            supplier_sku=supplier_code,
-                        ).first()
-                    if not product and supplier_id and raw_name:
-                        product = SupplierProduct.objects.filter(
-                            supplier_id=supplier_id,
-                            name__iexact=raw_name,
-                        ).first()
-                    if not product and supplier_id and raw_name and uom:
-                        product = SupplierProduct.objects.create(
-                            supplier_id=supplier_id,
-                            name=raw_name[:255],
-                            supplier_sku=supplier_code or None,
-                            uom=uom,
-                            category=category or None,
-                        )
-                    if product:
-                        line_obj.supplier_product = product
-                        line_obj.save(update_fields=["supplier_product", "updated_at"])
-                if category and line_obj.supplier_product and not line_obj.supplier_product.category:
-                    line_obj.supplier_product.category = category
-                    line_obj.supplier_product.save(update_fields=["category", "updated_at"])
+                supplier_code = str(line_payload.get("supplier_code") or line_obj.supplier_code or "").strip()
+                raw_name = str(line_payload.get("raw_product_name") or line_obj.raw_product_name or "").strip()
+                uom = str(line_obj.qty_unit or "").strip() or None
+                expected_product = _resolve_supplier_product_by_line(
+                    supplier_id=supplier_id,
+                    supplier_code=supplier_code,
+                    raw_name=raw_name,
+                    qty_unit=uom,
+                )
+                if expected_product and line_obj.supplier_product_id != expected_product.id:
+                    line_obj.supplier_product = expected_product
+                    line_obj.save(update_fields=["supplier_product", "updated_at"])
+                if not line_obj.supplier_product_id and supplier_id and raw_name and uom:
+                    product = SupplierProduct.objects.create(
+                        supplier_id=supplier_id,
+                        name=raw_name[:255],
+                        supplier_sku=supplier_code or None,
+                        uom=uom,
+                        category=category or None,
+                    )
+                    line_obj.supplier_product = product
+                    line_obj.save(update_fields=["supplier_product", "updated_at"])
+                if category and line_obj.supplier_product:
+                    current_category = str(line_obj.supplier_product.category or "").strip()
+                    if not current_category:
+                        line_obj.supplier_product.category = category
+                        line_obj.supplier_product.save(update_fields=["category", "updated_at"])
             flow_summary = {}
             if target == "goods_receipt":
                 flow_summary = _ensure_goods_receipt_stock_movements(instance)

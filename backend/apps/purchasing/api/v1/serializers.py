@@ -97,9 +97,10 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         lines_data = validated_data.pop("lines", [])
         receipt = GoodsReceipt.objects.create(**validated_data)
-        GoodsReceiptLine.objects.bulk_create(
+        created_lines = GoodsReceiptLine.objects.bulk_create(
             [GoodsReceiptLine(receipt=receipt, **line_data) for line_data in lines_data]
         )
+        receipt._created_lines = created_lines
         return receipt
 
 
@@ -188,9 +189,10 @@ class InvoiceSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         lines_data = validated_data.pop("lines", [])
         invoice = Invoice.objects.create(**validated_data)
-        InvoiceLine.objects.bulk_create(
+        created_lines = InvoiceLine.objects.bulk_create(
             [InvoiceLine(invoice=invoice, **line_data) for line_data in lines_data]
         )
+        invoice._created_lines = created_lines
         return invoice
 
 
