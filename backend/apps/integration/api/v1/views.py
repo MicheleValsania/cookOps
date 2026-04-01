@@ -218,11 +218,37 @@ def _normalize_datetime_text(value):
     return None
 
 
+def _normalize_product_category(value):
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    compact = "".join(ch for ch in raw if ch.isalnum())
+    aliases = {
+        "epicerie": "epicerie",
+        "viande": "viande",
+        "viandes": "viande",
+        "poisson": "poissons",
+        "poissons": "poissons",
+        "legume": "legumes",
+        "legumes": "legumes",
+        "légume": "legumes",
+        "légumes": "legumes",
+        "bof": "bof",
+        "beurreoeufsfromages": "bof",
+        "beurreoeuffromage": "bof",
+        "surgele": "surgeles",
+        "surgeles": "surgeles",
+        "surgelé": "surgeles",
+        "surgelés": "surgeles",
+    }
+    return aliases.get(compact)
+
+
 def _normalize_lines(lines, target: str):
     normalized = []
     for raw in _as_list(lines):
         line = _as_dict(raw)
-        line_category = str(_pick_first(line, "product_category", "category", "product_category_label") or "").strip()
+        line_category = _normalize_product_category(_pick_first(line, "product_category", "category", "product_category_label"))
         supplier_code = _pick_first(line, "supplier_code", "supplier_sku", "code", "sku", "article_code")
         row = {
             # Never trust supplier_product ids coming from OCR/extracted payloads.

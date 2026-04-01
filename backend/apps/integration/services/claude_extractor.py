@@ -7,6 +7,15 @@ from typing import Any
 
 from apps.integration.models import DocumentType, IntegrationDocument
 
+PURCHASING_PRODUCT_CATEGORIES = [
+    "epicerie",
+    "viande",
+    "poissons",
+    "legumes",
+    "bof",
+    "surgeles",
+]
+
 
 @dataclass
 class ClaudeExtractionResult:
@@ -41,7 +50,7 @@ def _build_schema_hint(document_type: str) -> dict[str, Any]:
         "supplier_product": None,
         "supplier_code": None,
         "raw_product_name": "string",
-        "product_category": None,
+        "product_category": f"{'|'.join(PURCHASING_PRODUCT_CATEGORIES)}|null",
         "description": None,
         "qty_value": "0.000",
         "qty_unit": "kg|g|l|ml|cl|pc",
@@ -186,6 +195,8 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
         "No markdown, no prose, no code fences, JSON only. "
         "Rules: keep decimal values as strings using dot separator; use null when not found; preserve line ordering; "
         "extract every visible line item with quantity and unit if present. "
+        f"When a product category can be inferred from the line item, set product_category using only one of these values: {', '.join(PURCHASING_PRODUCT_CATEGORIES)}. "
+        "Use null when the category is not reasonably inferable from the product name. "
         "Return compact JSON (single line) and omit optional fields that are null at line level. "
         "If supplier/site UUIDs are not present in the file, keep them as null. "
         f"Target schema: {json.dumps(schema_hint)}"
