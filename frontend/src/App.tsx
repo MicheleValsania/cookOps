@@ -4908,6 +4908,43 @@ function App() {
     printChecklistTable(`${t("orders.supplierOrderCard")}: ${group.supplier}`, headers, rows);
   }
 
+  function printStockSummaryPdf() {
+    const headers = [
+      "Code fournisseur / Produit",
+      "Code fournisseur",
+      "Nom article",
+      "Fournisseur",
+      "Categorie produit",
+      t("table.unit"),
+      "Entrees BL/Facture",
+      "Entrees fallback facture",
+      "Sorties inventaire",
+      "Sorties autres",
+      "Total entrees",
+      "Total sorties",
+      "Stock actuel",
+      "Dernier mouvement",
+    ];
+    const rows = filteredStockRows.map((row) => [
+      String(row.product_label ?? "-"),
+      String(row.supplier_code ?? "-"),
+      String(row.product_name ?? "-"),
+      String(row.supplier_name ?? "-"),
+      String(row.product_category ?? "-"),
+      String(row.qty_unit ?? "-"),
+      String(row.in_from_docs ?? "0.000"),
+      String(row.in_from_invoice_fallback ?? "0.000"),
+      String(row.out_from_inventory ?? "0.000"),
+      String(row.out_other ?? "0.000"),
+      String(row.total_in ?? "0.000"),
+      String(row.total_out ?? "0.000"),
+      String(row.current_stock ?? "0.000"),
+      String(row.last_movement_at ?? "-").replace("T", " ").slice(0, 19),
+    ]);
+    const suffix = stockSearch.trim() ? ` | filtre: ${stockSearch.trim()}` : "";
+    printChecklistTable(`Stock PDF${suffix}`, headers, rows);
+  }
+
   function printSectorOrderCard(group: { section: string; rows: Array<Record<string, unknown>> }) {
     const headers = [t("table.ingredient"), t("table.supplier"), t("table.supplierCode")];
     if (quantityMode === "with_qty") {
@@ -7024,9 +7061,12 @@ function App() {
 
           {nav === "inventario" && (
             <section className="panel">
-              <div className="doc-preview__head">
-                <h2>Stock - resultats entrees/sorties</h2>
-                <div className="entry-actions">
+                <div className="doc-preview__head">
+                  <h2>Stock - resultats entrees/sorties</h2>
+                  <div className="entry-actions">
+                  <button type="button" onClick={printStockSummaryPdf} disabled={!filteredStockRows.length}>
+                    {t("action.pdf")}
+                  </button>
                   <button type="button" onClick={rebuildStockFromPurchasing} disabled={!siteId || isRebuildingStock}>
                     {isRebuildingStock ? t("purchases.processing") : "Ricostruisci stock da acquisti"}
                   </button>
