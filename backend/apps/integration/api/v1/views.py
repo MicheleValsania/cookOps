@@ -240,6 +240,11 @@ def _normalize_product_category(value):
         "surgeles": "surgeles",
         "surgelé": "surgeles",
         "surgelés": "surgeles",
+        "boisson": "boissons",
+        "boissons": "boissons",
+        "entretien": "entretien",
+        "emballage": "emballages",
+        "emballages": "emballages",
     }
     return aliases.get(compact)
 

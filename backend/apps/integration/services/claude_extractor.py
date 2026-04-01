@@ -14,6 +14,9 @@ PURCHASING_PRODUCT_CATEGORIES = [
     "legumes",
     "bof",
     "surgeles",
+    "boissons",
+    "entretien",
+    "emballages",
 ]
 
 
