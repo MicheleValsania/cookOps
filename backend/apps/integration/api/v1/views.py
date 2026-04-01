@@ -302,6 +302,19 @@ def _apply_supplier_product_categories(lines, supplier_id: str | None):
         line["product_category"] = product.category
 
 
+def _supplier_code_rules(supplier_id: str | None):
+    if not supplier_id:
+        return {}
+    supplier_uuid = _safe_uuid(supplier_id)
+    if not supplier_uuid:
+        return {}
+    supplier = Supplier.objects.filter(id=supplier_uuid).only("metadata").first()
+    if not supplier or not isinstance(supplier.metadata, dict):
+        return {}
+    rules = supplier.metadata.get("integration_rules")
+    return rules if isinstance(rules, dict) else {}
+
+
 def _apply_supplier_product_refs(lines, supplier_id: str | None):
     if not lines:
         return
@@ -316,8 +329,9 @@ def _apply_supplier_product_refs(lines, supplier_id: str | None):
             if isinstance(line, dict):
                 line.pop("supplier_product", None)
         return
+    rules = _supplier_code_rules(supplier_id)
     codes = {
-        _normalize_supplier_code(str(line.get("supplier_code") or "").strip())
+        _normalize_supplier_code(str(line.get("supplier_code") or "").strip(), rules)
         for line in lines
         if isinstance(line, dict) and str(line.get("supplier_code") or "").strip()
     }
@@ -331,11 +345,11 @@ def _apply_supplier_product_refs(lines, supplier_id: str | None):
     products = SupplierProduct.objects.filter(supplier_id=supplier_uuid)
     if codes:
         products = products.filter(supplier_sku__in=list(codes))
-    by_code = {_normalize_supplier_code(str(p.supplier_sku or "")): p for p in products}
+    by_code = {_normalize_supplier_code(str(p.supplier_sku or ""), rules): p for p in products}
     for line in lines:
         if not isinstance(line, dict):
             continue
-        code = _normalize_supplier_code(str(line.get("supplier_code") or "").strip())
+        code = _normalize_supplier_code(str(line.get("supplier_code") or "").strip(), rules)
         if not code:
             line.pop("supplier_product", None)
             continue
@@ -420,12 +434,19 @@ def _clean_vat(value):
     return "".join(ch for ch in str(value).upper() if ch.isalnum())
 
 
-def _normalize_supplier_code(value):
+def _normalize_supplier_code(value, rules: dict | None = None):
     if not value:
         return ""
     raw = "".join(ch for ch in str(value).upper() if ch.isalnum())
-    if raw.startswith("P") and raw[1:].isdigit():
-        return raw[1:]
+    prefixes = rules.get("strip_supplier_code_prefixes") if isinstance(rules, dict) else None
+    if isinstance(prefixes, list):
+        for prefix in prefixes:
+            prefix_raw = "".join(ch for ch in str(prefix).upper() if ch.isalnum())
+            if prefix_raw and raw.startswith(prefix_raw):
+                trimmed = raw[len(prefix_raw):]
+                if trimmed:
+                    raw = trimmed
+                break
     return raw
 
 
