@@ -3,7 +3,11 @@ import json
 import re
 import uuid
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone as dt_timezone
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.db import connections
@@ -79,6 +83,100 @@ def _normalize_fiche_payload_from_v11(fiche: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def _http_get_json(url: str) -> Any:
+    request = Request(url, headers={"Accept": "application/json"})
+    with urlopen(request, timeout=30) as response:
+        raw = response.read().decode("utf-8")
+    return json.loads(raw)
+
+
+def _map_fiche_to_v11_export(fiche: dict[str, Any], fallback_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    summary = fallback_summary or {}
+    ingredients = fiche.get("ingredients") if isinstance(fiche.get("ingredients"), list) else []
+    haccp_profiles = fiche.get("haccpProfiles") if isinstance(fiche.get("haccpProfiles"), list) else []
+    storage_profiles = fiche.get("storageProfiles") if isinstance(fiche.get("storageProfiles"), list) else []
+    return {
+        "fiche_id": fiche.get("id") or summary.get("id") or "",
+        "updated_at": fiche.get("updatedAt") or summary.get("updatedAt"),
+        "title": fiche.get("title") or summary.get("title") or "",
+        "portions": fiche.get("portions"),
+        "language": fiche.get("language") or "fr",
+        "category": fiche.get("category") or summary.get("category"),
+        "allergens": fiche.get("allergens") or [],
+        "ingredients": [
+            {
+                "ingredient_name_raw": ingredient.get("name") or "",
+                "quantity_raw": ingredient.get("qty"),
+                "note": ingredient.get("note"),
+                "supplier_name": ingredient.get("supplier"),
+                "supplier_id": ingredient.get("supplierId"),
+                "supplier_product_id": ingredient.get("supplierProductId"),
+                "supplier_code": ingredient.get("supplierCode"),
+                "unit_price_value": ingredient.get("unitPrice"),
+                "unit_price_unit": ingredient.get("unitPriceUnit"),
+            }
+            for ingredient in ingredients
+            if isinstance(ingredient, dict)
+        ],
+        "procedure_steps": fiche.get("steps") or [],
+        "haccp_profiles": haccp_profiles,
+        "storage_profiles": storage_profiles,
+        "label_hints": fiche.get("labelHints"),
+        "warnings": [],
+    }
+
+
+def import_recipe_snapshots_from_api(query: str = "", limit: int = 500, refresh_existing: bool = False) -> dict[str, Any]:
+    base_url = getattr(settings, "FICHES_API_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        return {"ok": False, "detail": "FICHES API non configurata."}
+
+    try:
+        listing = _http_get_json(f"{base_url}/fiches")
+    except HTTPError as exc:
+        return {"ok": False, "detail": f"Fiches API HTTP error: {exc.code}"}
+    except URLError as exc:
+        return {"ok": False, "detail": f"Fiches API unreachable: {exc.reason}"}
+    except Exception as exc:
+        return {"ok": False, "detail": f"Fiches API read failed: {exc}"}
+
+    if not isinstance(listing, list):
+        return {"ok": False, "detail": "Fiches API returned an invalid listing payload."}
+
+    query_norm = _normalize_text(query)
+    filtered = []
+    for item in listing:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if query_norm and query_norm not in _normalize_text(title):
+            continue
+        filtered.append(item)
+    filtered = filtered[: max(1, min(int(limit), 5000))]
+
+    fiches_export: list[dict[str, Any]] = []
+    for item in filtered:
+        fiche_id = str(item.get("id") or "").strip()
+        if not fiche_id:
+            continue
+        try:
+            fiche_payload = _http_get_json(f"{base_url}/fiches/{quote(fiche_id, safe='')}")
+        except Exception:
+            continue
+        if not isinstance(fiche_payload, dict):
+            continue
+        fiches_export.append(_map_fiche_to_v11_export(fiche_payload, item))
+
+    envelope = {
+        "export_version": "1.1",
+        "exported_at": datetime.now(dt_timezone.utc).isoformat().replace("+00:00", "Z"),
+        "source_app": "fiches-recettes",
+        "fiches": fiches_export,
+        "warnings": [],
+    }
+    return import_recipe_snapshots_from_v11_envelope(envelope, refresh_existing=refresh_existing)
 
 
 def _enrich_payload_supplier_codes(payload: dict[str, Any]) -> dict[str, Any]:
@@ -259,6 +357,9 @@ def import_recipe_snapshots_from_v11_envelope(
 
 
 def import_recipe_snapshots(query: str = "", limit: int = 500, refresh_existing: bool = False) -> dict[str, Any]:
+    if getattr(settings, "FICHES_API_BASE_URL", "").strip():
+        return import_recipe_snapshots_from_api(query=query, limit=limit, refresh_existing=refresh_existing)
+
     if "fiches" not in connections.databases:
         return {"ok": False, "detail": "FICHES DB non configurato."}
 
