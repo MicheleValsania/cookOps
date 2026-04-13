@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -56,3 +58,35 @@ class IntegrationDocumentReviewApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("apps.integration.api.v1.views.TracciaClient.request_json")
+    def test_validated_label_capture_syncs_to_traccia(self, request_json_mock):
+        request_json_mock.return_value = (
+            201,
+            {"lot_id": "lot-1", "internal_lot_code": "SNACK-20260413-0001", "alerts_created": 2},
+        )
+        self.extraction.normalized_payload = {
+            "supplier_name": "ATSCASH",
+            "supplier_lot_code": "LOT-001",
+            "product_guess": "Jaune d'oeuf cocotine",
+            "weight_value": "2.000",
+            "weight_unit": "l",
+            "dlc_date": "2026-04-20",
+            "product_category": "bof",
+        }
+        self.extraction.save(update_fields=["normalized_payload", "updated_at"])
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{self.document.id}/review/",
+            {"status": "validated"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.document.refresh_from_db()
+        self.assertIn("traccia_sync", self.document.metadata)
+        sync_payload = self.document.metadata["traccia_sync"]
+        self.assertEqual(sync_payload["internal_lot_code"], "SNACK-20260413-0001")
+        request_json_mock.assert_called_once()
+        self.assertEqual(request_json_mock.call_args.args[0], "POST")
+        self.assertEqual(request_json_mock.call_args.args[1], "/api/v1/haccp/traceability-validations/")

@@ -1287,6 +1287,35 @@ class DocumentClaudeExtractView(APIView):
             raise
 
 
+def _sync_validated_label_capture_to_traccia(document: IntegrationDocument):
+    extraction = document.extractions.order_by("-created_at").first()
+    payload = _as_dict(extraction.normalized_payload if extraction else {})
+    qty_value = _pick_first(payload, "weight_value", "quantity", "qty_value")
+    qty_unit = _pick_first(payload, "weight_unit", "unit", "qty_unit")
+    category = _pick_first(payload, "product_category", "category", "product_category_label")
+    client = TracciaClient()
+    _, sync_payload = client.request_json(
+        "POST",
+        "/api/v1/haccp/traceability-validations/",
+        data={
+            "site": str(document.site_id),
+            "source_document_id": str(document.id),
+            "source_document_filename": document.filename,
+            "supplier_name": _pick_first(payload, "supplier_name"),
+            "supplier_lot_code": _pick_first(payload, "supplier_lot_code", "lot_code", "lot"),
+            "internal_lot_code": _pick_first(payload, "origin_lot_code", "source_lot_code", "internal_lot_code"),
+            "product_guess": _pick_first(payload, "product_guess", "product_name", "label") or document.filename,
+            "quantity_value": str(qty_value).strip() if qty_value not in (None, "") else None,
+            "quantity_unit": str(qty_unit or "").strip(),
+            "production_date": _pick_first(payload, "production_date"),
+            "dlc_date": _pick_first(payload, "dlc_date", "expiry_date"),
+            "category": str(category or "").strip(),
+            "corrected_payload": payload,
+        },
+    )
+    return sync_payload
+
+
 class DocumentReviewView(APIView):
     def post(self, request, document_id):
         document = get_object_or_404(IntegrationDocument, pk=document_id)
@@ -1304,6 +1333,12 @@ class DocumentReviewView(APIView):
             if latest_extraction:
                 latest_extraction.normalized_payload = corrected_payload
                 latest_extraction.save(update_fields=["normalized_payload", "updated_at"])
+        if serializer.validated_data["status"] == "validated" and document.document_type == DocumentType.LABEL_CAPTURE:
+            try:
+                metadata["traccia_sync"] = _sync_validated_label_capture_to_traccia(document)
+                metadata.pop("traccia_sync_error", None)
+            except TracciaClientError as exc:
+                metadata["traccia_sync_error"] = exc.payload
         document.save(update_fields=["metadata", "updated_at"])
         return Response(
             {
@@ -1312,6 +1347,8 @@ class DocumentReviewView(APIView):
                 "review_notes": metadata["review_notes"],
                 "reviewed_at": metadata["reviewed_at"],
                 "corrected_payload": corrected_payload,
+                "traccia_sync": metadata.get("traccia_sync"),
+                "traccia_sync_error": metadata.get("traccia_sync_error"),
             },
             status=status.HTTP_200_OK,
         )

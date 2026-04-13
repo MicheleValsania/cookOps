@@ -3645,7 +3645,12 @@ function App() {
         setNotice(errorWithDetail("error.extractionCreate", body.detail ?? JSON.stringify(body)));
         return;
       }
-      setNotice(`Validazione OCR aggiornata: ${statusValue}.`);
+      const syncError = String((body as Record<string, unknown>).traccia_sync_error ? JSON.stringify((body as Record<string, unknown>).traccia_sync_error) : "").trim();
+      setNotice(
+        syncError
+          ? `Validazione OCR aggiornata: ${statusValue}. Sync Traccia non riuscito: ${syncError}`
+          : `Validazione OCR aggiornata: ${statusValue}.`
+      );
       await loadDocuments();
       await loadHaccpData();
     } catch {
