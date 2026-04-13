@@ -1293,6 +1293,10 @@ def _sync_validated_label_capture_to_traccia(document: IntegrationDocument):
     qty_value = _pick_first(payload, "weight_value", "quantity", "qty_value")
     qty_unit = _pick_first(payload, "weight_unit", "unit", "qty_unit")
     category = _pick_first(payload, "product_category", "category", "product_category_label")
+    supplier_name = _pick_first(payload, "supplier_name")
+    supplier_lot_code = _pick_first(payload, "supplier_lot_code", "lot_code", "lot")
+    internal_lot_code = _pick_first(payload, "origin_lot_code", "source_lot_code", "internal_lot_code")
+    product_guess = _pick_first(payload, "product_guess", "product_name", "label") or document.filename
     client = TracciaClient()
     _, sync_payload = client.request_json(
         "POST",
@@ -1301,10 +1305,10 @@ def _sync_validated_label_capture_to_traccia(document: IntegrationDocument):
             "site": str(document.site_id),
             "source_document_id": str(document.id),
             "source_document_filename": document.filename,
-            "supplier_name": _pick_first(payload, "supplier_name"),
-            "supplier_lot_code": _pick_first(payload, "supplier_lot_code", "lot_code", "lot"),
-            "internal_lot_code": _pick_first(payload, "origin_lot_code", "source_lot_code", "internal_lot_code"),
-            "product_guess": _pick_first(payload, "product_guess", "product_name", "label") or document.filename,
+            "supplier_name": str(supplier_name or "").strip(),
+            "supplier_lot_code": str(supplier_lot_code or "").strip(),
+            "internal_lot_code": str(internal_lot_code or "").strip(),
+            "product_guess": str(product_guess or document.filename).strip(),
             "quantity_value": str(qty_value).strip() if qty_value not in (None, "") else None,
             "quantity_unit": str(qty_unit or "").strip(),
             "production_date": _pick_first(payload, "production_date"),
