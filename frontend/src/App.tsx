@@ -5071,6 +5071,18 @@ function App() {
     setReportLotSearch("");
   }
 
+  function setReportToday() {
+    const today = getTodayIsoDate();
+    setReportDateFrom(today);
+    setReportDateTo(today);
+  }
+
+  function setReportCurrentMonth() {
+    const today = getTodayIsoDate();
+    setReportDateFrom(`${today.slice(0, 8)}01`);
+    setReportDateTo(today);
+  }
+
   function renderReportStatusChip(value: string) {
     const normalized = String(value || "").trim().toLowerCase();
     const label =
@@ -7480,6 +7492,8 @@ function App() {
                     >
                       Export temperature
                     </button>
+                    <button type="button" onClick={setReportToday}>Oggi</button>
+                    <button type="button" onClick={setReportCurrentMonth}>Mese corrente</button>
                     <button type="button" onClick={resetReportFilters}>Reset filtri</button>
                     <button type="button" onClick={() => setNav("dashboard")}>Dashboard</button>
                   </div>
@@ -7534,7 +7548,14 @@ function App() {
                   </div>
                   <p className="muted">Storico operativo delle foto importate, dei dati estratti e del loro stato di convalida.</p>
                   {filteredTraceabilityReportRows.length === 0 ? (
-                    <p className="muted">Nessun documento tracciabilita disponibile.</p>
+                    traceabilityReportRows.length === 0 ? (
+                      <p className="muted">Nessun documento tracciabilita disponibile.</p>
+                    ) : (
+                      <div className="muted">
+                        <p>Nessun documento corrisponde ai filtri selezionati.</p>
+                        <p>Sono presenti {traceabilityReportRows.length} documenti nel report totale.</p>
+                      </div>
+                    )
                   ) : (
                     <div className="sheet-wrap">
                       <table className="sheet-table">
