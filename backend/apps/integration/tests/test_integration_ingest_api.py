@@ -459,3 +459,94 @@ class IntegrationIngestApiTests(APITestCase):
         second_document.refresh_from_db()
         self.assertEqual(second_document.status, "archived_duplicate")
         self.assertEqual(second_document.metadata["duplicate"]["reason"], "invoice_semantic_fingerprint")
+
+    def test_ingest_invoice_keeps_standard_packaged_products_as_pieces(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-sriracha.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "INV-SRIRACHA-001",
+                "invoice_date": "2026-03-14",
+                "lines": [
+                    {
+                        "supplier_code": "SRI-455",
+                        "raw_product_name": "455ML SAUCE SRIRACHA MAYO THAI DANCER",
+                        "qty_value": "1.000",
+                        "qty_unit": "pc",
+                        "product_category": "epicerie",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-inv-sriracha-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        line = InvoiceLine.objects.get(invoice__invoice_number="INV-SRIRACHA-001")
+        self.assertEqual(str(line.qty_value), "1.000")
+        self.assertEqual(line.qty_unit, "pc")
+        self.assertEqual(line.supplier_product.uom, "pc")
+        self.assertEqual(str(line.supplier_product.pack_qty), "455.000")
+        self.assertEqual(line.supplier_product.metadata.get("pack_uom"), "ml")
+
+    def test_ingest_invoice_keeps_variable_weight_products_in_real_unit(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-viande.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "INV-VIANDE-001",
+                "invoice_date": "2026-03-15",
+                "lines": [
+                    {
+                        "supplier_code": "MEAT-1",
+                        "raw_product_name": "1KG ENTRECOTE BOEUF",
+                        "qty_value": "2.000",
+                        "qty_unit": "pc",
+                        "product_category": "viande",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-inv-viande-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        line = InvoiceLine.objects.get(invoice__invoice_number="INV-VIANDE-001")
+        self.assertEqual(str(line.qty_value), "2.000")
+        self.assertEqual(line.qty_unit, "kg")

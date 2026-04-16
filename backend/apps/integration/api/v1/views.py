@@ -287,7 +287,7 @@ def _preferred_uom_from_history(*, product: SupplierProduct | None, supplier_id:
     return None
 
 
-def _canonicalize_line_with_product(line_obj, product: SupplierProduct | None, raw_name: str):
+def _canonicalize_line_with_product(line_obj, product: SupplierProduct | None, raw_name: str, category: str | None = None):
     inferred_pack_qty, inferred_uom = _infer_packaging_from_name(raw_name)
     update_fields: list[str] = []
 
@@ -295,22 +295,52 @@ def _canonicalize_line_with_product(line_obj, product: SupplierProduct | None, r
         product_update_fields: list[str] = []
         canonical_uom = str(product.uom or "").strip().lower() or None
         current_pack_qty = Decimal(str(product.pack_qty)) if product.pack_qty is not None else None
-        if inferred_uom and not canonical_uom:
-            product.uom = inferred_uom
-            canonical_uom = inferred_uom
-            product_update_fields.append("uom")
+        product_metadata = product.metadata.copy() if isinstance(product.metadata, dict) else {}
+        effective_category = str(category or product.category or "").strip().lower()
+        variable_categories = {"viande", "poissons", "legumes"}
+        is_standard_pack = inferred_pack_qty is not None and effective_category not in variable_categories
+
         if inferred_pack_qty is not None:
             inferred_pack_decimal = Decimal(str(inferred_pack_qty))
             if current_pack_qty != inferred_pack_decimal:
                 product.pack_qty = inferred_pack_decimal
                 current_pack_qty = inferred_pack_decimal
                 product_update_fields.append("pack_qty")
-        if product_update_fields:
-            product.save(update_fields=product_update_fields + ["updated_at"])
-        if canonical_uom and str(line_obj.qty_unit or "").strip().lower() == "pc" and current_pack_qty is not None:
-            line_obj.qty_value = Decimal(str(line_obj.qty_value or "0")) * current_pack_qty
-            line_obj.qty_unit = canonical_uom
-            update_fields.extend(["qty_value", "qty_unit"])
+            if inferred_uom and product_metadata.get("pack_uom") != inferred_uom:
+                product_metadata["pack_uom"] = inferred_uom
+                product.metadata = product_metadata
+                product_update_fields.append("metadata")
+
+        if is_standard_pack:
+            if canonical_uom != "pc":
+                product.uom = "pc"
+                canonical_uom = "pc"
+                product_update_fields.append("uom")
+            line_unit = str(line_obj.qty_unit or "").strip().lower()
+            pack_uom = str(product_metadata.get("pack_uom") or inferred_uom or "").strip().lower() or None
+            line_qty = Decimal(str(line_obj.qty_value or "0"))
+            if pack_uom and current_pack_qty is not None and line_unit == pack_uom and current_pack_qty:
+                converted = line_qty / current_pack_qty
+                if converted == converted.quantize(Decimal("1.000")):
+                    line_obj.qty_value = converted.quantize(Decimal("1.000"))
+                    line_obj.qty_unit = "pc"
+                    update_fields.extend(["qty_value", "qty_unit"])
+        else:
+            if inferred_uom and not canonical_uom:
+                product.uom = inferred_uom
+                canonical_uom = inferred_uom
+                product_update_fields.append("uom")
+            if canonical_uom and canonical_uom != "pc" and str(line_obj.qty_unit or "").strip().lower() == "pc" and current_pack_qty is not None:
+                line_obj.qty_value = Decimal(str(line_obj.qty_value or "0")) * current_pack_qty
+                line_obj.qty_unit = canonical_uom
+                update_fields.extend(["qty_value", "qty_unit"])
+
+        deduped = []
+        for field in product_update_fields:
+            if field not in deduped:
+                deduped.append(field)
+        if deduped:
+            product.save(update_fields=deduped + ["updated_at"])
 
     if update_fields:
         line_obj.save(update_fields=update_fields + ["updated_at"])
@@ -1262,7 +1292,7 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
                     )
                     line_obj.supplier_product = product
                     line_obj.save(update_fields=["supplier_product", "updated_at"])
-                _canonicalize_line_with_product(line_obj, line_obj.supplier_product if line_obj.supplier_product_id else None, raw_name)
+                _canonicalize_line_with_product(line_obj, line_obj.supplier_product if line_obj.supplier_product_id else None, raw_name, category)
                 if category and line_obj.supplier_product:
                     current_category = str(line_obj.supplier_product.category or "").strip()
                     if not current_category:
