@@ -295,3 +295,167 @@ class IntegrationIngestApiTests(APITestCase):
         line = InvoiceLine.objects.get(invoice__invoice_number="INV-HISTORY-002")
         self.assertEqual(line.qty_unit, "pc")
         self.assertEqual(product.uom, "pc")
+
+    def test_ingest_invoice_marks_duplicate_even_with_different_filename(self):
+        first_document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="supplier-a.pdf",
+            status="extracted",
+        )
+        first_extraction = DocumentExtraction.objects.create(
+            document=first_document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "FAC-2026-001",
+                "invoice_date": "2026-03-10",
+                "total_amount": "120.00",
+                "lines": [
+                    {
+                        "raw_product_name": "Tomate",
+                        "qty_value": "2.000",
+                        "qty_unit": "kg",
+                    }
+                ],
+            },
+        )
+        second_document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="scan-renamed.pdf",
+            status="extracted",
+        )
+        second_extraction = DocumentExtraction.objects.create(
+            document=second_document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "FAC-2026-001",
+                "invoice_date": "2026-03-10",
+                "total_amount": "120.00",
+                "lines": [
+                    {
+                        "raw_product_name": "Tomate",
+                        "qty_value": "2.000",
+                        "qty_unit": "kg",
+                    }
+                ],
+            },
+        )
+
+        first = self.client.post(
+            f"/api/v1/integration/documents/{first_document.id}/ingest/",
+            {"extraction_id": str(first_extraction.id), "idempotency_key": "dup-file-1", "target": "invoice"},
+            format="json",
+        )
+        second = self.client.post(
+            f"/api/v1/integration/documents/{second_document.id}/ingest/",
+            {"extraction_id": str(second_extraction.id), "idempotency_key": "dup-file-2", "target": "invoice"},
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(Invoice.objects.count(), 1)
+        second_document.refresh_from_db()
+        self.assertEqual(second_document.status, "archived_duplicate")
+        self.assertEqual(second_document.metadata["duplicate"]["reason"], "invoice_number_normalized")
+
+    def test_ingest_invoice_marks_duplicate_when_invoice_number_varies_but_content_matches(self):
+        first_document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="ocr-a.pdf",
+            status="extracted",
+        )
+        first_extraction = DocumentExtraction.objects.create(
+            document=first_document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "FA-7781",
+                "invoice_date": "2026-03-12",
+                "total_amount": "238.50",
+                "total_ht": "220.00",
+                "lines": [
+                    {
+                        "supplier_code": "A100",
+                        "raw_product_name": "Tomate ronde",
+                        "qty_value": "4.000",
+                        "qty_unit": "kg",
+                        "unit_price": "2.50",
+                    },
+                    {
+                        "supplier_code": "B200",
+                        "raw_product_name": "Mozzarella",
+                        "qty_value": "3.000",
+                        "qty_unit": "pc",
+                        "unit_price": "70.00",
+                    },
+                ],
+            },
+        )
+        second_document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="ocr-b.pdf",
+            status="extracted",
+        )
+        second_extraction = DocumentExtraction.objects.create(
+            document=second_document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "FA 778I",
+                "invoice_date": "2026-03-12",
+                "total_amount": "238,50",
+                "total_ht": "220,00",
+                "lines": [
+                    {
+                        "supplier_code": "B200",
+                        "raw_product_name": "Mozzarella",
+                        "qty_value": "3.000",
+                        "qty_unit": "pc",
+                        "unit_price": "70.00",
+                    },
+                    {
+                        "supplier_code": "A100",
+                        "raw_product_name": "Tomate ronde",
+                        "qty_value": "4.000",
+                        "qty_unit": "kg",
+                        "unit_price": "2.50",
+                    },
+                ],
+            },
+        )
+
+        first = self.client.post(
+            f"/api/v1/integration/documents/{first_document.id}/ingest/",
+            {"extraction_id": str(first_extraction.id), "idempotency_key": "dup-semantic-1", "target": "invoice"},
+            format="json",
+        )
+        second = self.client.post(
+            f"/api/v1/integration/documents/{second_document.id}/ingest/",
+            {"extraction_id": str(second_extraction.id), "idempotency_key": "dup-semantic-2", "target": "invoice"},
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(Invoice.objects.count(), 1)
+        second_document.refresh_from_db()
+        self.assertEqual(second_document.status, "archived_duplicate")
+        self.assertEqual(second_document.metadata["duplicate"]["reason"], "invoice_semantic_fingerprint")

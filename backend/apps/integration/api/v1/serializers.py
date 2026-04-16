@@ -1,4 +1,6 @@
-﻿from rest_framework import serializers
+﻿import hashlib
+
+from rest_framework import serializers
 
 from apps.integration.models import (
     CleaningCategory,
@@ -56,6 +58,15 @@ class IntegrationDocumentSerializer(serializers.ModelSerializer):
             validated_data["filename"] = file_obj.name
             validated_data["content_type"] = getattr(file_obj, "content_type", None)
             validated_data["file_size"] = getattr(file_obj, "size", None)
+            file_obj.seek(0)
+            digest = hashlib.sha256()
+            for chunk in file_obj.chunks():
+                digest.update(chunk)
+            metadata = validated_data.get("metadata") if isinstance(validated_data.get("metadata"), dict) else {}
+            metadata = metadata.copy()
+            metadata["file_sha256"] = digest.hexdigest()
+            validated_data["metadata"] = metadata
+            file_obj.seek(0)
         document = super().create(validated_data)
         if document.file:
             document.storage_path = document.file.name

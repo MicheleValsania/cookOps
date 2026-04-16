@@ -553,6 +553,114 @@ def _build_metadata(payload: dict, target: str):
     return metadata
 
 
+def _normalize_invoice_number(value):
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _normalize_name_key(value):
+    return " ".join(str(value or "").strip().upper().split())
+
+
+def _invoice_line_signature_from_payload(lines):
+    signature = []
+    for row in _as_list(lines):
+        supplier_code = _normalize_supplier_code(row.get("supplier_code"))
+        raw_name = _normalize_name_key(row.get("raw_product_name") or row.get("description") or row.get("product_name"))
+        qty_value = _normalize_decimal_text(row.get("qty_value") or row.get("quantity"))
+        qty_unit = _normalize_unit(row.get("qty_unit") or row.get("unit")) or ""
+        unit_price = _normalize_decimal_text(row.get("unit_price") or row.get("price"), places=4)
+        line_total = _normalize_decimal_text(row.get("line_total") or row.get("total"), places=2)
+        signature.append((supplier_code, raw_name, qty_value or "", qty_unit, unit_price or "", line_total or ""))
+    return tuple(sorted(signature))
+
+
+def _invoice_line_signature_from_instance(invoice: Invoice):
+    signature = []
+    for line in invoice.lines.all():
+        signature.append((
+            _normalize_supplier_code(line.supplier_code),
+            _normalize_name_key(line.raw_product_name),
+            _normalize_decimal_text(line.qty_value),
+            _normalize_unit(line.qty_unit) or "",
+            _normalize_decimal_text(line.unit_price, places=4),
+            "",
+        ))
+    return tuple(sorted(signature))
+
+
+def _invoice_amount_tokens(payload: dict):
+    metadata = _as_dict(payload.get("metadata"))
+    return {
+        "total_amount": _normalize_decimal_text(_pick_first(payload, "total_amount", default=metadata.get("total_amount")), places=2),
+        "total_ht": _normalize_decimal_text(_pick_first(payload, "total_ht", default=metadata.get("total_ht")), places=2),
+        "vat_amount": _normalize_decimal_text(_pick_first(payload, "vat_amount", default=metadata.get("vat_amount")), places=2),
+    }
+
+
+def _invoice_amount_tokens_from_instance(invoice: Invoice):
+    metadata = _as_dict(invoice.metadata)
+    return {
+        "total_amount": _normalize_decimal_text(metadata.get("total_amount"), places=2),
+        "total_ht": _normalize_decimal_text(metadata.get("total_ht"), places=2),
+        "vat_amount": _normalize_decimal_text(metadata.get("vat_amount"), places=2),
+    }
+
+
+def _find_existing_invoice_duplicate(*, document: IntegrationDocument, payload: dict):
+    site_id = str(payload.get("site") or "").strip()
+    supplier_id = str(payload.get("supplier") or "").strip()
+    invoice_number = str(payload.get("invoice_number") or "").strip()
+    if not site_id or not supplier_id:
+        return None, None
+
+    file_sha = str(_as_dict(document.metadata).get("file_sha256") or "").strip()
+    if file_sha:
+        existing_document = (
+            IntegrationDocument.objects.filter(
+                site_id=site_id,
+                document_type=DocumentType.INVOICE,
+                metadata__file_sha256=file_sha,
+            )
+            .exclude(pk=document.pk)
+            .order_by("-created_at")
+            .first()
+        )
+        if existing_document:
+            ingest = _as_dict(_as_dict(existing_document.metadata).get("ingest"))
+            existing_record_id = str(ingest.get("record_id") or "").strip()
+            if existing_record_id:
+                existing_invoice = Invoice.objects.prefetch_related("lines").filter(pk=existing_record_id).first()
+                if existing_invoice:
+                    return existing_invoice, "invoice_file_sha256"
+
+    if invoice_number:
+        normalized_invoice_number = _normalize_invoice_number(invoice_number)
+        candidates = Invoice.objects.prefetch_related("lines").filter(site_id=site_id, supplier_id=supplier_id)
+        for candidate in candidates:
+            if _normalize_invoice_number(candidate.invoice_number) == normalized_invoice_number:
+                return candidate, "invoice_number_normalized"
+
+    invoice_date = _normalize_date_text(payload.get("invoice_date"))
+    line_signature = _invoice_line_signature_from_payload(payload.get("lines") or [])
+    amount_tokens = _invoice_amount_tokens(payload)
+    if not invoice_date or not line_signature:
+        return None, None
+
+    candidates = Invoice.objects.prefetch_related("lines").filter(site_id=site_id, supplier_id=supplier_id, invoice_date=invoice_date)
+    for candidate in candidates:
+        candidate_tokens = _invoice_amount_tokens_from_instance(candidate)
+        shared_amount = any(
+            amount_tokens.get(key) and amount_tokens.get(key) == candidate_tokens.get(key)
+            for key in ("total_amount", "total_ht", "vat_amount")
+        )
+        if not shared_amount:
+            continue
+        if _invoice_line_signature_from_instance(candidate) == line_signature:
+            return candidate, "invoice_semantic_fingerprint"
+
+    return None, None
+
+
 def _clean_vat(value):
     if value is None:
         return ""
@@ -1083,6 +1191,21 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
         payload = _normalize_payload_for_ingest(extraction.normalized_payload, target, document)
+        if target == "invoice":
+            existing_duplicate, duplicate_reason = _find_existing_invoice_duplicate(document=document, payload=payload)
+            if existing_duplicate:
+                flow_summary = _ensure_invoice_fallback_movements(existing_duplicate)
+                duplicate_key = f"{payload.get('site')}:{payload.get('supplier')}:{str(payload.get('invoice_number') or '').strip() or duplicate_reason}"
+                _mark_document_duplicate(
+                    document,
+                    target=target,
+                    duplicate_record_id=str(existing_duplicate.id),
+                    duplicate_key=duplicate_key,
+                    flow_summary=flow_summary,
+                    reason=duplicate_reason or "invoice_duplicate_detected",
+                )
+                data = InvoiceSerializer(existing_duplicate).data
+                return Response(data, status=status.HTTP_200_OK)
         batch = start_batch(
             source,
             import_type,
