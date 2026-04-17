@@ -1250,13 +1250,21 @@ function App() {
   const normalizedMeta = useMemo(() => asRecord(normalizedData.metadata), [normalizedData]);
 
   const previewLines = useMemo(() => asArray(normalizedData.lines), [normalizedData]);
+  const selectedHaccpSector = useMemo(
+    () => haccpSectors.find((item) => item.id === selectedHaccpSectorId) ?? null,
+    [haccpSectors, selectedHaccpSectorId]
+  );
+
   const filteredHaccpColdPoints = useMemo(
     () =>
       haccpColdPoints.filter((item) => {
         if (!selectedHaccpSectorId) return true;
-        return item.sector === selectedHaccpSectorId;
+        return (
+          item.sector === selectedHaccpSectorId ||
+          (!!selectedHaccpSector?.internal_id && item.sector === selectedHaccpSector.internal_id)
+        );
       }),
-    [haccpColdPoints, selectedHaccpSectorId]
+    [haccpColdPoints, selectedHaccpSectorId, selectedHaccpSector]
   );
   const labelPlanningSchedules = useMemo(
     () => haccpSchedules.filter((item) => item.task_type === "label_print"),
@@ -3520,7 +3528,8 @@ function App() {
     const point = haccpColdPoints.find((item) => item.id === pointId);
     if (!point) return;
     if (point.sector) {
-      setSelectedHaccpSectorId(point.sector);
+      const sectorMatch = haccpSectors.find((item) => item.id === point.sector || item.internal_id === point.sector);
+      setSelectedHaccpSectorId(sectorMatch?.id || point.sector);
     }
     setEditingHaccpColdPointId(point.id);
     setNewHaccpColdPointName(point.name);
@@ -3579,7 +3588,7 @@ function App() {
     try {
       const payload = {
         site: siteId,
-        sector: selectedHaccpSectorId,
+        sector: selectedHaccpSector?.internal_id || selectedHaccpSectorId,
         external_code: newHaccpColdPointName.trim().toLowerCase().replace(/\s+/g, "-").slice(0, 64),
         name: newHaccpColdPointName.trim(),
         equipment_type: newHaccpColdPointEquipmentType,
@@ -3728,7 +3737,7 @@ function App() {
       return;
     }
     const taskType = forcedTaskType ?? newHaccpTaskType;
-    const selectedSector = haccpSectors.find((item) => item.id === selectedHaccpSectorId) ?? null;
+    const selectedSector = selectedHaccpSector;
     const selectedColdPoint =
       taskType === "temperature_register"
         ? filteredHaccpColdPoints.find((item) => item.id === selectedHaccpColdPointId) ?? null
