@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 from apps.inventory.api.v1.serializers import InventoryMovementSerializer
 from apps.inventory.models import InventoryMovement, MovementType
 from apps.core.models import Site
-from apps.purchasing.models import GoodsReceipt, Invoice
+from apps.purchasing.models import GoodsReceipt, GoodsReceiptLine, Invoice, InvoiceLine
 
 
 class InventoryMovementViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -55,11 +55,21 @@ class InventoryStockSummaryView(APIView):
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        movements = (
+        movements = list(
             InventoryMovement.objects.select_related("supplier_product", "supplier_product__supplier")
             .filter(Q(site_id=site_id) | Q(lot__site_id=site_id))
             .order_by("-happened_at", "-id")
         )
+        goods_receipt_ref_ids = [m.ref_id for m in movements if str(m.ref_type or "") == "goods_receipt_line" and m.ref_id]
+        invoice_ref_ids = [m.ref_id for m in movements if str(m.ref_type or "") == "invoice_line_fallback" and m.ref_id]
+        goods_price_by_ref = {
+            str(line.id): Decimal(str(line.unit_price))
+            for line in GoodsReceiptLine.objects.filter(id__in=goods_receipt_ref_ids).exclude(unit_price__isnull=True)
+        }
+        invoice_price_by_ref = {
+            str(line.id): Decimal(str(line.unit_price))
+            for line in InvoiceLine.objects.filter(id__in=invoice_ref_ids).exclude(unit_price__isnull=True)
+        }
         grouped: dict[tuple[str, str], dict] = defaultdict(
             lambda: {
                 "product_key": "",
@@ -77,6 +87,8 @@ class InventoryStockSummaryView(APIView):
                 "out_other": Decimal("0"),
                 "current_stock": Decimal("0"),
                 "last_movement_at": None,
+                "valued_in_qty": Decimal("0"),
+                "valued_in_amount": Decimal("0"),
             }
         )
         for m in movements:
@@ -108,12 +120,18 @@ class InventoryStockSummaryView(APIView):
             else:
                 row["total_in"] += qty
                 row["current_stock"] += qty
+                unit_price = None
                 if str(m.ref_type or "") == "invoice_line_fallback":
                     row["in_from_invoice_fallback"] += qty
+                    unit_price = invoice_price_by_ref.get(str(m.ref_id or ""))
                 elif str(m.ref_type or "") == "goods_receipt_line":
                     row["in_from_docs"] += qty
+                    unit_price = goods_price_by_ref.get(str(m.ref_id or ""))
                 elif str(m.ref_type or "") != "inventory_adjustment":
                     row["in_from_docs"] += qty
+                if unit_price is not None:
+                    row["valued_in_qty"] += qty
+                    row["valued_in_amount"] += qty * unit_price
 
         results = [
             {
@@ -131,6 +149,14 @@ class InventoryStockSummaryView(APIView):
                 "out_from_inventory": f"{row['out_from_inventory']:.3f}",
                 "out_other": f"{row['out_other']:.3f}",
                 "current_stock": f"{row['current_stock']:.3f}",
+                "weighted_avg_cost": (
+                    f"{(row['valued_in_amount'] / row['valued_in_qty']):.4f}"
+                    if row['valued_in_qty'] > 0 else None
+                ),
+                "stock_value": (
+                    f"{(row['current_stock'] * (row['valued_in_amount'] / row['valued_in_qty'])):.2f}"
+                    if row['valued_in_qty'] > 0 else None
+                ),
                 "last_movement_at": row["last_movement_at"].isoformat().replace("+00:00", "Z")
                 if row["last_movement_at"]
                 else None,

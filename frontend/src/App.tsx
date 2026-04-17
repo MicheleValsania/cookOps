@@ -112,6 +112,8 @@ type StockSummaryItem = {
   out_from_inventory?: string;
   out_other?: string;
   current_stock: string;
+  weighted_avg_cost?: string | null;
+  stock_value?: string | null;
   last_movement_at?: string | null;
 };
 
@@ -4928,6 +4930,8 @@ function App() {
       "Total entrees",
       "Total sorties",
       "Stock actuel",
+      "Co?t moyen",
+      "Valeur stock",
       "Dernier mouvement",
     ];
     const rows = filteredStockRows.map((row) => [
@@ -4944,6 +4948,8 @@ function App() {
       String(row.total_in ?? "0.000"),
       String(row.total_out ?? "0.000"),
       String(row.current_stock ?? "0.000"),
+      String(row.weighted_avg_cost ?? "-"),
+      String(row.stock_value ?? "-"),
       String(row.last_movement_at ?? "-").replace("T", " ").slice(0, 19),
     ]);
     const suffix = stockSearch.trim() ? ` | filtre: ${stockSearch.trim()}` : "";
@@ -7119,6 +7125,8 @@ function App() {
                       <th>Total entrees</th>
                       <th>Total sorties</th>
                       <th>Stock actuel</th>
+                      <th>Co?t moyen</th>
+                      <th>Valeur stock</th>
                       <th>Dernier mouvement</th>
                     </tr>
                   </thead>
@@ -7138,6 +7146,8 @@ function App() {
                         <td>{row.total_in}</td>
                         <td>{row.total_out}</td>
                         <td>{row.current_stock}</td>
+                        <td>{row.weighted_avg_cost ?? "-"}</td>
+                        <td>{row.stock_value ?? "-"}</td>
                         <td>{String(row.last_movement_at ?? "-").replace("T", " ").slice(0, 19)}</td>
                       </tr>
                     ))}
