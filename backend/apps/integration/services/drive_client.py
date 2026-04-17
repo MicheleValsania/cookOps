@@ -76,16 +76,16 @@ class DriveClient:
             raise DriveClientError(502, {"detail": "Google OAuth token response did not include access_token."})
         return token
 
-    def list_folder_files(self, *, limit: int = 80):
+    def iter_folder_files(self, *, limit: int | None = None):
         token = self._access_token()
-        rows = []
+        emitted = 0
         next_page_token = ""
-        page_size = max(1, min(limit, 200))
-        while len(rows) < limit:
+        page_size = 200 if limit is None else max(1, min(limit, 200))
+        while limit is None or emitted < limit:
             params = {
                 "q": f"'{self.folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'",
                 "fields": "nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink)",
-                "pageSize": min(page_size, limit - len(rows)),
+                "pageSize": page_size if limit is None else min(page_size, limit - emitted),
                 "supportsAllDrives": "true",
                 "includeItemsFromAllDrives": "true",
                 "orderBy": "createdTime desc",
@@ -108,11 +108,17 @@ class DriveClient:
                 raise DriveClientError(502, {"detail": f"Cannot reach Google Drive API: {exc}"}) from exc
             files = body.get("files") if isinstance(body, dict) else []
             if isinstance(files, list):
-                rows.extend(files)
+                for row in files:
+                    yield row
+                    emitted += 1
+                    if limit is not None and emitted >= limit:
+                        return
             next_page_token = str(body.get("nextPageToken") or "").strip() if isinstance(body, dict) else ""
             if not next_page_token:
                 break
-        return rows[:limit]
+
+    def list_folder_files(self, *, limit: int = 80):
+        return list(self.iter_folder_files(limit=limit))
 
     def download_file(self, file_id: str):
         token = self._access_token()
