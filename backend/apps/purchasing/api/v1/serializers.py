@@ -125,8 +125,8 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at", "updated_at")
 
     def validate_qty_value(self, value):
-        if value <= 0:
-            raise serializers.ValidationError("qty_value must be greater than 0.")
+        if value == 0:
+            raise serializers.ValidationError("qty_value must not be 0.")
         return value
 
 

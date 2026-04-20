@@ -145,3 +145,34 @@ class InvoiceApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.json()["code"], "validation_error")
         self.assertIn("goods_receipt_line", response.json()["field_errors"]["lines"][0])
+
+    def test_create_credit_note_invoice_with_negative_qty_returns_201(self):
+        payload = {
+            "site": str(self.site.id),
+            "supplier": str(self.supplier.id),
+            "invoice_number": "AV-001",
+            "invoice_date": "2026-04-20",
+            "metadata": {"source": "manual", "document_kind": "credit_note"},
+            "lines": [
+                {
+                    "supplier_product": str(self.product.id),
+                    "raw_product_name": "Milk",
+                    "qty_value": "-1.000",
+                    "qty_unit": "l",
+                    "unit_price": "1.7000",
+                    "line_total": "-1.7000",
+                }
+            ],
+        }
+
+        response = self.client.post(
+            "/api/v1/invoices/",
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="inv-credit-001",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        invoice = Invoice.objects.get(invoice_number="AV-001")
+        self.assertEqual(invoice.lines.count(), 1)
+        self.assertEqual(str(invoice.lines.first().qty_value), "-1.000")

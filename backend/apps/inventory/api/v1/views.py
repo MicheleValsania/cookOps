@@ -302,14 +302,15 @@ class InventoryRebuildFromPurchasingView(APIView):
                     skipped_invoices += 1
                     continue
                 happened_at = datetime.combine(invoice.invoice_date, time.min, tzinfo=timezone.utc)
+                movement_type = MovementType.OUT if line.qty_value < 0 else MovementType.IN
                 InventoryMovement.objects.create(
                     site=invoice.site,
                     lot=None,
                     supplier_product=line.supplier_product,
                     supplier_code=line.supplier_code,
                     raw_product_name=line.raw_product_name,
-                    movement_type=MovementType.IN,
-                    qty_value=line.qty_value,
+                    movement_type=movement_type,
+                    qty_value=abs(line.qty_value),
                     qty_unit=line.qty_unit,
                     happened_at=happened_at,
                     ref_type="invoice_line_fallback",

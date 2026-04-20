@@ -824,6 +824,7 @@ def _ensure_goods_receipt_stock_movements(receipt: GoodsReceipt):
 def _ensure_invoice_fallback_movements(invoice: Invoice):
     outcome = auto_match_invoice_lines(invoice, qty_tolerance_ratio=Decimal("0.0500"))
     created = 0
+    negative_lines = 0
     for line in invoice.lines.all():
         if line.goods_receipt_line_id:
             continue
@@ -831,22 +832,31 @@ def _ensure_invoice_fallback_movements(invoice: Invoice):
         if InventoryMovement.objects.filter(ref_type="invoice_line_fallback", ref_id=ref_id).exists():
             continue
         happened_at = datetime.combine(invoice.invoice_date, time.min, tzinfo=dt_timezone.utc)
+        movement_type = MovementType.OUT if line.qty_value < 0 else MovementType.IN
+        if movement_type == MovementType.OUT:
+            negative_lines += 1
         InventoryMovement.objects.create(
             site=invoice.site,
             lot=None,
             supplier_product=line.supplier_product,
             supplier_code=line.supplier_code,
             raw_product_name=line.raw_product_name,
-            movement_type=MovementType.IN,
-            qty_value=line.qty_value,
+            movement_type=movement_type,
+            qty_value=abs(line.qty_value),
             qty_unit=line.qty_unit,
             happened_at=happened_at,
             ref_type="invoice_line_fallback",
             ref_id=ref_id,
         )
         created += 1
+    if negative_lines and negative_lines == created:
+        flow_type = "credit_note_direct_to_stock"
+    elif negative_lines:
+        flow_type = "invoice_mixed_adjustment"
+    else:
+        flow_type = "invoice_after_delivery_note" if outcome.created_matches > 0 else "invoice_direct_to_stock"
     return {
-        "flow_type": "invoice_after_delivery_note" if outcome.created_matches > 0 else "invoice_direct_to_stock",
+        "flow_type": flow_type,
         "created_stock_movements": created,
         "matched_invoice_lines": outcome.created_matches,
         "fallback_invoice_lines": created,

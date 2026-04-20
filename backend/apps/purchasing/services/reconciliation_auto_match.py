@@ -103,6 +103,8 @@ def auto_match_invoice_lines(invoice: Invoice, qty_tolerance_ratio: Decimal = De
     used_receipt_line_ids: set[str] = set()
 
     for inv_line in invoice_lines:
+        if inv_line.qty_value <= 0:
+            continue
         if inv_line.reconciliation_matches.exists():
             continue
 

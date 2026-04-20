@@ -4,6 +4,7 @@ from rest_framework.test import APITestCase
 from apps.catalog.models import Supplier, SupplierProduct
 from apps.core.models import Site
 from apps.integration.models import DocumentExtraction, IntegrationDocument, IntegrationImportBatch
+from apps.inventory.models import InventoryMovement
 from apps.purchasing.models import GoodsReceipt, Invoice, InvoiceLine
 
 
@@ -550,3 +551,57 @@ class IntegrationIngestApiTests(APITestCase):
         line = InvoiceLine.objects.get(invoice__invoice_number="INV-VIANDE-001")
         self.assertEqual(str(line.qty_value), "2.000")
         self.assertEqual(line.qty_unit, "kg")
+
+    def test_ingest_credit_note_creates_out_inventory_movement(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="avoir-ocr-001.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "AV-2026-001",
+                "invoice_date": "2026-04-20",
+                "total_amount": "-328.11",
+                "total_ht": "-311.00",
+                "vat_amount": "-17.11",
+                "metadata": {"document_kind": "credit_note"},
+                "lines": [
+                    {
+                        "supplier_code": "0000050.001",
+                        "raw_product_name": "Avoir commercial",
+                        "qty_value": "-1.000",
+                        "qty_unit": "pc",
+                        "unit_price": "311.0000",
+                        "line_total": "-311.0000",
+                        "vat_rate": "5.50",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-credit-note-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        invoice = Invoice.objects.get(invoice_number="AV-2026-001")
+        line = invoice.lines.get()
+        movement = InventoryMovement.objects.get(ref_type="invoice_line_fallback", ref_id=str(line.id))
+        self.assertEqual(str(line.qty_value), "-1.000")
+        self.assertEqual(movement.movement_type, "OUT")
+        self.assertEqual(str(movement.qty_value), "1.000")
+        self.assertEqual(movement.qty_unit, "pc")
