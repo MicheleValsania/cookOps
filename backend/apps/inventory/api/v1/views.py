@@ -35,6 +35,8 @@ def _movement_label(m: InventoryMovement) -> str:
     if m.supplier_code:
         return str(m.supplier_code).strip()
     if m.supplier_product_id and m.supplier_product:
+        if m.supplier_product.supplier_sku:
+            return str(m.supplier_product.supplier_sku).strip()
         return m.supplier_product.name
     if m.raw_product_name:
         return m.raw_product_name
@@ -47,6 +49,13 @@ def _movement_display_name(m: InventoryMovement) -> str:
     if m.raw_product_name:
         return m.raw_product_name
     return ""
+
+
+def _movement_group_key(m: InventoryMovement) -> tuple[str, str]:
+    unit = (m.qty_unit or "").strip().lower()
+    if m.supplier_product_id and m.supplier_product:
+        return (f"product:{m.supplier_product_id}", unit)
+    return (_movement_label(m), unit)
 
 
 class InventoryStockSummaryView(APIView):
@@ -92,15 +101,17 @@ class InventoryStockSummaryView(APIView):
             }
         )
         for m in movements:
-            label = _movement_label(m)
-            unit = (m.qty_unit or "").strip().lower()
-            key = (label, unit)
+            key = _movement_group_key(m)
             row = grouped[key]
+            label = _movement_label(m)
             row["product_key"] = label
             row["product_label"] = label
-            row["qty_unit"] = unit
-            if not row["supplier_code"] and m.supplier_code:
-                row["supplier_code"] = str(m.supplier_code).strip()
+            row["qty_unit"] = key[1]
+            supplier_sku = ""
+            if m.supplier_product_id and m.supplier_product and m.supplier_product.supplier_sku:
+                supplier_sku = str(m.supplier_product.supplier_sku).strip()
+            if not row["supplier_code"] and (supplier_sku or m.supplier_code):
+                row["supplier_code"] = supplier_sku or str(m.supplier_code).strip()
             if not row["product_name"]:
                 row["product_name"] = _movement_display_name(m)
             if not row["supplier_name"] and m.supplier_product_id and m.supplier_product and m.supplier_product.supplier:

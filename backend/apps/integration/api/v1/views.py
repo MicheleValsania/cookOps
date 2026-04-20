@@ -1348,6 +1348,12 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
                 if expected_product and line_obj.supplier_product_id != expected_product.id:
                     line_obj.supplier_product = expected_product
                     line_obj.save(update_fields=["supplier_product", "updated_at"])
+                if expected_product and not str(line_obj.supplier_code or "").strip():
+                    expected_code = str(expected_product.supplier_sku or "").strip()
+                    if expected_code:
+                        line_obj.supplier_code = expected_code
+                        line_obj.save(update_fields=["supplier_code", "updated_at"])
+                        supplier_code = expected_code
                 if not line_obj.supplier_product_id and supplier_id and raw_name and uom:
                     product = SupplierProduct.objects.create(
                         supplier_id=supplier_id,

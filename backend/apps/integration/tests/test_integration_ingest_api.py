@@ -297,6 +297,56 @@ class IntegrationIngestApiTests(APITestCase):
         self.assertEqual(line.qty_unit, "pc")
         self.assertEqual(product.uom, "pc")
 
+    def test_ingest_invoice_backfills_supplier_code_from_matched_product_name(self):
+        product = SupplierProduct.objects.create(
+            supplier=self.supplier,
+            name="CREME TENUE FOISONNEMENT 35% DEBIC (Poche=5L)",
+            supplier_sku="0261249",
+            uom="l",
+        )
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-ocr-missing-code.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "INV-MISSING-CODE-001",
+                "invoice_date": "2026-04-14",
+                "lines": [
+                    {
+                        "raw_product_name": "CREME TENUE FOISONNEMENT 35% DEBIC (Poche=5L)",
+                        "qty_value": "10.000",
+                        "qty_unit": "l",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-missing-code-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        line = InvoiceLine.objects.get(invoice__invoice_number="INV-MISSING-CODE-001")
+        movement = InventoryMovement.objects.get(ref_type="invoice_line_fallback", ref_id=str(line.id))
+        self.assertEqual(line.supplier_product_id, product.id)
+        self.assertEqual(line.supplier_code, "0261249")
+        self.assertEqual(movement.supplier_code, "0261249")
+
     def test_ingest_invoice_marks_duplicate_even_with_different_filename(self):
         first_document = IntegrationDocument.objects.create(
             site=self.site,
