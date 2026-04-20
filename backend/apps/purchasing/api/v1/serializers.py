@@ -105,6 +105,8 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
 
 
 class InvoiceLineSerializer(serializers.ModelSerializer):
+    qty_value = serializers.DecimalField(max_digits=12, decimal_places=3)
+
     class Meta:
         model = InvoiceLine
         fields = (
