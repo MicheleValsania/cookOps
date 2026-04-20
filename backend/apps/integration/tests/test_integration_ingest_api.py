@@ -605,3 +605,51 @@ class IntegrationIngestApiTests(APITestCase):
         self.assertEqual(movement.movement_type, "OUT")
         self.assertEqual(str(movement.qty_value), "1.000")
         self.assertEqual(movement.qty_unit, "pc")
+        self.assertEqual(invoice.metadata.get("document_kind"), "credit_note")
+
+    def test_ingest_infers_credit_note_metadata_from_negative_totals(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="gineys-avoir-03527411.pdf",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "03527411",
+                "invoice_date": "2026-03-26",
+                "total_amount": "-328.11",
+                "total_ht": "-311.00",
+                "vat_amount": "-17.11",
+                "lines": [
+                    {
+                        "supplier_code": "0000050.001",
+                        "raw_product_name": "Avoir commercial",
+                        "qty_value": "-1.000",
+                        "qty_unit": "pc",
+                        "unit_price": "311.0000",
+                        "line_total": "-311.0000",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-credit-note-infer-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        invoice = Invoice.objects.get(invoice_number="03527411")
+        self.assertEqual(invoice.metadata.get("document_kind"), "credit_note")

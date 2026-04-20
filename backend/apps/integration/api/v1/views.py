@@ -555,7 +555,63 @@ def _mark_document_duplicate(
     document.save(update_fields=["metadata", "status", "updated_at"])
 
 
-def _build_metadata(payload: dict, target: str):
+def _payload_suggests_credit_note(payload: dict, document: IntegrationDocument | None = None) -> bool:
+    metadata = _as_dict(payload.get("metadata"))
+    explicit_kind = str(metadata.get("document_kind") or payload.get("document_kind") or "").strip().lower()
+    if explicit_kind in {"credit_note", "avoir"}:
+        return True
+
+    textual_hints = [
+        payload.get("document_type_label"),
+        payload.get("document_label"),
+        payload.get("document_number"),
+        payload.get("invoice_number"),
+        payload.get("supplier_name"),
+    ]
+    if document is not None:
+        textual_hints.extend([document.filename, document.storage_path])
+    blob = " ".join(str(item or "").strip().lower() for item in textual_hints if item not in (None, ""))
+    if "avoir" in blob or "credit note" in blob or "credit_note" in blob:
+        return True
+
+    amount_candidates = [
+        _pick_first(payload, "total_amount", default=metadata.get("total_amount")),
+        _pick_first(payload, "total_ht", default=metadata.get("total_ht")),
+        _pick_first(payload, "vat_amount", default=metadata.get("vat_amount")),
+    ]
+    for value in amount_candidates:
+        normalized = _normalize_decimal_text(value, places=2)
+        if normalized is None:
+            continue
+        try:
+            if Decimal(normalized) < 0:
+                return True
+        except (InvalidOperation, ValueError):
+            continue
+
+    line_signs = []
+    for row in _as_list(payload.get("lines")):
+        line = _as_dict(row)
+        qty_value = _normalize_decimal_text(_pick_first(line, "qty_value", "quantity", "qty", "qte", "qta"), places=3)
+        line_total = _normalize_decimal_text(_pick_first(line, "line_total", "total", "line_amount", "montant_ligne"), places=4)
+        for candidate in (qty_value, line_total):
+            if candidate is None:
+                continue
+            try:
+                line_signs.append(Decimal(candidate))
+            except (InvalidOperation, ValueError):
+                continue
+
+    return bool(line_signs) and all(value < 0 for value in line_signs)
+
+
+def _infer_document_kind(payload: dict, target: str, document: IntegrationDocument | None = None) -> str:
+    if target == "invoice" and _payload_suggests_credit_note(payload, document):
+        return "credit_note"
+    return target
+
+
+def _build_metadata(payload: dict, target: str, document: IntegrationDocument | None = None):
     metadata = _as_dict(payload.get("metadata")).copy()
     metadata.setdefault("source", "claude")
     keys_to_keep = [
@@ -579,7 +635,7 @@ def _build_metadata(payload: dict, target: str):
         value = payload.get(key)
         if value not in (None, ""):
             metadata[key] = value
-    metadata["document_kind"] = target
+    metadata["document_kind"] = _infer_document_kind(payload, target, document)
     return metadata
 
 
@@ -769,7 +825,7 @@ def _normalize_payload_for_ingest(payload: dict, target: str, document: Integrat
             "supplier": supplier_id,
             "delivery_note_number": str(delivery_note_number),
             "received_at": received_at,
-            "metadata": _build_metadata(source, target),
+            "metadata": _build_metadata(source, target, document),
             "lines": lines,
         }
 
@@ -785,7 +841,7 @@ def _normalize_payload_for_ingest(payload: dict, target: str, document: Integrat
         "supplier": supplier_id,
         "invoice_number": str(invoice_number),
         "invoice_date": invoice_date,
-        "metadata": _build_metadata(source, target),
+        "metadata": _build_metadata(source, target, document),
         "lines": lines,
     }
     if due_date:
