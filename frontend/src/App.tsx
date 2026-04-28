@@ -5041,6 +5041,85 @@ function App() {
     printChecklistTable(`Stock PDF${suffix}`, headers, rows);
   }
 
+  function printInventorySheetPdf() {
+    const title = `Inventaire precompile${stockSearch.trim() ? ` | filtre: ${stockSearch.trim()}` : ""}`;
+    const siteLabel = activeSite?.name ?? t("app.selectSite");
+    const dateLabel = new Date().toISOString().slice(0, 10);
+    const headers = [
+      "Code produit",
+      "Nom produit",
+      "UM",
+      "Cout unitaire",
+      "Stock theorique",
+      "Quantite relevee",
+      "Ecart",
+    ];
+    const headerHtml = headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+    const rowsHtml = filteredStockRows
+      .map((row) => {
+        const cells = [
+          String(row.supplier_code ?? row.product_label ?? "-"),
+          String(row.product_name ?? row.product_label ?? "-"),
+          String(row.qty_unit ?? "-"),
+          String(row.weighted_avg_cost ?? "-"),
+          String(row.current_stock ?? "0.000"),
+          "",
+          "",
+        ];
+        return `<tr>${cells.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`;
+      })
+      .join("");
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title>
+      <style>
+        @page { size: A4 landscape; margin: 10mm; }
+        body { font-family: Arial, sans-serif; padding: 0; color: #111827; }
+        h1 { font-size: 18px; margin: 0 0 4px; }
+        p { margin: 0 0 8px; color: #475569; font-size: 11px; }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { border: 1px solid #cbd5e1; padding: 4px 6px; font-size: 10px; text-align: left; vertical-align: middle; line-height: 1.15; }
+        th { background: #eef5df; }
+        th:nth-child(1), td:nth-child(1) { width: 10%; }
+        th:nth-child(2), td:nth-child(2) { width: 38%; }
+        th:nth-child(3), td:nth-child(3) { width: 6%; text-align: center; }
+        th:nth-child(4), td:nth-child(4) { width: 10%; text-align: right; }
+        th:nth-child(5), td:nth-child(5) { width: 10%; text-align: right; }
+        th:nth-child(6), td:nth-child(6) { width: 13%; }
+        th:nth-child(7), td:nth-child(7) { width: 13%; }
+        td:nth-child(6), td:nth-child(7) { height: 18px; }
+      </style></head><body>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(siteLabel)} | ${escapeHtml(dateLabel)}</p>
+      <table><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table></body></html>`;
+
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc || !iframe.contentWindow) {
+      document.body.removeChild(iframe);
+      setNotice(t("error.printOpen"));
+      return;
+    }
+
+    doc.open();
+    doc.write(html);
+    doc.close();
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+    window.setTimeout(() => {
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
+    }, 1000);
+  }
+
   function printSectorOrderCard(group: { section: string; rows: Array<Record<string, unknown>> }) {
     const headers = [t("table.ingredient"), t("table.supplier"), t("table.supplierCode")];
     if (quantityMode === "with_qty") {
@@ -7314,6 +7393,9 @@ function App() {
                   <div className="entry-actions">
                   <button type="button" onClick={printStockSummaryPdf} disabled={!filteredStockRows.length}>
                     {t("action.pdf")}
+                  </button>
+                  <button type="button" onClick={printInventorySheetPdf} disabled={!filteredStockRows.length}>
+                    PDF inventaire
                   </button>
                   <button type="button" onClick={rebuildStockFromPurchasing} disabled={!siteId || isRebuildingStock}>
                     {isRebuildingStock ? t("purchases.processing") : "Ricostruisci stock da acquisti"}
