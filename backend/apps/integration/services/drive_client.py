@@ -35,8 +35,8 @@ def _detail_from_payload(payload, fallback: str):
 
 
 class DriveClient:
-    def __init__(self):
-        self.folder_id = settings.GOOGLE_DRIVE_FOLDER_ID
+    def __init__(self, *, folder_id: str | None = None):
+        self.folder_id = (folder_id or settings.GOOGLE_DRIVE_FOLDER_ID).strip()
         self.client_id = settings.GOOGLE_DRIVE_OAUTH_CLIENT_ID
         self.client_secret = settings.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET
         self.refresh_token = settings.GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN
@@ -120,19 +120,49 @@ class DriveClient:
     def list_folder_files(self, *, limit: int = 80):
         return list(self.iter_folder_files(limit=limit))
 
-    def download_file(self, file_id: str):
+    def _authorized_request(self, *, url: str, method: str, headers: dict | None = None, data: bytes | None = None):
         token = self._access_token()
-        url = f"https://www.googleapis.com/drive/v3/files/{parse.quote(file_id)}?alt=media&supportsAllDrives=true"
-        req = request.Request(
-            url=url,
-            method="GET",
-            headers={"Authorization": f"Bearer {token}", "Accept": "*/*"},
-        )
+        request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        if isinstance(headers, dict):
+            request_headers.update(headers)
+        req = request.Request(url=url, method=method, headers=request_headers, data=data)
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
                 return dict(resp.headers.items()), resp.read()
         except error.HTTPError as exc:
             body = _json_loads(exc.read())
-            raise DriveClientError(exc.code, {"detail": _detail_from_payload(body, "Google Drive download failed."), "raw": body}) from exc
+            raise DriveClientError(exc.code, {"detail": _detail_from_payload(body, "Google Drive request failed."), "raw": body}) from exc
         except (error.URLError, TimeoutError, socket.timeout) as exc:
-            raise DriveClientError(502, {"detail": f"Cannot download file from Google Drive: {exc}"}) from exc
+            raise DriveClientError(502, {"detail": f"Cannot reach Google Drive API: {exc}"}) from exc
+
+    def download_file(self, file_id: str):
+        url = f"https://www.googleapis.com/drive/v3/files/{parse.quote(file_id)}?alt=media&supportsAllDrives=true"
+        return self._authorized_request(url=url, method="GET", headers={"Accept": "*/*"})
+
+    def upload_file(self, *, filename: str, binary: bytes, content_type: str = "application/octet-stream"):
+        boundary = "cookops-google-drive-upload"
+        metadata = json.dumps({"name": filename, "parents": [self.folder_id]}).encode("utf-8")
+        body = (
+            b"--" + boundary.encode("ascii") + b"\r\n"
+            + b"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            + metadata + b"\r\n"
+            + b"--" + boundary.encode("ascii") + b"\r\n"
+            + f"Content-Type: {content_type}\r\n\r\n".encode("utf-8")
+            + binary + b"\r\n"
+            + b"--" + boundary.encode("ascii") + b"--\r\n"
+        )
+        url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,webViewLink"
+        headers, raw = self._authorized_request(
+            url=url,
+            method="POST",
+            headers={"Content-Type": f"multipart/related; boundary={boundary}", "Accept": "application/json"},
+            data=body,
+        )
+        payload = _json_loads(raw)
+        if not isinstance(payload, dict) or not str(payload.get("id") or "").strip():
+            raise DriveClientError(502, {"detail": "Google Drive upload response did not include file id.", "raw": payload})
+        return payload
+
+    def delete_file(self, file_id: str):
+        url = f"https://www.googleapis.com/drive/v3/files/{parse.quote(file_id)}?supportsAllDrives=true"
+        self._authorized_request(url=url, method="DELETE", headers={"Accept": "*/*"})

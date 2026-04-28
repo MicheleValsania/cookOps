@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from django.conf import settings
-from django.core.files.base import ContentFile
-
 from apps.core.models import Site
 from apps.integration.models import DocumentExtraction, DocumentStatus, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
+from apps.integration.services.document_storage import persist_document_binary
 from apps.integration.services.drive_client import DriveClient, DriveClientError
 
 
@@ -60,10 +59,12 @@ def _create_drive_document(*, site: Site, document_type: str, filename: str, con
         status="uploaded",
         metadata=metadata,
     )
-    document.file.save(filename, ContentFile(binary), save=False)
-    document.storage_path = document.file.name
-    document.save()
-    return document
+    return persist_document_binary(
+        document=document,
+        filename=filename,
+        content_type=content_type,
+        binary=binary,
+    )
 
 
 def import_drive_assets_for_site(

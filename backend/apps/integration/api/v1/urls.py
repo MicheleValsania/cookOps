@@ -36,6 +36,7 @@ from apps.integration.api.v1.views import (
     DriveAssetImportView,
     DocumentClaudeExtractView,
     DocumentExtractionViewSet,
+    DocumentFileView,
     DocumentIngestViewSet,
     TraceabilityReconciliationDecisionListCreateView,
     DocumentReviewView,
@@ -81,6 +82,11 @@ urlpatterns = [
         "integration/drive-assets/import/",
         DriveAssetImportView.as_view(),
         name="integration-drive-asset-import",
+    ),
+    path(
+        "integration/documents/<uuid:document_id>/file/",
+        DocumentFileView.as_view(),
+        name="integration-document-file",
     ),
     path(
         "integration/documents/<uuid:document_id>/extractions/",

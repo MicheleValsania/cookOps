@@ -33,6 +33,7 @@ type DocumentItem = {
   updated_at?: string;
   metadata?: Record<string, unknown> | null;
   file?: string | null;
+  file_url?: string | null;
   storage_path?: string | null;
   latest_extraction?: {
     id?: string | null;
@@ -1432,17 +1433,7 @@ function App() {
 
   useEffect(() => {
     const selected = documents.find((doc) => doc.id === selectedDocId) ?? null;
-    const raw = String(selected?.file || selected?.storage_path || "").trim();
-    let resolvedUrl = "";
-    if (raw) {
-      if (raw.startsWith("http://") || raw.startsWith("https://")) {
-        resolvedUrl = raw;
-      } else {
-        const apiBase = getApiBase();
-        const root = apiBase.replace(/\/api\/v1\/?$/, "");
-        resolvedUrl = raw.startsWith("/") ? `${root}${raw}` : `${root}/media/${raw.replace(/^media\//, "")}`;
-      }
-    }
+    const resolvedUrl = getDocumentFileUrl(selected);
 
     if (!resolvedUrl) {
       setOriginalDocumentBlobUrl("");
@@ -1452,7 +1443,10 @@ function App() {
     let active = true;
     let nextBlobUrl = "";
     setIsOriginalDocumentLoading(true);
-    fetch(resolvedUrl)
+    const apiKey = getDefaultApiKey();
+    fetch(resolvedUrl, {
+      headers: apiKey ? { "X-API-Key": apiKey } : {},
+    })
       .then((res) => {
         if (!res.ok) throw new Error(`preview_http_${res.status}`);
         return res.blob();
@@ -4446,10 +4440,14 @@ function App() {
   const activeSite = sites.find((site) => site.id === siteId);
   const getDocumentFileUrl = (doc: DocumentItem | null): string => {
     if (!doc) return "";
+    const explicitUrl = String(doc.file_url || "").trim();
+    if (explicitUrl) return explicitUrl;
+    const apiBase = getApiBase();
+    const directApi = `${apiBase.replace(/\/$/, "")}/integration/documents/${doc.id}/file/`;
+    if (doc.id) return directApi;
     const raw = String(doc.file || doc.storage_path || "").trim();
     if (!raw) return "";
     if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
-    const apiBase = getApiBase();
     const root = apiBase.replace(/\/api\/v1\/?$/, "");
     if (raw.startsWith("/")) return `${root}${raw}`;
     return `${root}/media/${raw.replace(/^media\//, "")}`;

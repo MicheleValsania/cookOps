@@ -419,7 +419,78 @@ class IntegrationIngestApiTests(APITestCase):
         self.assertEqual(second_document.status, "archived_duplicate")
         self.assertEqual(second_document.metadata["duplicate"]["reason"], "invoice_number_normalized")
 
-    def test_ingest_invoice_marks_duplicate_when_invoice_number_varies_but_content_matches(self):
+    def test_ingest_invoice_same_number_but_different_amount_is_not_marked_duplicate(self):
+        first_document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="supplier-a.pdf",
+            status="extracted",
+        )
+        first_extraction = DocumentExtraction.objects.create(
+            document=first_document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "FAC-2026-XYZ",
+                "invoice_date": "2026-03-10",
+                "total_amount": "120.00",
+                "lines": [
+                    {
+                        "raw_product_name": "Tomate",
+                        "qty_value": "2.000",
+                        "qty_unit": "kg",
+                    }
+                ],
+            },
+        )
+        self.client.post(
+            f"/api/v1/integration/documents/{first_document.id}/ingest/",
+            {"extraction_id": str(first_extraction.id), "idempotency_key": "dup-safe-1", "target": "invoice"},
+            format="json",
+        )
+
+        second_document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="supplier-b.pdf",
+            status="extracted",
+        )
+        second_extraction = DocumentExtraction.objects.create(
+            document=second_document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "FAC-2026-XYZ",
+                "invoice_date": "2026-03-11",
+                "total_amount": "189.00",
+                "lines": [
+                    {
+                        "raw_product_name": "Tomate",
+                        "qty_value": "3.000",
+                        "qty_unit": "kg",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{second_document.id}/ingest/",
+            {"extraction_id": str(second_extraction.id), "idempotency_key": "dup-safe-2", "target": "invoice"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        second_document.refresh_from_db()
+        self.assertEqual(second_document.status, "extracted")
+        self.assertNotIn("duplicate", second_document.metadata)
+
+    def test_ingest_invoice_content_match_without_strong_key_is_not_marked_duplicate(self):
         first_document = IntegrationDocument.objects.create(
             site=self.site,
             document_type="invoice",
@@ -505,11 +576,11 @@ class IntegrationIngestApiTests(APITestCase):
         )
 
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(second.status_code, status.HTTP_200_OK)
-        self.assertEqual(Invoice.objects.count(), 1)
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Invoice.objects.count(), 2)
         second_document.refresh_from_db()
-        self.assertEqual(second_document.status, "archived_duplicate")
-        self.assertEqual(second_document.metadata["duplicate"]["reason"], "invoice_semantic_fingerprint")
+        self.assertEqual(second_document.status, "extracted")
+        self.assertNotIn("duplicate", second_document.metadata)
 
     def test_ingest_invoice_keeps_standard_packaged_products_as_pieces(self):
         document = IntegrationDocument.objects.create(

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, time, timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 
-from django.core.files.base import ContentFile
+from django.http import Http404, HttpResponse
 from django.db import IntegrityError
 from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date, parse_datetime
@@ -44,6 +44,7 @@ from apps.integration.models import (
     TraceabilityReconciliationDecision,
 )
 from apps.integration.services.claude_extractor import run_claude_extraction
+from apps.integration.services.document_storage import delete_document_binary, drive_storage_enabled, persist_document_binary, read_document_bytes
 from apps.integration.services.drive_client import DriveClient, DriveClientError
 from apps.integration.services.drive_importer import import_drive_assets_for_site
 from apps.integration.services.traccia_client import TracciaClient, TracciaClientError
@@ -172,10 +173,12 @@ def _create_drive_document(*, site: Site, document_type: str, filename: str, con
         status="uploaded",
         metadata=metadata,
     )
-    document.file.save(filename, ContentFile(binary), save=False)
-    document.storage_path = document.file.name
-    document.save()
-    return document
+    return persist_document_binary(
+        document=document,
+        filename=filename,
+        content_type=content_type,
+        binary=binary,
+    )
 
 
 def _normalize_date_text(value):
@@ -721,10 +724,19 @@ def _find_existing_invoice_duplicate(*, document: IntegrationDocument, payload: 
 
     if invoice_number:
         normalized_invoice_number = _normalize_invoice_number(invoice_number)
+        invoice_date = _normalize_date_text(payload.get("invoice_date"))
+        amount_tokens = _invoice_amount_tokens(payload)
         candidates = Invoice.objects.prefetch_related("lines").filter(site_id=site_id, supplier_id=supplier_id)
         for candidate in candidates:
             if _normalize_invoice_number(candidate.invoice_number) == normalized_invoice_number:
-                return candidate, "invoice_number_normalized"
+                candidate_tokens = _invoice_amount_tokens_from_instance(candidate)
+                shared_amount = any(
+                    amount_tokens.get(key) and amount_tokens.get(key) == candidate_tokens.get(key)
+                    for key in ("total_amount", "total_ht", "vat_amount")
+                )
+                same_date = bool(invoice_date and str(candidate.invoice_date) == invoice_date)
+                if same_date or shared_amount:
+                    return candidate, "invoice_number_normalized"
 
     invoice_date = _normalize_date_text(payload.get("invoice_date"))
     line_signature = _invoice_line_signature_from_payload(payload.get("lines") or [])
@@ -742,7 +754,7 @@ def _find_existing_invoice_duplicate(*, document: IntegrationDocument, payload: 
         if not shared_amount:
             continue
         if _invoice_line_signature_from_instance(candidate) == line_signature:
-            return candidate, "invoice_semantic_fingerprint"
+            continue
 
     return None, None
 
@@ -1085,11 +1097,42 @@ class IntegrationDocumentViewSet(
             queryset = queryset.filter(site_id=site_id)
         return queryset.order_by("-updated_at", "-created_at")
 
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        if not drive_storage_enabled():
+            return
+        metadata = instance.metadata.copy() if isinstance(instance.metadata, dict) else {}
+        if metadata.get("storage_drive_file_id"):
+            return
+        if not instance.file:
+            return
+        instance.file.open("rb")
+        try:
+            binary = instance.file.read()
+        finally:
+            instance.file.close()
+        persist_document_binary(
+            document=instance,
+            filename=instance.filename,
+            content_type=instance.content_type or "application/octet-stream",
+            binary=binary,
+        )
+
     def perform_destroy(self, instance: IntegrationDocument):
         _delete_linked_ingest_record(instance)
-        if instance.file:
-            instance.file.delete(save=False)
+        delete_document_binary(instance)
         instance.delete()
+
+
+class DocumentFileView(APIView):
+    def get(self, request, document_id):
+        document = get_object_or_404(IntegrationDocument, pk=document_id)
+        file_bytes, content_type = read_document_bytes(document)
+        if not file_bytes:
+            raise Http404("Document binary is not available.")
+        response = HttpResponse(file_bytes, content_type=content_type or "application/octet-stream")
+        response["Content-Disposition"] = f'inline; filename="{document.filename}"'
+        return response
 
 
 class TracciaAssetImportView(APIView):
@@ -1172,9 +1215,12 @@ class TracciaAssetImportView(APIView):
                         status="uploaded",
                         metadata=metadata,
                     )
-                    document.file.save(filename, ContentFile(binary), save=False)
-                    document.storage_path = document.file.name
-                    document.save()
+                    persist_document_binary(
+                        document=document,
+                        filename=filename,
+                        content_type=content_type,
+                        binary=binary,
+                    )
                     created.append(
                         {
                             "document_id": str(document.id),

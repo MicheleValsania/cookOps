@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from apps.integration.models import DocumentType, IntegrationDocument
+from apps.integration.services.document_storage import read_document_bytes
 
 PURCHASING_PRODUCT_CATEGORIES = [
     "epicerie",
@@ -151,13 +152,8 @@ def _extract_json_blob(text: str) -> dict[str, Any]:
 
 
 def _read_document_bytes(document: IntegrationDocument) -> bytes:
-    if not document.file:
-        return b""
-    document.file.open("rb")
-    try:
-        return document.file.read()
-    finally:
-        document.file.close()
+    file_bytes, _content_type = read_document_bytes(document)
+    return file_bytes
 
 
 def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> ClaudeExtractionResult:

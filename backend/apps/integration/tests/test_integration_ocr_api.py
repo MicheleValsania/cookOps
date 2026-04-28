@@ -32,6 +32,25 @@ class IntegrationOcrApiTests(APITestCase):
         self.assertEqual(IntegrationDocument.objects.count(), 1)
         self.assertEqual(IntegrationDocument.objects.first().filename, "invoice.pdf")
 
+    def test_open_uploaded_document_file_returns_200(self):
+        file_obj = SimpleUploadedFile("invoice.pdf", b"dummy-pdf-content", content_type="application/pdf")
+        response = self.client.post(
+            "/api/v1/integration/documents/",
+            {
+                "site": str(self.site.id),
+                "document_type": "invoice",
+                "source": "upload",
+                "file": file_obj,
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        document_id = response.json()["id"]
+        file_response = self.client.get(f"/api/v1/integration/documents/{document_id}/file/")
+        self.assertEqual(file_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(file_response.streaming_content) if hasattr(file_response, "streaming_content") else file_response.content, b"dummy-pdf-content")
+
     def test_create_extraction_returns_201(self):
         document = IntegrationDocument.objects.create(
             site=self.site,
