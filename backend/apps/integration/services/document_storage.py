@@ -79,11 +79,14 @@ def read_document_bytes(document: IntegrationDocument) -> tuple[bytes, str]:
         return binary, content_type
 
     if document.file:
-        document.file.open("rb")
         try:
-            return document.file.read(), (document.content_type or "application/octet-stream").strip()
-        finally:
-            document.file.close()
+            document.file.open("rb")
+            try:
+                return document.file.read(), (document.content_type or "application/octet-stream").strip()
+            finally:
+                document.file.close()
+        except FileNotFoundError:
+            return b"", (document.content_type or "application/octet-stream").strip()
 
     return b"", (document.content_type or "application/octet-stream").strip()
 
