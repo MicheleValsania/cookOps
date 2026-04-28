@@ -20,6 +20,15 @@ def drive_storage_enabled() -> bool:
     )
 
 
+def resolve_drive_folder_id_for_document_type(document_type: str) -> str:
+    normalized = str(document_type or "").strip()
+    if normalized == "invoice":
+        return settings.GOOGLE_DRIVE_INVOICES_FOLDER_ID or settings.GOOGLE_DRIVE_UPLOAD_FOLDER_ID
+    if normalized == "goods_receipt":
+        return settings.GOOGLE_DRIVE_GOODS_RECEIPTS_FOLDER_ID or settings.GOOGLE_DRIVE_UPLOAD_FOLDER_ID
+    return settings.GOOGLE_DRIVE_LABELS_FOLDER_ID or settings.GOOGLE_DRIVE_UPLOAD_FOLDER_ID
+
+
 def persist_document_binary(
     *,
     document: IntegrationDocument,
@@ -33,14 +42,15 @@ def persist_document_binary(
         metadata.update(metadata_updates)
 
     if drive_storage_enabled():
-        client = DriveClient(folder_id=settings.GOOGLE_DRIVE_UPLOAD_FOLDER_ID)
+        target_folder_id = resolve_drive_folder_id_for_document_type(document.document_type)
+        client = DriveClient(folder_id=target_folder_id)
         uploaded = client.upload_file(filename=filename, binary=binary, content_type=content_type)
         metadata.update(
             {
                 "storage_provider": "google_drive",
                 "storage_drive_file_id": str(uploaded.get("id") or "").strip(),
                 "storage_drive_link": str(uploaded.get("webViewLink") or "").strip(),
-                "storage_drive_folder_id": settings.GOOGLE_DRIVE_UPLOAD_FOLDER_ID,
+                "storage_drive_folder_id": target_folder_id,
                 "storage_mime_type": content_type,
             }
         )
@@ -62,7 +72,7 @@ def read_document_bytes(document: IntegrationDocument) -> tuple[bytes, str]:
     if drive_file_id:
         client = DriveClient(
             folder_id=str(metadata.get("storage_drive_folder_id") or settings.GOOGLE_DRIVE_FOLDER_ID).strip()
-            or settings.GOOGLE_DRIVE_UPLOAD_FOLDER_ID
+            or resolve_drive_folder_id_for_document_type(document.document_type)
         )
         headers, binary = client.download_file(drive_file_id)
         content_type = (headers.get("Content-Type") or document.content_type or "application/octet-stream").strip()

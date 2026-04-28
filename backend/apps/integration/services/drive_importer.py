@@ -6,7 +6,7 @@ from django.conf import settings
 from apps.core.models import Site
 from apps.integration.models import DocumentExtraction, DocumentStatus, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
-from apps.integration.services.document_storage import persist_document_binary
+from apps.integration.services.document_storage import persist_document_binary, resolve_drive_folder_id_for_document_type
 from apps.integration.services.drive_client import DriveClient, DriveClientError
 
 
@@ -75,9 +75,8 @@ def import_drive_assets_for_site(
     document_type: str = "label_capture",
     auto_extract: bool = True,
 ) -> DriveImportResult:
-    client = DriveClient()
-    if folder_id:
-        client.folder_id = folder_id.strip()
+    effective_folder_id = folder_id.strip() or resolve_drive_folder_id_for_document_type(document_type)
+    client = DriveClient(folder_id=effective_folder_id)
     scan_limit = max(limit, int(getattr(settings, "DRIVE_IMPORT_SCAN_LIMIT", 2000) or 2000))
 
     created: list[dict] = []
