@@ -5149,6 +5149,34 @@ function App() {
     window.open(targetUrl, "_blank", "noopener,noreferrer");
   }
 
+  async function openDocumentPdfInNewTab(doc: DocumentItem) {
+    const resolvedUrl = getDocumentFileUrl(doc);
+    if (!resolvedUrl) {
+      setNotice("PDF non disponibile per questo documento.");
+      return;
+    }
+    try {
+      const authApiKey = getDefaultApiKey();
+      const response = await fetch(resolvedUrl, {
+        headers: authApiKey ? { "X-API-Key": authApiKey } : {},
+      });
+      if (!response.ok) {
+        throw new Error(`pdf_http_${response.status}`);
+      }
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const popup = window.open(blobUrl, "_blank", "noopener,noreferrer");
+      if (!popup) {
+        URL.revokeObjectURL(blobUrl);
+        setNotice("Impossibile aprire il PDF in una nuova scheda.");
+        return;
+      }
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch {
+      setNotice("Impossibile aprire il PDF del documento.");
+    }
+  }
+
   function closeTraceabilityReconciliationPage() {
     window.location.hash = "";
     setIsTraceabilityReconciliationPage(false);
@@ -6827,7 +6855,10 @@ function App() {
                                     Ouvrir
                                   </button>
                                   {url ? (
-                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                    <a className="doc-open-link" href={url} onClick={(event) => {
+                                      event.preventDefault();
+                                      void openDocumentPdfInNewTab(doc);
+                                    }}>
                                       PDF
                                     </a>
                                   ) : null}
@@ -6906,7 +6937,10 @@ function App() {
                                     Ouvrir
                                   </button>
                                   {url ? (
-                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                    <a className="doc-open-link" href={url} onClick={(event) => {
+                                      event.preventDefault();
+                                      void openDocumentPdfInNewTab(doc);
+                                    }}>
                                       PDF
                                     </a>
                                   ) : null}
@@ -6972,7 +7006,10 @@ function App() {
                                     Ouvrir
                                   </button>
                                   {url ? (
-                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                    <a className="doc-open-link" href={url} onClick={(event) => {
+                                      event.preventDefault();
+                                      void openDocumentPdfInNewTab(doc);
+                                    }}>
                                       PDF
                                     </a>
                                   ) : null}
@@ -7036,7 +7073,10 @@ function App() {
                                     Ouvrir
                                   </button>
                                   {url ? (
-                                    <a className="doc-open-link" href={url} target="_blank" rel="noreferrer">
+                                    <a className="doc-open-link" href={url} onClick={(event) => {
+                                      event.preventDefault();
+                                      void openDocumentPdfInNewTab(doc);
+                                    }}>
                                       PDF
                                     </a>
                                   ) : null}
