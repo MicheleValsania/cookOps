@@ -11,10 +11,10 @@ from apps.integration.services.drive_client import DriveClient, DriveClientError
 
 
 def _document_exists_for_drive_file(site: Site, drive_file_id: str) -> bool:
-    return IntegrationDocument.objects.filter(
-        site=site,
-        source="drive",
-        metadata__drive_file_id=drive_file_id,
+    return IntegrationDocument.objects.filter(site=site).filter(
+        metadata__drive_file_id=drive_file_id
+    ).exists() or IntegrationDocument.objects.filter(site=site).filter(
+        metadata__storage_drive_file_id=drive_file_id
     ).exists()
 
 

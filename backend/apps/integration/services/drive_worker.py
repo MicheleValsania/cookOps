@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 
@@ -67,7 +68,8 @@ def maybe_start_drive_import_worker() -> None:
     global _worker_thread
     if _worker_thread is not None or not settings.DRIVE_IMPORT_WORKER_ENABLED:
         return
-    if os.environ.get("RUN_MAIN") != "true":
+    entrypoint = os.path.basename(sys.argv[0]).lower()
+    if os.environ.get("RUN_MAIN") != "true" and "gunicorn" not in entrypoint:
         return
     _worker_thread = threading.Thread(target=_worker_loop, name="drive-import-worker", daemon=True)
     _worker_thread.start()
