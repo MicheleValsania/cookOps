@@ -673,6 +673,48 @@ class IntegrationIngestApiTests(APITestCase):
         self.assertEqual(str(line.qty_value), "2.000")
         self.assertEqual(line.qty_unit, "kg")
 
+    def test_ingest_invoice_infers_surgeles_category_from_product_name(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-surgeles.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "INV-SURGELES-001",
+                "invoice_date": "2026-03-16",
+                "lines": [
+                    {
+                        "supplier_code": "SURG-1",
+                        "raw_product_name": "CREVETTES SURGELEES IQF",
+                        "qty_value": "2.000",
+                        "qty_unit": "kg",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-inv-surgeles-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        line = InvoiceLine.objects.get(invoice__invoice_number="INV-SURGELES-001")
+        self.assertEqual(line.supplier_product.category, "surgeles")
+
     def test_ingest_credit_note_creates_out_inventory_movement(self):
         document = IntegrationDocument.objects.create(
             site=self.site,

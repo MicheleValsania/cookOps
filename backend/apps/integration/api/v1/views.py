@@ -255,6 +255,28 @@ def _normalize_product_category(value):
     return aliases.get(compact)
 
 
+FROZEN_CATEGORY_TOKENS = (
+    "surgele",
+    "surgeles",
+    "surgelé",
+    "surgelés",
+    "surg",
+    "iqf",
+    "congele",
+    "congeles",
+    "congelé",
+    "congelés",
+    "frozen",
+)
+
+
+def _looks_frozen_product(raw_name: str) -> bool:
+    name = str(raw_name or "").strip().lower()
+    if not name:
+        return False
+    return any(token in name for token in FROZEN_CATEGORY_TOKENS)
+
+
 def _infer_packaging_from_name(raw_name: str):
     match = PACKAGING_PREFIX_RE.match(str(raw_name or "").strip())
     if not match:
@@ -379,6 +401,8 @@ def _normalize_lines(lines, target: str):
             row["qty_value"] = "1.000"
         if row["raw_product_name"] and row["qty_unit"] is None:
             row["qty_unit"] = "pc"
+        if not row["product_category"] and _looks_frozen_product(str(row["raw_product_name"] or "")):
+            row["product_category"] = "surgeles"
 
         if target == "goods_receipt":
             row["supplier_lot_code"] = _pick_first(line, "supplier_lot_code", "lot", "lot_code", "batch")

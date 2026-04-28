@@ -1096,6 +1096,38 @@ th {
   color: var(--text);
 }
 
+.purchase-correction-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.purchase-correction-panel__status {
+  align-self: center;
+  font-size: 0.82rem;
+  color: #8a5a16;
+}
+
+.table-input {
+  width: 100%;
+  min-width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fffdf8;
+  color: var(--text);
+}
+
+.supplier-product-category-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.supplier-product-category-edit select {
+  min-width: 120px;
+}
+
 .doc-preview details summary {
   cursor: pointer;
   color: #2d4370;

@@ -49,6 +49,8 @@ type DocumentItem = {
   } | null;
 };
 
+const PRODUCT_CATEGORY_OPTIONS = ["", "epicerie", "viande", "poissons", "legumes", "bof", "surgeles", "boissons", "entretien", "emballages"] as const;
+
 type SupplierItem = {
   id: string;
   name: string;
@@ -1060,6 +1062,7 @@ function App() {
   const [invoiceIngestMode] = useState<InvoiceIngestMode>("invoice_direct");
   const [originalDocumentBlobUrl, setOriginalDocumentBlobUrl] = useState("");
   const [isOriginalDocumentLoading, setIsOriginalDocumentLoading] = useState(false);
+  const [isSavingManualExtraction, setIsSavingManualExtraction] = useState(false);
 
   const [normalizedPayload, setNormalizedPayload] = useState(`{\n  "site": "",\n  "supplier": "",\n  "delivery_note_number": "BL-001",\n  "received_at": "2026-02-27T10:00:00Z",\n  "metadata": {"source": "ocr"},\n  "lines": [{"raw_product_name": "Tomato", "qty_value": "3.000", "qty_unit": "kg"}]\n}`);
 
@@ -1083,6 +1086,8 @@ function App() {
   const [newSupplierProductCategory, setNewSupplierProductCategory] = useState("");
   const [supplierProducts, setSupplierProducts] = useState<Array<Record<string, unknown>>>([]);
   const [isSupplierProductsLoading, setIsSupplierProductsLoading] = useState(false);
+  const [supplierProductCategoryDrafts, setSupplierProductCategoryDrafts] = useState<Record<string, string>>({});
+  const [savingSupplierProductId, setSavingSupplierProductId] = useState("");
   const [fichesSyncStatus, setFichesSyncStatus] = useState("");
   const [isFichesSyncing, setIsFichesSyncing] = useState(false);
   const [isFichesJsonImporting, setIsFichesJsonImporting] = useState(false);
@@ -1251,6 +1256,14 @@ function App() {
   const normalizedMeta = useMemo(() => asRecord(normalizedData.metadata), [normalizedData]);
 
   const previewLines = useMemo(() => asArray(normalizedData.lines), [normalizedData]);
+  const latestNormalizedPayloadText = useMemo(() => {
+    const selected = documents.find((doc) => doc.id === selectedDocId) ?? null;
+    const latest = selected?.latest_extraction;
+    return JSON.stringify(latest?.normalized_payload ?? {}, null, 2);
+  }, [documents, selectedDocId]);
+  const hasManualExtractionChanges = useMemo(() => {
+    return normalizedPayload.trim() !== latestNormalizedPayloadText.trim();
+  }, [latestNormalizedPayloadText, normalizedPayload]);
   const selectedHaccpSector = useMemo(
     () => haccpSectors.find((item) => item.id === selectedHaccpSectorId) ?? null,
     [haccpSectors, selectedHaccpSectorId]
@@ -2248,7 +2261,6 @@ function App() {
       return;
     }
     setNotice(t("suppliers.productCreated"));
-    setNewSupplierProductSupplierId("");
     setNewSupplierProductName("");
     setNewSupplierProductSku("");
     setNewSupplierProductUom("kg");
@@ -2261,6 +2273,7 @@ function App() {
   async function loadSupplierProductsForSupplier(supplierId: string) {
     if (!supplierId) {
       setSupplierProducts([]);
+      setSupplierProductCategoryDrafts({});
       return;
     }
     setIsSupplierProductsLoading(true);
@@ -2271,11 +2284,56 @@ function App() {
         setNotice(errorWithDetail("error.suppliersLoad", body.detail ?? JSON.stringify(body)));
         return;
       }
-      setSupplierProducts(Array.isArray(body) ? body : []);
+      const items = Array.isArray(body) ? body : [];
+      setSupplierProducts(items);
+      setSupplierProductCategoryDrafts(
+        items.reduce<Record<string, string>>((acc, item) => {
+          const id = String((item as Record<string, unknown>).id ?? "").trim();
+          if (id) {
+            acc[id] = String((item as Record<string, unknown>).category ?? "").trim();
+          }
+          return acc;
+        }, {})
+      );
     } catch {
       setNotice(t("error.documentsLoad"));
     } finally {
       setIsSupplierProductsLoading(false);
+    }
+  }
+
+  async function onSaveSupplierProductCategory(supplierId: string, productId: string) {
+    const nextCategory = String(supplierProductCategoryDrafts[productId] ?? "").trim() || null;
+    setSavingSupplierProductId(productId);
+    try {
+      const res = await apiFetch(`/suppliers/${encodeURIComponent(supplierId)}/products/${encodeURIComponent(productId)}/`, {
+        method: "PATCH",
+        body: JSON.stringify({ category: nextCategory }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.supplierCreate", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setSupplierProducts((prev) =>
+        prev.map((item) =>
+          String(item.id ?? "") === productId
+            ? {
+                ...item,
+                category: body.category ?? null,
+              }
+            : item
+        )
+      );
+      setSupplierProductCategoryDrafts((prev) => ({
+        ...prev,
+        [productId]: String(body.category ?? "").trim(),
+      }));
+      setNotice("Categorie produit mise a jour.");
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setSavingSupplierProductId("");
     }
   }
 
@@ -2508,16 +2566,16 @@ function App() {
     }
   }
 
-  async function onCreateExtraction(e?: FormEvent) {
+  async function onCreateExtraction(e?: FormEvent): Promise<string> {
     e?.preventDefault();
-    if (!selectedDocId) return;
+    if (!selectedDocId) return "";
 
     let normalized: unknown;
     try {
       normalized = JSON.parse(normalizedPayload);
     } catch {
       setNotice(t("validation.invalidExtractionJson"));
-      return;
+      return "";
     }
 
     const payload = {
@@ -2529,17 +2587,29 @@ function App() {
       confidence: "99.00",
     };
 
-    const res = await apiFetch(`/integration/documents/${selectedDocId}/extractions/`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    const body = await res.json();
-    if (!res.ok) {
-      setNotice(errorWithDetail("error.extractionCreate", body.detail ?? JSON.stringify(body)));
-      return;
+    setIsSavingManualExtraction(true);
+    try {
+      const res = await apiFetch(`/integration/documents/${selectedDocId}/extractions/`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.extractionCreate", body.detail ?? JSON.stringify(body)));
+        return "";
+      }
+      const nextExtractionId = String(body.id ?? "");
+      if (nextExtractionId) {
+        setSelectedExtractionId(nextExtractionId);
+        setNotice(t("notice.extractionSaved", { id: nextExtractionId }));
+      }
+      return nextExtractionId;
+    } catch {
+      setNotice(t("error.extractionCreate"));
+      return "";
+    } finally {
+      setIsSavingManualExtraction(false);
     }
-    setSelectedExtractionId(body.id);
-    setNotice(t("notice.extractionSaved", { id: body.id }));
   }
 
   async function runClaudeExtraction(targetDocId: string, options?: { silent?: boolean }) {
@@ -2620,9 +2690,19 @@ function App() {
     if (!selectedDocId || !selectedExtractionId) return;
     setIntakeStage("ingesting");
 
+    let extractionIdForIngest = selectedExtractionId;
+    if (hasManualExtractionChanges) {
+      const manualExtractionId = await onCreateExtraction();
+      if (!manualExtractionId) {
+        setIntakeStage("review");
+        return;
+      }
+      extractionIdForIngest = manualExtractionId;
+    }
+
     const payload = {
-      extraction_id: selectedExtractionId,
-      idempotency_key: `ui-ingest-${selectedExtractionId}`,
+      extraction_id: extractionIdForIngest,
+      idempotency_key: `ui-ingest-${extractionIdForIngest}`,
       target: selectedDocType,
     };
 
@@ -5177,6 +5257,21 @@ function App() {
     }
   }
 
+  function updateNormalizedLineField(index: number, field: string, value: string) {
+    const nextPayload = {
+      ...normalizedData,
+      lines: previewLines.map((line, lineIndex) =>
+        lineIndex === index
+          ? {
+              ...line,
+              [field]: value,
+            }
+          : line
+      ),
+    };
+    setNormalizedPayload(JSON.stringify(nextPayload, null, 2));
+  }
+
   function closeTraceabilityReconciliationPage() {
     window.location.hash = "";
     setIsTraceabilityReconciliationPage(false);
@@ -6634,7 +6729,37 @@ function App() {
                                 <td>{String(item.name ?? "-")}</td>
                                 <td>{String(item.supplier_sku ?? "-")}</td>
                                 <td>{String(item.uom ?? "-")}</td>
-                                <td>{String(item.category ?? "-")}</td>
+                                <td>
+                                  <div className="supplier-product-category-edit">
+                                    <select
+                                      value={supplierProductCategoryDrafts[String(item.id ?? "")] ?? String(item.category ?? "")}
+                                      onChange={(e) =>
+                                        setSupplierProductCategoryDrafts((prev) => ({
+                                          ...prev,
+                                          [String(item.id ?? "")]: e.target.value,
+                                        }))
+                                      }
+                                    >
+                                      {PRODUCT_CATEGORY_OPTIONS.map((value) => (
+                                        <option key={value || "empty"} value={value}>
+                                          {value || "-"}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={() => void onSaveSupplierProductCategory(newSupplierProductSupplierId, String(item.id ?? ""))}
+                                      disabled={
+                                        !String(item.id ?? "").trim() ||
+                                        !newSupplierProductSupplierId.trim() ||
+                                        savingSupplierProductId === String(item.id ?? "") ||
+                                        (supplierProductCategoryDrafts[String(item.id ?? "")] ?? String(item.category ?? "")) === String(item.category ?? "")
+                                      }
+                                    >
+                                      {savingSupplierProductId === String(item.id ?? "") ? "..." : "Sauver"}
+                                    </button>
+                                  </div>
+                                </td>
                                 <td>{String(item.active ?? "-")}</td>
                               </tr>
                             ))
@@ -6752,6 +6877,19 @@ function App() {
                     <div><span>{t("purchases.dueDate")}</span><b>{String(normalizedData.due_date ?? normalizedMeta.due_date ?? "-")}</b></div>
                   </div>
                   <h4>{t("purchases.lines")}</h4>
+                  {selectedDocType === "invoice" && previewLines.length > 0 ? (
+                    <div className="purchase-correction-panel">
+                      <p className="muted">
+                        Correggi qui il codice fornitore o il libelle prodotto prima dell&apos;ingestion. Utile per gli avoir quando Claude non lit pas le code.
+                      </p>
+                      <div className="entry-actions">
+                        <button type="button" onClick={() => void onCreateExtraction()} disabled={!selectedDocId || isSavingManualExtraction || !hasManualExtractionChanges}>
+                          {isSavingManualExtraction ? "Salvataggio..." : "Salva correzioni OCR"}
+                        </button>
+                        {hasManualExtractionChanges ? <span className="purchase-correction-panel__status">Modifiche non salvate</span> : null}
+                      </div>
+                    </div>
+                  ) : null}
                   {previewLines.length === 0 ? (
                     <p className="muted">{t("purchases.noLines")}</p>
                   ) : (
@@ -6760,6 +6898,7 @@ function App() {
                         <tr>
                           <th>{t("table.supplierCode")}</th>
                           <th>{t("table.ingredient")}</th>
+                          <th>Categorie</th>
                           <th>{t("table.unit")}</th>
                           <th>{t("table.qty")}</th>
                           <th>{t("purchases.unitPrice")}</th>
@@ -6772,8 +6911,49 @@ function App() {
                       <tbody>
                         {previewLines.map((line, idx) => (
                           <tr key={`line-${idx}`}>
-                            <td>{String(line.supplier_code ?? line.supplier_sku ?? line.code ?? "-")}</td>
-                            <td>{String(line.raw_product_name ?? line.description ?? line.name ?? line.product_name ?? "-")}</td>
+                            <td>
+                              {selectedDocType === "invoice" ? (
+                                <input
+                                  className="table-input"
+                                  type="text"
+                                  value={String(line.supplier_code ?? line.supplier_sku ?? line.code ?? "")}
+                                  placeholder="Code fournisseur"
+                                  onChange={(e) => updateNormalizedLineField(idx, "supplier_code", e.target.value)}
+                                />
+                              ) : (
+                                String(line.supplier_code ?? line.supplier_sku ?? line.code ?? "-")
+                              )}
+                            </td>
+                            <td>
+                              {selectedDocType === "invoice" ? (
+                                <input
+                                  className="table-input"
+                                  type="text"
+                                  value={String(line.raw_product_name ?? line.description ?? line.name ?? line.product_name ?? "")}
+                                  placeholder="Ingredient"
+                                  onChange={(e) => updateNormalizedLineField(idx, "raw_product_name", e.target.value)}
+                                />
+                              ) : (
+                                String(line.raw_product_name ?? line.description ?? line.name ?? line.product_name ?? "-")
+                              )}
+                            </td>
+                            <td>
+                              {selectedDocType === "invoice" ? (
+                                <select
+                                  className="table-input"
+                                  value={String(line.product_category ?? "")}
+                                  onChange={(e) => updateNormalizedLineField(idx, "product_category", e.target.value)}
+                                >
+                                  {PRODUCT_CATEGORY_OPTIONS.map((value) => (
+                                    <option key={value || "empty"} value={value}>
+                                      {value || "-"}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                String(line.product_category ?? "-")
+                              )}
+                            </td>
                             <td>{String(line.qty_unit ?? line.unit ?? "-")}</td>
                             <td>{String(line.qty_value ?? line.quantity ?? "-")}</td>
                             <td>{String(line.unit_price ?? "-")}</td>

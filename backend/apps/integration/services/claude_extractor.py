@@ -197,7 +197,7 @@ def _run_claude_extraction(document: IntegrationDocument, file_bytes: bytes) -> 
         f"When a product category can be inferred from the line item, set product_category using only one of these values: {', '.join(PURCHASING_PRODUCT_CATEGORIES)}. "
         "Use French grocery semantics for categorization. In particular: eggs, egg yolk, egg white, milk, butter, cream, yogurt, cheese, mozzarella, comte, parmesan, emmental and similar dairy products should be categorized as bof. "
         "Fresh fish, seafood, shrimp, prawns, salmon, tuna, octopus and similar marine products should be categorized as poissons. "
-        "Frozen items should be categorized as surgeles when the product name indicates frozen storage. "
+        "Frozen items should be categorized as surgeles when the product name indicates frozen storage; words such as surgele, surgeles, surgelé, IQF, congelé or frozen are strong signals for surgeles even if the item is fish, meat or grocery. "
         "Use null when the category is not reasonably inferable from the product name. "
         "Return compact JSON (single line) and omit optional fields that are null at line level. "
         "If supplier/site UUIDs are not present in the file, keep them as null. "

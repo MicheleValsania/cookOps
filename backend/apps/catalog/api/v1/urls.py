@@ -18,6 +18,11 @@ urlpatterns = [
         SupplierProductViewSet.as_view({"get": "list", "post": "create"}),
         name="supplier-products-list-create",
     ),
+    path(
+        "suppliers/<uuid:supplier_id>/products/<uuid:pk>/",
+        SupplierProductViewSet.as_view({"get": "retrieve", "patch": "partial_update", "put": "update"}),
+        name="supplier-products-detail",
+    ),
 ]
 
 urlpatterns += router.urls

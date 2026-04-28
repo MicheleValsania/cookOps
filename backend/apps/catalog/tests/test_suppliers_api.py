@@ -62,3 +62,23 @@ class SupplierApiTests(APITestCase):
         created = SupplierProduct.objects.first()
         self.assertEqual(created.supplier_id, supplier.id)
         self.assertEqual(created.name, "Olive oil")
+
+    def test_patch_supplier_product_category_returns_200(self):
+        supplier = Supplier.objects.create(name="Supplier C")
+        product = SupplierProduct.objects.create(
+            supplier=supplier,
+            name="Crevettes surgelees",
+            supplier_sku="SURG-01",
+            uom="kg",
+            category="poissons",
+        )
+
+        response = self.client.patch(
+            f"/api/v1/suppliers/{supplier.id}/products/{product.id}/",
+            {"category": "surgeles"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        product.refresh_from_db()
+        self.assertEqual(product.category, "surgeles")
