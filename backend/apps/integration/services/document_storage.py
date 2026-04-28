@@ -66,6 +66,36 @@ def persist_document_binary(
     return document
 
 
+def link_document_to_existing_drive_file(
+    *,
+    document: IntegrationDocument,
+    filename: str,
+    content_type: str,
+    drive_file_id: str,
+    drive_link: str = "",
+    drive_folder_id: str = "",
+    metadata_updates: dict | None = None,
+) -> IntegrationDocument:
+    metadata = _metadata_copy(document)
+    if isinstance(metadata_updates, dict):
+        metadata.update(metadata_updates)
+
+    metadata.update(
+        {
+            "storage_provider": "google_drive",
+            "storage_drive_file_id": str(drive_file_id or "").strip(),
+            "storage_drive_link": str(drive_link or "").strip(),
+            "storage_drive_folder_id": str(drive_folder_id or "").strip()
+            or resolve_drive_folder_id_for_document_type(document.document_type),
+            "storage_mime_type": content_type,
+        }
+    )
+    document.metadata = metadata
+    document.storage_path = f"gdrive://{metadata['storage_drive_file_id']}/{filename}"
+    document.save(update_fields=["metadata", "storage_path", "updated_at"])
+    return document
+
+
 def read_document_bytes(document: IntegrationDocument) -> tuple[bytes, str]:
     metadata = _metadata_copy(document)
     drive_file_id = str(metadata.get("storage_drive_file_id") or metadata.get("drive_file_id") or "").strip()

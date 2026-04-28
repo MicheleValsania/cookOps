@@ -6,7 +6,10 @@ from django.conf import settings
 from apps.core.models import Site
 from apps.integration.models import DocumentExtraction, DocumentStatus, IntegrationDocument
 from apps.integration.services.claude_extractor import run_claude_extraction
-from apps.integration.services.document_storage import persist_document_binary, resolve_drive_folder_id_for_document_type
+from apps.integration.services.document_storage import (
+    link_document_to_existing_drive_file,
+    resolve_drive_folder_id_for_document_type,
+)
 from apps.integration.services.drive_client import DriveClient, DriveClientError
 
 
@@ -48,22 +51,32 @@ class DriveImportResult:
         }
 
 
-def _create_drive_document(*, site: Site, document_type: str, filename: str, content_type: str, binary: bytes, metadata: dict):
+def _create_drive_document(
+    *,
+    site: Site,
+    document_type: str,
+    filename: str,
+    content_type: str,
+    file_size: int | None,
+    metadata: dict,
+):
     document = IntegrationDocument.objects.create(
         site=site,
         document_type=document_type,
         source="drive",
         filename=filename,
         content_type=content_type,
-        file_size=len(binary),
+        file_size=file_size,
         status="uploaded",
         metadata=metadata,
     )
-    return persist_document_binary(
+    return link_document_to_existing_drive_file(
         document=document,
         filename=filename,
         content_type=content_type,
-        binary=binary,
+        drive_file_id=str(metadata.get("drive_file_id") or "").strip(),
+        drive_link=str(metadata.get("drive_link") or "").strip(),
+        drive_folder_id=str(metadata.get("drive_folder_id") or "").strip(),
     )
 
 
@@ -117,7 +130,7 @@ def import_drive_assets_for_site(
                 document_type=document_type,
                 filename=filename,
                 content_type=content_type,
-                binary=binary,
+                file_size=len(binary),
                 metadata=metadata,
             )
             created_row = {

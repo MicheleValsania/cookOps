@@ -51,7 +51,11 @@ class IntegrationDriveAssetImportApiTests(APITestCase):
         self.assertEqual(document.source, DocumentSource.DRIVE)
         self.assertEqual(document.metadata["drive_file_id"], "drive-001")
         self.assertEqual(document.metadata["drive_folder_id"], "folder-001")
-        self.assertTrue(document.file.name)
+        self.assertEqual(document.metadata["storage_provider"], "google_drive")
+        self.assertEqual(document.metadata["storage_drive_file_id"], "drive-001")
+        self.assertEqual(document.storage_path, "gdrive://drive-001/label-001.jpg")
+        self.assertFalse(bool(document.file))
+        client.upload_file.assert_not_called()
         self.assertEqual(
             IntegrationImportBatch.objects.filter(
                 source="drive",
