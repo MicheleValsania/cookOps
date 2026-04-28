@@ -4448,9 +4448,7 @@ function App() {
     const raw = String(doc.file || doc.storage_path || "").trim();
     if (!raw) return "";
     if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
-    const root = apiBase.replace(/\/api\/v1\/?$/, "");
-    if (raw.startsWith("/")) return `${root}${raw}`;
-    return `${root}/media/${raw.replace(/^media\//, "")}`;
+    return raw.startsWith("/") ? raw : `/${raw.replace(/^\/+/, "")}`;
   };
   const selectedDocument = useMemo(
     () => documents.find((doc) => doc.id === selectedDocId) ?? null,
