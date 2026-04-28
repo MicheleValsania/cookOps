@@ -49,7 +49,7 @@ type DocumentItem = {
   } | null;
 };
 
-const PRODUCT_CATEGORY_OPTIONS = ["", "epicerie", "viande", "poissons", "legumes", "bof", "surgeles", "boissons", "entretien", "emballages"] as const;
+const PRODUCT_CATEGORY_OPTIONS = ["", "epicerie", "viande", "poissons", "legumes", "bof", "glaces", "surgeles", "boissons", "entretien", "emballages"] as const;
 
 type SupplierItem = {
   id: string;

@@ -242,6 +242,13 @@ def _normalize_product_category(value):
         "bof": "bof",
         "beurreoeufsfromages": "bof",
         "beurreoeuffromage": "bof",
+        "glace": "glaces",
+        "glaces": "glaces",
+        "glaceartisanale": "glaces",
+        "icecream": "glaces",
+        "sorbet": "glaces",
+        "sorbets": "glaces",
+        "gelato": "glaces",
         "surgele": "surgeles",
         "surgeles": "surgeles",
         "surgelé": "surgeles",
@@ -268,6 +275,24 @@ FROZEN_CATEGORY_TOKENS = (
     "congelés",
     "frozen",
 )
+
+
+ICE_CREAM_CATEGORY_TOKENS = (
+    "glace",
+    "glaces",
+    "ice cream",
+    "icecream",
+    "gelato",
+    "sorbet",
+    "sorbets",
+)
+
+
+def _looks_ice_cream_product(raw_name: str) -> bool:
+    name = str(raw_name or "").strip().lower()
+    if not name:
+        return False
+    return any(token in name for token in ICE_CREAM_CATEGORY_TOKENS)
 
 
 def _looks_frozen_product(raw_name: str) -> bool:
@@ -401,6 +426,8 @@ def _normalize_lines(lines, target: str):
             row["qty_value"] = "1.000"
         if row["raw_product_name"] and row["qty_unit"] is None:
             row["qty_unit"] = "pc"
+        if not row["product_category"] and _looks_ice_cream_product(str(row["raw_product_name"] or "")):
+            row["product_category"] = "glaces"
         if not row["product_category"] and _looks_frozen_product(str(row["raw_product_name"] or "")):
             row["product_category"] = "surgeles"
 

@@ -715,6 +715,48 @@ class IntegrationIngestApiTests(APITestCase):
         line = InvoiceLine.objects.get(invoice__invoice_number="INV-SURGELES-001")
         self.assertEqual(line.supplier_product.category, "surgeles")
 
+    def test_ingest_invoice_infers_glaces_category_before_surgeles(self):
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="invoice",
+            source="api",
+            filename="inv-glaces.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": str(self.supplier.id),
+                "invoice_number": "INV-GLACES-001",
+                "invoice_date": "2026-03-17",
+                "lines": [
+                    {
+                        "supplier_code": "GLACE-1",
+                        "raw_product_name": "5L GLACE CHOCOLAT SURGELEE",
+                        "qty_value": "1.000",
+                        "qty_unit": "pc",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-inv-glaces-001",
+                "target": "invoice",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        line = InvoiceLine.objects.get(invoice__invoice_number="INV-GLACES-001")
+        self.assertEqual(line.supplier_product.category, "glaces")
+
     def test_ingest_credit_note_creates_out_inventory_movement(self):
         document = IntegrationDocument.objects.create(
             site=self.site,
