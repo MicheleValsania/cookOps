@@ -120,6 +120,76 @@ type StockSummaryItem = {
   last_movement_at?: string | null;
 };
 
+type InventorySectorItem = {
+  id: string;
+  site: string;
+  site_name?: string;
+  name: string;
+  code?: string | null;
+  sort_order: number;
+  is_active: boolean;
+};
+
+type StockPointItem = {
+  id: string;
+  site: string;
+  site_name?: string;
+  sector: string;
+  sector_name?: string;
+  name: string;
+  code?: string | null;
+  sort_order: number;
+  is_active: boolean;
+  metadata?: Record<string, unknown> | null;
+};
+
+type InventorySessionItem = {
+  id: string;
+  site: string;
+  site_name?: string;
+  sector?: string | null;
+  sector_name?: string | null;
+  label?: string | null;
+  status: "draft" | "in_progress" | "closed" | "cancelled";
+  source_app: string;
+  count_scope: "site" | "sector" | "point";
+  notes?: string | null;
+  started_at: string;
+  closed_at?: string | null;
+};
+
+type InventoryProductItem = {
+  supplier_product_id: string;
+  supplier_id: string;
+  supplier_name: string;
+  supplier_code?: string | null;
+  product_name: string;
+  category?: string | null;
+  qty_unit: string;
+  current_stock: string;
+  last_movement_at?: string | null;
+  active: boolean;
+};
+
+type InventorySessionLineItem = {
+  id?: string;
+  session?: string;
+  stock_point?: string | null;
+  stock_point_name?: string | null;
+  supplier_product: string;
+  supplier_product_name?: string | null;
+  supplier_id?: string | null;
+  supplier_name?: string | null;
+  supplier_code?: string | null;
+  qty_value: string;
+  qty_unit: string;
+  expected_qty?: string;
+  delta_qty?: string;
+  line_order?: number;
+  metadata?: Record<string, unknown> | null;
+  counted_at?: string | null;
+};
+
 type HaccpOcrQueueItem = {
   document_id: string;
   filename: string;
@@ -531,6 +601,15 @@ function readMenuSpacesCache(): Record<string, MenuSpace[]> {
 
 function writeMenuSpacesCache(cache: Record<string, MenuSpace[]>) {
   localStorage.setItem(MENU_SPACES_CACHE_STORAGE_KEY, JSON.stringify(cache));
+}
+
+
+function normalizeSearchText(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 
@@ -1106,6 +1185,21 @@ function App() {
   const [inventoryLinesJson, setInventoryLinesJson] = useState('[{"supplier_code":"82233","raw_product_name":"LIEU NOIR VDK 2/4 A.N.E","qty_unit":"kg","qty_value":"40.000"}]');
   const [stockSearch, setStockSearch] = useState("");
   const [lastInventoryApplied, setLastInventoryApplied] = useState<Array<Record<string, unknown>>>([]);
+  const [inventorySectors, setInventorySectors] = useState<InventorySectorItem[]>([]);
+  const [stockPoints, setStockPoints] = useState<StockPointItem[]>([]);
+  const [inventorySessions, setInventorySessions] = useState<InventorySessionItem[]>([]);
+  const [inventoryProducts, setInventoryProducts] = useState<InventoryProductItem[]>([]);
+  const [selectedInventorySectorId, setSelectedInventorySectorId] = useState("");
+  const [selectedStockPointId, setSelectedStockPointId] = useState("");
+  const [selectedInventorySessionId, setSelectedInventorySessionId] = useState("");
+  const [inventorySessionLines, setInventorySessionLines] = useState<InventorySessionLineItem[]>([]);
+  const [newInventorySectorName, setNewInventorySectorName] = useState("");
+  const [newStockPointName, setNewStockPointName] = useState("");
+  const [newInventorySessionLabel, setNewInventorySessionLabel] = useState("");
+  const [inventorySessionScope, setInventorySessionScope] = useState<"site" | "sector" | "point">("sector");
+  const [inventoryProductSearch, setInventoryProductSearch] = useState("");
+  const [inventoryProductCategoryFilter, setInventoryProductCategoryFilter] = useState("");
+  const [inventoryProductSupplierFilter, setInventoryProductSupplierFilter] = useState("");
   const [isBulkIngesting, setIsBulkIngesting] = useState<"goods_receipt" | "invoice" | null>(null);
   const [bulkIngestErrors, setBulkIngestErrors] = useState<Record<string, string[]>>({});
   const [lastIngestError, setLastIngestError] = useState("");
@@ -1356,6 +1450,12 @@ function App() {
     if (nav !== "inventario" && nav !== "inventari") return;
     if (!siteId) return;
     void loadStockSummary();
+  }, [nav, siteId]);
+
+  useEffect(() => {
+    if (nav !== "inventari") return;
+    if (!siteId) return;
+    void loadInventoryExecutionData();
   }, [nav, siteId]);
 
   useEffect(() => {
@@ -4881,16 +4981,16 @@ function App() {
   }, [recipeChecklistGroups, recipeSearch]);
 
   const filteredStockRows = useMemo(() => {
-    const q = stockSearch.trim().toLowerCase();
+    const q = normalizeSearchText(stockSearch);
     if (!q) return stockSummaryRows;
     return stockSummaryRows.filter((row) => {
       return (
-        String(row.product_label ?? "").toLowerCase().includes(q) ||
-        String(row.product_key ?? "").toLowerCase().includes(q) ||
-        String(row.qty_unit ?? "").toLowerCase().includes(q) ||
-        String(row.product_name ?? "").toLowerCase().includes(q) ||
-        String(row.supplier_name ?? "").toLowerCase().includes(q) ||
-        String(row.product_category ?? "").toLowerCase().includes(q)
+        normalizeSearchText(row.product_label).includes(q) ||
+        normalizeSearchText(row.product_key).includes(q) ||
+        normalizeSearchText(row.qty_unit).includes(q) ||
+        normalizeSearchText(row.product_name).includes(q) ||
+        normalizeSearchText(row.supplier_name).includes(q) ||
+        normalizeSearchText(row.product_category).includes(q)
       );
     });
   }, [stockSummaryRows, stockSearch]);
@@ -5333,6 +5433,269 @@ function App() {
       window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
     } catch {
       setNotice("Impossibile aprire il PDF del documento.");
+    }
+  }
+
+  async function loadInventoryExecutionData() {
+    if (!siteId) return;
+    setIsInventoryLoading(true);
+    try {
+      const [sectorRes, pointRes, sessionRes, supplierRes] = await Promise.all([
+        apiFetch(`/inventory/sectors/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/inventory/stock-points/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/inventory/sessions/?site=${encodeURIComponent(siteId)}`),
+        apiFetch("/suppliers/"),
+      ]);
+      const [sectorBody, pointBody, sessionBody, supplierBody] = await Promise.all([
+        sectorRes.json(),
+        pointRes.json(),
+        sessionRes.json(),
+        supplierRes.json(),
+      ]);
+      if (!sectorRes.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", sectorBody.detail ?? JSON.stringify(sectorBody)));
+        return;
+      }
+      if (!pointRes.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", pointBody.detail ?? JSON.stringify(pointBody)));
+        return;
+      }
+      if (!sessionRes.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", sessionBody.detail ?? JSON.stringify(sessionBody)));
+        return;
+      }
+      setInventorySectors(Array.isArray(sectorBody) ? (sectorBody as InventorySectorItem[]) : []);
+      setStockPoints(Array.isArray(pointBody) ? (pointBody as StockPointItem[]) : []);
+      setInventorySessions(Array.isArray(sessionBody) ? (sessionBody as InventorySessionItem[]) : []);
+      if (supplierRes.ok && Array.isArray(supplierBody)) {
+        setSuppliers(supplierBody as SupplierItem[]);
+      }
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  }
+
+  async function loadInventoryProducts() {
+    if (!siteId) return;
+    setIsInventoryLoading(true);
+    try {
+      const params = new URLSearchParams({ site: siteId });
+      if (inventoryProductSearch.trim()) params.set("q", inventoryProductSearch.trim());
+      if (inventoryProductCategoryFilter.trim()) params.set("category", inventoryProductCategoryFilter.trim());
+      if (inventoryProductSupplierFilter.trim()) params.set("supplier", inventoryProductSupplierFilter.trim());
+      const res = await apiFetch(`/inventory/products/?${params.toString()}`);
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setInventoryProducts(Array.isArray(body?.results) ? (body.results as InventoryProductItem[]) : []);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  }
+
+  async function loadInventorySessionDetail(sessionId: string) {
+    if (!sessionId) {
+      setInventorySessionLines([]);
+      return;
+    }
+    setIsInventoryLoading(true);
+    try {
+      const res = await apiFetch(`/inventory/sessions/${encodeURIComponent(sessionId)}/`);
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setInventorySessionLines(Array.isArray(body?.lines) ? (body.lines as InventorySessionLineItem[]) : []);
+    } catch {
+      setNotice(t("error.documentsLoad"));
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  }
+
+  async function onCreateInventorySector(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId || !newInventorySectorName.trim()) return;
+    const res = await apiFetch("/inventory/sectors/", {
+      method: "POST",
+      body: JSON.stringify({
+        site: siteId,
+        name: newInventorySectorName.trim(),
+        sort_order: inventorySectors.length + 1,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setNewInventorySectorName("");
+    setNotice(`Settore inventario creato: ${body.name}`);
+    await loadInventoryExecutionData();
+  }
+
+  async function onCreateStockPoint(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId || !selectedInventorySectorId || !newStockPointName.trim()) return;
+    const currentSectorPoints = stockPoints.filter((item) => item.sector === selectedInventorySectorId);
+    const res = await apiFetch("/inventory/stock-points/", {
+      method: "POST",
+      body: JSON.stringify({
+        site: siteId,
+        sector: selectedInventorySectorId,
+        name: newStockPointName.trim(),
+        sort_order: currentSectorPoints.length + 1,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setNewStockPointName("");
+    setNotice(`Punto stock creato: ${body.name}`);
+    await loadInventoryExecutionData();
+  }
+
+  async function onCreateInventorySession(e: FormEvent) {
+    e.preventDefault();
+    if (!siteId) return;
+    const res = await apiFetch("/inventory/sessions/", {
+      method: "POST",
+      body: JSON.stringify({
+        site: siteId,
+        sector: selectedInventorySectorId || null,
+        label: newInventorySessionLabel.trim() || null,
+        count_scope: inventorySessionScope,
+        source_app: "cookops_web",
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(errorWithDetail("error.siteCreate", body.detail ?? JSON.stringify(body)));
+      return;
+    }
+    setSelectedInventorySessionId(String(body.id ?? ""));
+    setNewInventorySessionLabel("");
+    setNotice(`Sessione inventario creata: ${body.label || body.id}`);
+    await loadInventoryExecutionData();
+    if (body.id) {
+      await loadInventorySessionDetail(String(body.id));
+    }
+  }
+
+  function onAddProductToInventorySession(product: InventoryProductItem) {
+    setInventorySessionLines((prev) => {
+      const exists = prev.some(
+        (line) => line.supplier_product === product.supplier_product_id && line.qty_unit === product.qty_unit && (line.stock_point || "") === selectedStockPointId
+      );
+      if (exists) return prev;
+      return [
+        ...prev,
+        {
+          stock_point: selectedStockPointId || null,
+          stock_point_name: stockPoints.find((item) => item.id === selectedStockPointId)?.name ?? null,
+          supplier_product: product.supplier_product_id,
+          supplier_product_name: product.product_name,
+          supplier_id: product.supplier_id,
+          supplier_name: product.supplier_name,
+          supplier_code: product.supplier_code,
+          qty_value: product.current_stock ?? "0.000",
+          qty_unit: product.qty_unit,
+          expected_qty: product.current_stock ?? "0.000",
+          delta_qty: "0.000",
+          line_order: prev.length,
+          metadata: {},
+        },
+      ];
+    });
+  }
+
+  function onUpdateInventorySessionLine(index: number, patch: Partial<InventorySessionLineItem>) {
+    setInventorySessionLines((prev) =>
+      prev.map((line, lineIndex) => {
+        if (lineIndex !== index) return line;
+        const next = { ...line, ...patch };
+        const qtyValue = Number.parseFloat(String(next.qty_value ?? "0").replace(",", "."));
+        const expectedValue = Number.parseFloat(String(next.expected_qty ?? "0").replace(",", "."));
+        const delta = Number.isFinite(qtyValue) && Number.isFinite(expectedValue) ? qtyValue - expectedValue : 0;
+        return { ...next, delta_qty: delta.toFixed(3) };
+      })
+    );
+  }
+
+  async function onSaveInventorySessionLines() {
+    if (!selectedInventorySessionId) {
+      setNotice("Seleziona prima una sessione inventario.");
+      return;
+    }
+    if (inventorySessionLines.length === 0) {
+      setNotice("Nessuna riga inventario da salvare.");
+      return;
+    }
+    setIsApplyingInventory(true);
+    try {
+      const res = await apiFetch(`/inventory/sessions/${encodeURIComponent(selectedInventorySessionId)}/lines/bulk-upsert/`, {
+        method: "POST",
+        body: JSON.stringify({
+          lines: inventorySessionLines.map((line, index) => ({
+            stock_point: line.stock_point || null,
+            supplier_product: line.supplier_product,
+            qty_value: String(line.qty_value ?? "0").replace(",", "."),
+            qty_unit: line.qty_unit,
+            line_order: typeof line.line_order === "number" ? line.line_order : index,
+            metadata: line.metadata ?? {},
+          })),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Righe inventario salvate: ${Number(body.saved_count ?? 0)}.`);
+      await Promise.all([loadInventoryExecutionData(), loadInventorySessionDetail(selectedInventorySessionId)]);
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsApplyingInventory(false);
+    }
+  }
+
+  async function onCloseInventorySession() {
+    if (!selectedInventorySessionId) {
+      setNotice("Seleziona prima una sessione inventario.");
+      return;
+    }
+    setIsApplyingInventory(true);
+    try {
+      const res = await apiFetch(`/inventory/sessions/${encodeURIComponent(selectedInventorySessionId)}/close/`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(`Sessione chiusa. Rettifiche create: ${Number(body.created_adjustments ?? 0)}.`);
+      await Promise.all([
+        loadInventoryExecutionData(),
+        loadInventorySessionDetail(selectedInventorySessionId),
+        loadStockSummary(),
+        loadInventoryMovements(),
+      ]);
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsApplyingInventory(false);
     }
   }
 
@@ -7469,50 +7832,227 @@ function App() {
             <div className="grid">
               <section className="panel">
                 <h2>Inventaires</h2>
-                <form onSubmit={onApplyInventorySnapshot}>
-                  <label>Portee inventaire</label>
-                  <select value={inventoryScope} onChange={(e) => setInventoryScope(e.target.value)}>
-                    <option value="total">Total site</option>
-                    <option value="category">Par categorie</option>
-                    <option value="sector">Par secteur</option>
-                  </select>
-                  <label>Lignes inventaire (JSON)</label>
-                  <textarea value={inventoryLinesJson} onChange={(e) => setInventoryLinesJson(e.target.value)} rows={10} />
-                  <button type="submit" disabled={!siteId || isApplyingInventory}>
-                    {isApplyingInventory ? t("purchases.processing") : "Deposer inventaire"}
-                  </button>
+                <p className="muted">Configura struttura fisica, prepara la sessione e registra il conteggio senza passare da JSON manuale.</p>
+                <form onSubmit={onCreateInventorySector}>
+                  <label>Nuovo settore inventario</label>
+                  <input value={newInventorySectorName} onChange={(e) => setNewInventorySectorName(e.target.value)} placeholder="Cuisine, Bar, Reserve..." />
+                  <button type="submit" disabled={!siteId}>Crea settore</button>
                 </form>
-                {lastInventoryApplied.length > 0 ? (
-                  <div className="sheet-wrap">
-                    <table className="sheet-table">
-                      <thead>
-                        <tr>
-                          <th>Code / Produit</th>
-                          <th>UM</th>
-                          <th>Stock precedent</th>
-                          <th>Inventaire depose</th>
-                          <th>Delta</th>
-                          <th>Mouvement</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {lastInventoryApplied.map((row, idx) => (
-                          <tr key={`inv-applied-${idx}`}>
-                            <td>{String(row.product_key ?? "-")}</td>
-                            <td>{String(row.qty_unit ?? "-")}</td>
-                            <td>{String(row.current_qty ?? "-")}</td>
-                            <td>{String(row.target_qty ?? "-")}</td>
-                            <td>{String(row.delta ?? "-")}</td>
-                            <td>{String(row.movement_type ?? "-")}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : null}
+                <form onSubmit={onCreateStockPoint}>
+                  <label>Secteur</label>
+                  <select value={selectedInventorySectorId} onChange={(e) => setSelectedInventorySectorId(e.target.value)}>
+                    <option value="">Seleziona settore</option>
+                    {inventorySectors.map((sector) => (
+                      <option key={sector.id} value={sector.id}>{sector.name}</option>
+                    ))}
+                  </select>
+                  <label>Nuovo punto stock</label>
+                  <input value={newStockPointName} onChange={(e) => setNewStockPointName(e.target.value)} placeholder="Frigo 1, Scaffale farine..." />
+                  <button type="submit" disabled={!siteId || !selectedInventorySectorId}>Crea punto stock</button>
+                </form>
+                <form onSubmit={onCreateInventorySession}>
+                  <label>Sessione inventario</label>
+                  <input value={newInventorySessionLabel} onChange={(e) => setNewInventorySessionLabel(e.target.value)} placeholder="Inventario fine mese - cucina" />
+                  <label>Portata</label>
+                  <select value={inventorySessionScope} onChange={(e) => setInventorySessionScope(e.target.value as "site" | "sector" | "point")}>
+                    <option value="site">Sito</option>
+                    <option value="sector">Settore</option>
+                    <option value="point">Punto stock</option>
+                  </select>
+                  <button type="submit" disabled={!siteId}>Crea sessione</button>
+                </form>
+                <div className="sheet-wrap">
+                  <table className="sheet-table">
+                    <thead>
+                      <tr>
+                        <th>Secteurs</th>
+                        <th>Punti stock</th>
+                        <th>Sessioni</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>
+                          {inventorySectors.length === 0 ? (
+                            <span className="muted">Nessun settore.</span>
+                          ) : (
+                            inventorySectors.map((sector) => (
+                              <div key={sector.id}>
+                                <button type="button" className="btn btn-outline" onClick={() => setSelectedInventorySectorId(sector.id)}>
+                                  {selectedInventorySectorId === sector.id ? "✓ " : ""}{sector.name}
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </td>
+                        <td>
+                          {stockPoints.filter((point) => !selectedInventorySectorId || point.sector === selectedInventorySectorId).length === 0 ? (
+                            <span className="muted">Nessun punto stock.</span>
+                          ) : (
+                            stockPoints
+                              .filter((point) => !selectedInventorySectorId || point.sector === selectedInventorySectorId)
+                              .map((point) => (
+                                <div key={point.id}>
+                                  <button type="button" className="btn btn-outline" onClick={() => setSelectedStockPointId(point.id)}>
+                                    {selectedStockPointId === point.id ? "✓ " : ""}{point.name}
+                                  </button>
+                                </div>
+                              ))
+                          )}
+                        </td>
+                        <td>
+                          {inventorySessions.length === 0 ? (
+                            <span className="muted">Nessuna sessione.</span>
+                          ) : (
+                            inventorySessions.map((session) => (
+                              <div key={session.id} style={{ marginBottom: 8 }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline"
+                                  onClick={() => {
+                                    setSelectedInventorySessionId(session.id);
+                                    void loadInventorySessionDetail(session.id);
+                                  }}
+                                >
+                                  {selectedInventorySessionId === session.id ? "✓ " : ""}
+                                  {(session.label || session.id.slice(0, 8))} · {session.status}
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </section>
               <section className="panel">
-                <h2>Derniers mouvements inventaire</h2>
+                <h2>Saisie inventaire</h2>
+                <div className="sheet-toolbar">
+                  <input
+                    value={inventoryProductSearch}
+                    onChange={(e) => setInventoryProductSearch(e.target.value)}
+                    placeholder="Cerca codice, prodotto, fornitore..."
+                  />
+                  <select value={inventoryProductCategoryFilter} onChange={(e) => setInventoryProductCategoryFilter(e.target.value)}>
+                    <option value="">Tutte le categorie</option>
+                    {PRODUCT_CATEGORY_OPTIONS.filter(Boolean).map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                  <select value={inventoryProductSupplierFilter} onChange={(e) => setInventoryProductSupplierFilter(e.target.value)}>
+                    <option value="">Tutti i fornitori</option>
+                    {suppliers.map((supplier) => (
+                      <option key={supplier.id} value={supplier.id}>{supplier.name}</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={loadInventoryProducts} disabled={!siteId || isInventoryLoading}>
+                    {isInventoryLoading ? t("purchases.processing") : "Carica prodotti"}
+                  </button>
+                  <button type="button" onClick={onSaveInventorySessionLines} disabled={!selectedInventorySessionId || isApplyingInventory}>
+                    {isApplyingInventory ? t("purchases.processing") : "Salva righe"}
+                  </button>
+                  <button type="button" onClick={onCloseInventorySession} disabled={!selectedInventorySessionId || isApplyingInventory}>
+                    {isApplyingInventory ? t("purchases.processing") : "Chiudi sessione"}
+                  </button>
+                </div>
+                <div className="sheet-wrap">
+                  <table className="sheet-table">
+                    <thead>
+                      <tr>
+                        <th>Prodotti disponibili</th>
+                        <th>Sessione corrente</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td style={{ verticalAlign: "top" }}>
+                          {inventoryProducts.length === 0 ? (
+                            <p className="muted">Nessun prodotto caricato.</p>
+                          ) : (
+                            <table className="sheet-table">
+                              <thead>
+                                <tr>
+                                  <th>Codice</th>
+                                  <th>Prodotto</th>
+                                  <th>Fornitore</th>
+                                  <th>Stock</th>
+                                  <th>UM</th>
+                                  <th></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {inventoryProducts.map((product) => (
+                                  <tr key={product.supplier_product_id}>
+                                    <td>{product.supplier_code || "-"}</td>
+                                    <td>{product.product_name}</td>
+                                    <td>{product.supplier_name}</td>
+                                    <td>{product.current_stock}</td>
+                                    <td>{product.qty_unit}</td>
+                                    <td>
+                                      <button type="button" onClick={() => onAddProductToInventorySession(product)} disabled={!selectedInventorySessionId}>
+                                        Aggiungi
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                        <td style={{ verticalAlign: "top" }}>
+                          {!selectedInventorySessionId ? (
+                            <p className="muted">Seleziona una sessione per iniziare il conteggio.</p>
+                          ) : inventorySessionLines.length === 0 ? (
+                            <p className="muted">Nessuna riga conteggio.</p>
+                          ) : (
+                            <table className="sheet-table">
+                              <thead>
+                                <tr>
+                                  <th>Punto stock</th>
+                                  <th>Codice</th>
+                                  <th>Prodotto</th>
+                                  <th>Teorico</th>
+                                  <th>Contati</th>
+                                  <th>Delta</th>
+                                  <th>UM</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {inventorySessionLines.map((line, index) => (
+                                  <tr key={`${line.supplier_product}-${line.qty_unit}-${index}`}>
+                                    <td>
+                                      <select value={line.stock_point || ""} onChange={(e) => onUpdateInventorySessionLine(index, { stock_point: e.target.value || null })}>
+                                        <option value="">-</option>
+                                        {stockPoints
+                                          .filter((point) => !selectedInventorySectorId || point.sector === selectedInventorySectorId)
+                                          .map((point) => (
+                                            <option key={point.id} value={point.id}>{point.name}</option>
+                                          ))}
+                                      </select>
+                                    </td>
+                                    <td>{line.supplier_code || "-"}</td>
+                                    <td>{line.supplier_product_name || "-"}</td>
+                                    <td>{line.expected_qty || "0.000"}</td>
+                                    <td>
+                                      <input
+                                        value={line.qty_value}
+                                        onChange={(e) => onUpdateInventorySessionLine(index, { qty_value: e.target.value })}
+                                      />
+                                    </td>
+                                    <td>{line.delta_qty || "0.000"}</td>
+                                    <td>{line.qty_unit}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <h3 style={{ marginTop: 20 }}>Historique ajustements</h3>
                 <button type="button" onClick={loadInventoryMovements} disabled={!siteId || isInventoryLoading}>
                   {isInventoryLoading ? t("purchases.processing") : t("suppliers.refreshList")}
                 </button>
