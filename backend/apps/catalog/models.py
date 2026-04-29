@@ -1,6 +1,20 @@
-﻿import uuid
+import re
+import unicodedata
+import uuid
 
 from django.db import models
+
+
+def normalize_supplier_name(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    without_accents = "".join(
+        char
+        for char in unicodedata.normalize("NFD", raw)
+        if unicodedata.category(char) != "Mn"
+    )
+    return re.sub(r"[^A-Za-z0-9]+", "", without_accents).upper()
 
 
 class Supplier(models.Model):
@@ -17,6 +31,16 @@ class Supplier(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    @classmethod
+    def find_by_normalized_name(cls, value: str | None):
+        normalized = normalize_supplier_name(value)
+        if not normalized:
+            return None
+        for candidate in cls.objects.all():
+            if normalize_supplier_name(candidate.name) == normalized:
+                return candidate
+        return None
 
 
 class SupplierProduct(models.Model):

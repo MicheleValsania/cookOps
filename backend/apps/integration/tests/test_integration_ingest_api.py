@@ -195,6 +195,43 @@ class IntegrationIngestApiTests(APITestCase):
         receipt = GoodsReceipt.objects.get(delivery_note_number="BL-AUTO-001")
         self.assertEqual(receipt.supplier.name, "Auto Supplier OCR")
 
+    def test_ingest_auto_resolves_supplier_from_normalized_name(self):
+        canonical_supplier = Supplier.objects.create(name="ATSCASH")
+        document = IntegrationDocument.objects.create(
+            site=self.site,
+            document_type="goods_receipt",
+            source="api",
+            filename="bl-ocr-normalized-supplier.json",
+            status="extracted",
+        )
+        extraction = DocumentExtraction.objects.create(
+            document=document,
+            extractor_name="claude",
+            status="succeeded",
+            normalized_payload={
+                "site": str(self.site.id),
+                "supplier": None,
+                "supplier_name": "ATS CASH",
+                "delivery_note_number": "BL-AUTO-002",
+                "received_at": "2026-03-03T10:00:00Z",
+                "lines": [{"raw_product_name": "Milk", "qty_value": "1.000", "qty_unit": "l"}],
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/integration/documents/{document.id}/ingest/",
+            {
+                "extraction_id": str(extraction.id),
+                "idempotency_key": "ocr-gr-auto-supplier-002",
+                "target": "goods_receipt",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        receipt = GoodsReceipt.objects.get(delivery_note_number="BL-AUTO-002")
+        self.assertEqual(receipt.supplier_id, canonical_supplier.id)
+
     def test_ingest_invoice_preserves_existing_supplier_product_uom_over_packaging_name(self):
         product = SupplierProduct.objects.create(
             supplier=self.supplier,

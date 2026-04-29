@@ -27,6 +27,18 @@ class SupplierApiTests(APITestCase):
         self.assertEqual(Supplier.objects.count(), 1)
         self.assertEqual(Supplier.objects.first().name, "Metro")
 
+    def test_create_supplier_rejects_normalized_duplicate_name(self):
+        Supplier.objects.create(name="ATSCASH")
+
+        response = self.client.post(
+            "/api/v1/suppliers/",
+            {"name": "ATS CASH", "metadata": {"source": "manual"}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("name", response.json())
+
     def test_list_supplier_products_returns_200(self):
         supplier = Supplier.objects.create(name="Supplier A")
         SupplierProduct.objects.create(

@@ -847,7 +847,9 @@ def _resolve_supplier_id(source: dict, supplier_id):
                 return str(candidate.id)
 
     if supplier_name:
-        existing = Supplier.objects.filter(name__iexact=supplier_name).first()
+        existing = Supplier.objects.filter(name__iexact=supplier_name).first() or Supplier.find_by_normalized_name(
+            supplier_name
+        )
         if existing:
             if supplier_vat and not existing.vat_number:
                 existing.vat_number = supplier_vat
@@ -862,7 +864,9 @@ def _resolve_supplier_id(source: dict, supplier_id):
             )
             return str(created.id)
         except IntegrityError:
-            fallback = Supplier.objects.filter(name__iexact=supplier_name[:255]).first()
+            fallback = Supplier.objects.filter(name__iexact=supplier_name[:255]).first() or Supplier.find_by_normalized_name(
+                supplier_name[:255]
+            )
             if fallback:
                 return str(fallback.id)
 

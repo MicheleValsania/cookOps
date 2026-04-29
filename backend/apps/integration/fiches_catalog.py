@@ -85,7 +85,9 @@ def import_supplier_catalog_from_fiches() -> dict[str, Any]:
             except (TypeError, ValueError):
                 invalid_supplier_ids += 1
 
-            supplier = Supplier.objects.filter(name=supplier_name).first()
+            supplier = Supplier.objects.filter(name=supplier_name).first() or Supplier.find_by_normalized_name(
+                supplier_name
+            )
             if supplier is None:
                 create_kwargs = {"name": supplier_name, "metadata": {"source": "fiches", "fiches_supplier_id": str(source_id)}}
                 if supplier_uuid:

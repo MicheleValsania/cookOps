@@ -4,6 +4,14 @@ from apps.catalog.models import Supplier, SupplierProduct
 
 
 class SupplierSerializer(serializers.ModelSerializer):
+    def validate_name(self, value):
+        duplicate = Supplier.find_by_normalized_name(value)
+        if duplicate and (not self.instance or duplicate.id != self.instance.id):
+            raise serializers.ValidationError(
+                f"A supplier with equivalent normalized name already exists: {duplicate.name}."
+            )
+        return str(value or "").strip()
+
     class Meta:
         model = Supplier
         fields = ("id", "name", "vat_number", "metadata", "created_at", "updated_at")
