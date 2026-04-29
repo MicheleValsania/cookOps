@@ -808,6 +808,11 @@ function getTodayIsoDate() {
   return `${year}-${month}-${day}`;
 }
 
+function formatDateTime(value?: string | null) {
+  if (!value) return "-";
+  return String(value).replace("T", " ").replace("Z", "").slice(0, 16);
+}
+
 function readReportFilters() {
   try {
     const raw = localStorage.getItem(REPORT_FILTERS_STORAGE_KEY);
@@ -1197,6 +1202,8 @@ function App() {
   const [newStockPointName, setNewStockPointName] = useState("");
   const [newInventorySessionLabel, setNewInventorySessionLabel] = useState("");
   const [inventorySessionScope, setInventorySessionScope] = useState<"site" | "sector" | "point">("sector");
+  const [inventorySessionStatusFilter, setInventorySessionStatusFilter] = useState<"all" | "draft" | "in_progress" | "closed" | "cancelled">("all");
+  const [inventorySessionDraft, setInventorySessionDraft] = useState<InventorySessionItem | null>(null);
   const [inventoryProductSearch, setInventoryProductSearch] = useState("");
   const [inventoryProductCategoryFilter, setInventoryProductCategoryFilter] = useState("");
   const [inventoryProductSupplierFilter, setInventoryProductSupplierFilter] = useState("");
@@ -1456,7 +1463,7 @@ function App() {
     if (nav !== "inventari") return;
     if (!siteId) return;
     void loadInventoryExecutionData();
-  }, [nav, siteId]);
+  }, [nav, siteId, inventorySessionStatusFilter]);
 
   useEffect(() => {
     if (nav !== "haccp" && nav !== "tracciabilita" && nav !== "dashboard" && nav !== "report") return;
@@ -5006,6 +5013,21 @@ function App() {
     });
   }, [stockSummaryRows, stockSearch]);
 
+  const selectedInventorySession = useMemo(
+    () => inventorySessions.find((session) => session.id === selectedInventorySessionId) ?? null,
+    [inventorySessions, selectedInventorySessionId]
+  );
+
+  const inventorySessionMeta = inventorySessionDraft ?? selectedInventorySession;
+  const filteredStockPoints = useMemo(
+    () => stockPoints.filter((point) => !selectedInventorySectorId || point.sector === selectedInventorySectorId),
+    [stockPoints, selectedInventorySectorId]
+  );
+  const inventoryDifferenceCount = useMemo(
+    () => inventorySessionLines.filter((line) => Number.parseFloat(String(line.delta_qty ?? "0")) !== 0).length,
+    [inventorySessionLines]
+  );
+
   function renderSourceBadge(row: Record<string, unknown>) {
     const sourceType = String(row.source_type ?? "direct");
     const sourceRecipeTitle = String(row.source_recipe_title ?? "").trim();
@@ -5451,10 +5473,14 @@ function App() {
     if (!siteId) return;
     setIsInventoryLoading(true);
     try {
+      const sessionParams = new URLSearchParams({ site: siteId });
+      if (inventorySessionStatusFilter !== "all") {
+        sessionParams.set("status", inventorySessionStatusFilter);
+      }
       const [sectorRes, pointRes, sessionRes, supplierRes] = await Promise.all([
         apiFetch(`/inventory/sectors/?site=${encodeURIComponent(siteId)}`),
         apiFetch(`/inventory/stock-points/?site=${encodeURIComponent(siteId)}`),
-        apiFetch(`/inventory/sessions/?site=${encodeURIComponent(siteId)}`),
+        apiFetch(`/inventory/sessions/?${sessionParams.toString()}`),
         apiFetch("/suppliers/"),
       ]);
       const [sectorBody, pointBody, sessionBody, supplierBody] = await Promise.all([
@@ -5513,6 +5539,7 @@ function App() {
   async function loadInventorySessionDetail(sessionId: string) {
     if (!sessionId) {
       setInventorySessionLines([]);
+      setInventorySessionDraft(null);
       return;
     }
     setIsInventoryLoading(true);
@@ -5523,6 +5550,21 @@ function App() {
         setNotice(errorWithDetail("error.documentsLoad", body.detail ?? JSON.stringify(body)));
         return;
       }
+      const detail = body as InventorySessionItem & { lines?: InventorySessionLineItem[] };
+      setInventorySessionDraft({
+        id: detail.id,
+        site: detail.site,
+        site_name: detail.site_name,
+        sector: detail.sector ?? null,
+        sector_name: detail.sector_name ?? null,
+        label: detail.label ?? null,
+        status: detail.status,
+        source_app: detail.source_app,
+        count_scope: detail.count_scope,
+        notes: detail.notes ?? null,
+        started_at: detail.started_at,
+        closed_at: detail.closed_at ?? null,
+      });
       setInventorySessionLines(Array.isArray(body?.lines) ? (body.lines as InventorySessionLineItem[]) : []);
     } catch {
       setNotice(t("error.documentsLoad"));
@@ -5571,7 +5613,7 @@ function App() {
       return;
     }
     setNewStockPointName("");
-    setNotice(`Punto stock creato: ${body.name}`);
+    setNotice(t("inventories.noticeStockPointCreated", { name: body.name }));
     await loadInventoryExecutionData();
   }
 
@@ -5594,11 +5636,46 @@ function App() {
       return;
     }
     setSelectedInventorySessionId(String(body.id ?? ""));
+    setInventorySessionDraft(body as InventorySessionItem);
     setNewInventorySessionLabel("");
-    setNotice(`Sessione inventario creata: ${body.label || body.id}`);
+    setNotice(t("inventories.noticeSessionCreated", { name: body.label || body.id }));
     await loadInventoryExecutionData();
     if (body.id) {
       await loadInventorySessionDetail(String(body.id));
+    }
+  }
+
+  async function onSaveInventorySessionMeta() {
+    if (!selectedInventorySessionId || !inventorySessionDraft) {
+      setNotice(t("inventories.noticeSessionRequired"));
+      return;
+    }
+    setIsApplyingInventory(true);
+    try {
+      const res = await apiFetch(`/inventory/sessions/${encodeURIComponent(selectedInventorySessionId)}/`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          sector: inventorySessionDraft.sector || null,
+          label: inventorySessionDraft.label || null,
+          status: inventorySessionDraft.status,
+          count_scope: inventorySessionDraft.count_scope,
+          notes: inventorySessionDraft.notes || null,
+          source_app: inventorySessionDraft.source_app || "cookops_web",
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setInventorySessionDraft(body as InventorySessionItem);
+      setNotice(t("inventories.noticeSessionUpdated", { name: body.label || body.id }));
+      await loadInventoryExecutionData();
+      await loadInventorySessionDetail(selectedInventorySessionId);
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsApplyingInventory(false);
     }
   }
 
@@ -5671,7 +5748,7 @@ function App() {
         setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
         return;
       }
-      setNotice(`Righe inventario salvate: ${Number(body.saved_count ?? 0)}.`);
+      setNotice(t("inventories.noticeLinesSaved", { count: Number(body.saved_count ?? 0) }));
       await Promise.all([loadInventoryExecutionData(), loadInventorySessionDetail(selectedInventorySessionId)]);
     } catch {
       setNotice(t("error.ingest"));
@@ -5696,13 +5773,35 @@ function App() {
         setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
         return;
       }
-      setNotice(`Sessione chiusa. Rettifiche create: ${Number(body.created_adjustments ?? 0)}.`);
+      setNotice(t("inventories.noticeSessionClosed", { count: Number(body.created_adjustments ?? 0) }));
       await Promise.all([
         loadInventoryExecutionData(),
         loadInventorySessionDetail(selectedInventorySessionId),
         loadStockSummary(),
         loadInventoryMovements(),
       ]);
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsApplyingInventory(false);
+    }
+  }
+
+  async function onDeleteInventorySessionLine(lineId: string) {
+    if (!selectedInventorySessionId || !lineId) return;
+    setIsApplyingInventory(true);
+    try {
+      const res = await apiFetch(
+        `/inventory/sessions/${encodeURIComponent(selectedInventorySessionId)}/lines/${encodeURIComponent(lineId)}/`,
+        { method: "DELETE" }
+      );
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json();
+        setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setNotice(t("inventories.noticeLineDeleted"));
+      await Promise.all([loadInventoryExecutionData(), loadInventorySessionDetail(selectedInventorySessionId)]);
     } catch {
       setNotice(t("error.ingest"));
     } finally {
@@ -7852,6 +7951,62 @@ function App() {
                   <input value={newStockPointName} onChange={(e) => setNewStockPointName(e.target.value)} placeholder={t("inventories.newStockPointPlaceholder")} />
                   <button type="submit" disabled={!siteId || !selectedInventorySectorId}>{t("inventories.createStockPoint")}</button>
                 </form>
+                <div className="sheet-wrap" style={{ marginTop: 16 }}>
+                  <table className="sheet-table">
+                    <thead>
+                      <tr>
+                        <th>{t("inventories.sectors")}</th>
+                        <th>{t("inventories.stockPoints")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>
+                          {inventorySectors.length === 0 ? (
+                            <span className="muted">{t("inventories.noSectors")}</span>
+                          ) : (
+                            inventorySectors.map((sector) => (
+                              <div key={sector.id} style={{ marginBottom: 8 }}>
+                                <button type="button" className="btn btn-outline" onClick={() => setSelectedInventorySectorId(sector.id)}>
+                                  {selectedInventorySectorId === sector.id ? "✓ " : ""}{sector.name}
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </td>
+                        <td>
+                          {filteredStockPoints.length === 0 ? (
+                            <span className="muted">{t("inventories.noStockPoints")}</span>
+                          ) : (
+                            filteredStockPoints.map((point) => (
+                              <div key={point.id} style={{ marginBottom: 8 }}>
+                                <button type="button" className="btn btn-outline" onClick={() => setSelectedStockPointId(point.id)}>
+                                  {selectedStockPointId === point.id ? "✓ " : ""}{point.name}
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div className="sheet-toolbar" style={{ marginTop: 16 }}>
+                  <div>
+                    <h3 style={{ marginBottom: 6 }}>{t("inventories.sessions")}</h3>
+                    <p className="muted">{t("inventories.sessionsDesc")}</p>
+                  </div>
+                  <select value={inventorySessionStatusFilter} onChange={(e) => setInventorySessionStatusFilter(e.target.value as typeof inventorySessionStatusFilter)}>
+                    <option value="all">{t("inventories.statusAll")}</option>
+                    <option value="draft">{t("inventories.statusDraft")}</option>
+                    <option value="in_progress">{t("inventories.statusInProgress")}</option>
+                    <option value="closed">{t("inventories.statusClosed")}</option>
+                    <option value="cancelled">{t("inventories.statusCancelled")}</option>
+                  </select>
+                  <button type="button" onClick={loadInventoryExecutionData} disabled={!siteId || isInventoryLoading}>
+                    {isInventoryLoading ? t("action.loading") : t("suppliers.refreshList")}
+                  </button>
+                </div>
                 <form onSubmit={onCreateInventorySession}>
                   <label>{t("inventories.sessionLabel")}</label>
                   <input value={newInventorySessionLabel} onChange={(e) => setNewInventorySessionLabel(e.target.value)} placeholder={t("inventories.sessionPlaceholder")} />
@@ -7929,21 +8084,171 @@ function App() {
                 </div>
               </section>
               <section className="panel">
+                <div className="sheet-toolbar">
+                  <div>
+                    <h2 style={{ marginBottom: 6 }}>{t("inventories.sessions")}</h2>
+                    <p className="muted">{t("inventories.sessionsDesc")}</p>
+                  </div>
+                  <select value={inventorySessionStatusFilter} onChange={(e) => setInventorySessionStatusFilter(e.target.value as typeof inventorySessionStatusFilter)}>
+                    <option value="all">{t("inventories.statusAll")}</option>
+                    <option value="draft">{t("inventories.statusDraft")}</option>
+                    <option value="in_progress">{t("inventories.statusInProgress")}</option>
+                    <option value="closed">{t("inventories.statusClosed")}</option>
+                    <option value="cancelled">{t("inventories.statusCancelled")}</option>
+                  </select>
+                  <button type="button" onClick={loadInventoryExecutionData} disabled={!siteId || isInventoryLoading}>
+                    {isInventoryLoading ? t("action.loading") : t("suppliers.refreshList")}
+                  </button>
+                </div>
+                <form onSubmit={onCreateInventorySession}>
+                  <label>{t("inventories.sessionLabel")}</label>
+                  <input value={newInventorySessionLabel} onChange={(e) => setNewInventorySessionLabel(e.target.value)} placeholder={t("inventories.sessionPlaceholder")} />
+                  <label>{t("inventories.scope")}</label>
+                  <select value={inventorySessionScope} onChange={(e) => setInventorySessionScope(e.target.value as "site" | "sector" | "point")}>
+                    <option value="site">{t("inventories.scopeSite")}</option>
+                    <option value="sector">{t("inventories.scopeSector")}</option>
+                    <option value="point">{t("inventories.scopePoint")}</option>
+                  </select>
+                  <button type="submit" disabled={!siteId}>{t("inventories.createSession")}</button>
+                </form>
+                <div className="sheet-wrap">
+                  <table className="sheet-table">
+                    <thead>
+                      <tr>
+                        <th>{t("inventories.sessions")}</th>
+                        <th>{t("inventories.sessionWorkspace")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td style={{ verticalAlign: "top" }}>
+                          {inventorySessions.length === 0 ? (
+                            <span className="muted">{t("inventories.noSessions")}</span>
+                          ) : (
+                            inventorySessions.map((session) => (
+                              <div key={session.id} style={{ marginBottom: 8 }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline"
+                                  onClick={() => {
+                                    setSelectedInventorySessionId(session.id);
+                                    void loadInventorySessionDetail(session.id);
+                                  }}
+                                >
+                                  {selectedInventorySessionId === session.id ? "✓ " : ""}
+                                  {(session.label || session.id.slice(0, 8))} · {t(`inventories.status.${session.status}`)}
+                                </button>
+                                <div className="muted" style={{ marginTop: 4 }}>
+                                  {session.sector_name || t("inventories.scopeSite")} · {formatDateTime(session.started_at)}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </td>
+                        <td style={{ verticalAlign: "top" }}>
+                          {!inventorySessionMeta ? (
+                            <p className="muted">{t("inventories.selectSession")}</p>
+                          ) : (
+                            <>
+                              <label>{t("inventories.sessionLabel")}</label>
+                              <input
+                                value={inventorySessionMeta.label || ""}
+                                onChange={(e) => setInventorySessionDraft((prev) => ({ ...(prev || inventorySessionMeta), label: e.target.value }))}
+                                placeholder={t("inventories.sessionPlaceholder")}
+                              />
+                              <label>{t("inventories.scopeSector")}</label>
+                              <select
+                                value={inventorySessionMeta.sector || ""}
+                                onChange={(e) =>
+                                  setInventorySessionDraft((prev) => ({
+                                    ...(prev || inventorySessionMeta),
+                                    sector: e.target.value || null,
+                                    sector_name: inventorySectors.find((sector) => sector.id === e.target.value)?.name ?? null,
+                                  }))
+                                }
+                              >
+                                <option value="">{t("inventories.scopeSite")}</option>
+                                {inventorySectors.map((sector) => (
+                                  <option key={sector.id} value={sector.id}>{sector.name}</option>
+                                ))}
+                              </select>
+                              <label>{t("inventories.scope")}</label>
+                              <select
+                                value={inventorySessionMeta.count_scope}
+                                onChange={(e) =>
+                                  setInventorySessionDraft((prev) => ({
+                                    ...(prev || inventorySessionMeta),
+                                    count_scope: e.target.value as "site" | "sector" | "point",
+                                  }))
+                                }
+                              >
+                                <option value="site">{t("inventories.scopeSite")}</option>
+                                <option value="sector">{t("inventories.scopeSector")}</option>
+                                <option value="point">{t("inventories.scopePoint")}</option>
+                              </select>
+                              <label>{t("inventories.status")}</label>
+                              <select
+                                value={inventorySessionMeta.status}
+                                onChange={(e) =>
+                                  setInventorySessionDraft((prev) => ({
+                                    ...(prev || inventorySessionMeta),
+                                    status: e.target.value as InventorySessionItem["status"],
+                                  }))
+                                }
+                                disabled={inventorySessionMeta.status === "closed"}
+                              >
+                                <option value="draft">{t("inventories.statusDraft")}</option>
+                                <option value="in_progress">{t("inventories.statusInProgress")}</option>
+                                <option value="cancelled">{t("inventories.statusCancelled")}</option>
+                                <option value="closed">{t("inventories.statusClosed")}</option>
+                              </select>
+                              <label>{t("inventories.notes")}</label>
+                              <textarea
+                                value={inventorySessionMeta.notes || ""}
+                                onChange={(e) => setInventorySessionDraft((prev) => ({ ...(prev || inventorySessionMeta), notes: e.target.value }))}
+                                rows={3}
+                              />
+                              <div className="sheet-toolbar" style={{ marginTop: 12 }}>
+                                <button
+                                  type="button"
+                                  onClick={onSaveInventorySessionMeta}
+                                  disabled={!selectedInventorySessionId || inventorySessionMeta.status === "closed" || isApplyingInventory}
+                                >
+                                  {t("inventories.saveSession")}
+                                </button>
+                                <button type="button" className="btn btn-outline" onClick={() => void loadInventorySessionDetail(selectedInventorySessionId)} disabled={!selectedInventorySessionId}>
+                                  {t("inventories.reloadSession")}
+                                </button>
+                              </div>
+                              <p className="muted" style={{ marginTop: 12 }}>
+                                {t("inventories.startedAt")}: {formatDateTime(inventorySessionMeta.started_at)}<br />
+                                {t("inventories.closedAt")}: {formatDateTime(inventorySessionMeta.closed_at)}<br />
+                                {t("inventories.lineSummary", { lines: inventorySessionLines.length, diffs: inventoryDifferenceCount })}
+                              </p>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+              <section className="panel">
                 <h2>{t("inventories.entry")}</h2>
                 <div className="sheet-toolbar">
                   <input
                     value={inventoryProductSearch}
                     onChange={(e) => setInventoryProductSearch(e.target.value)}
-                    placeholder="Cerca codice, prodotto, fornitore..."
+                    placeholder={t("inventories.searchPlaceholder")}
                   />
                   <select value={inventoryProductCategoryFilter} onChange={(e) => setInventoryProductCategoryFilter(e.target.value)}>
-                    <option value="">Tutte le categorie</option>
+                    <option value="">{t("inventories.allCategories")}</option>
                     {PRODUCT_CATEGORY_OPTIONS.filter(Boolean).map((option) => (
                       <option key={option} value={option}>{option}</option>
                     ))}
                   </select>
                   <select value={inventoryProductSupplierFilter} onChange={(e) => setInventoryProductSupplierFilter(e.target.value)}>
-                    <option value="">Tutti i fornitori</option>
+                    <option value="">{t("inventories.allSuppliers")}</option>
                     {suppliers.map((supplier) => (
                       <option key={supplier.id} value={supplier.id}>{supplier.name}</option>
                     ))}
@@ -7970,16 +8275,16 @@ function App() {
                       <tr>
                         <td style={{ verticalAlign: "top" }}>
                           {inventoryProducts.length === 0 ? (
-                            <p className="muted">Nessun prodotto caricato.</p>
+                            <p className="muted">{t("inventories.noProductsLoaded")}</p>
                           ) : (
                             <table className="sheet-table">
                               <thead>
                                 <tr>
-                                  <th>Codice</th>
-                                  <th>Prodotto</th>
-                                  <th>Fornitore</th>
-                                  <th>Stock</th>
-                                  <th>UM</th>
+                                  <th>{t("table.code")}</th>
+                                  <th>{t("table.product")}</th>
+                                  <th>{t("table.supplier")}</th>
+                                  <th>{t("inventories.theoretical")}</th>
+                                  <th>{t("table.unit")}</th>
                                   <th></th>
                                 </tr>
                               </thead>
@@ -8011,13 +8316,14 @@ function App() {
                             <table className="sheet-table">
                               <thead>
                                 <tr>
-                                  <th>Punto stock</th>
-                                  <th>Codice</th>
-                                  <th>Prodotto</th>
+                                  <th>{t("inventories.stockPoint")}</th>
+                                  <th>{t("table.code")}</th>
+                                  <th>{t("table.product")}</th>
                                   <th>{t("inventories.theoretical")}</th>
                                   <th>{t("inventories.counted")}</th>
                                   <th>{t("inventories.delta")}</th>
-                                  <th>UM</th>
+                                  <th>{t("table.unit")}</th>
+                                  <th></th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -8026,11 +8332,9 @@ function App() {
                                     <td>
                                       <select value={line.stock_point || ""} onChange={(e) => onUpdateInventorySessionLine(index, { stock_point: e.target.value || null })}>
                                         <option value="">-</option>
-                                        {stockPoints
-                                          .filter((point) => !selectedInventorySectorId || point.sector === selectedInventorySectorId)
-                                          .map((point) => (
-                                            <option key={point.id} value={point.id}>{point.name}</option>
-                                          ))}
+                                        {filteredStockPoints.map((point) => (
+                                          <option key={point.id} value={point.id}>{point.name}</option>
+                                        ))}
                                       </select>
                                     </td>
                                     <td>{line.supplier_code || "-"}</td>
@@ -8044,6 +8348,21 @@ function App() {
                                     </td>
                                     <td>{line.delta_qty || "0.000"}</td>
                                     <td>{line.qty_unit}</td>
+                                    <td>
+                                      {line.id ? (
+                                        <button type="button" className="btn btn-outline" onClick={() => void onDeleteInventorySessionLine(line.id || "")} disabled={isApplyingInventory}>
+                                          {t("action.remove")}
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          className="btn btn-outline"
+                                          onClick={() => setInventorySessionLines((prev) => prev.filter((_, lineIndex) => lineIndex !== index))}
+                                        >
+                                          {t("action.remove")}
+                                        </button>
+                                      )}
+                                    </td>
                                   </tr>
                                 ))}
                               </tbody>

@@ -395,6 +395,28 @@ class InventorySessionDetailView(APIView):
         )
         return Response(InventorySessionDetailSerializer(session).data)
 
+    def patch(self, request, session_id):
+        session = get_object_or_404(InventorySession.objects.select_related("site", "sector"), pk=session_id)
+        if session.status == InventorySessionStatus.CLOSED:
+            return Response({"detail": "closed session is not editable."}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = InventorySessionSerializer(session, data=request.data or {}, partial=True)
+        serializer.is_valid(raise_exception=True)
+        if "sector" in serializer.validated_data:
+            sector_value = serializer.validated_data.get("sector")
+            session.sector = (
+                get_object_or_404(InventorySector, pk=sector_value.id, site=session.site)
+                if sector_value
+                else None
+            )
+        for field in ("label", "status", "source_app", "count_scope", "notes", "metadata"):
+            if field in serializer.validated_data:
+                value = serializer.validated_data[field]
+                if field in {"label", "notes", "source_app"}:
+                    value = str(value or "").strip() or None
+                setattr(session, field, value)
+        session.save()
+        return Response(InventorySessionSerializer(session).data)
+
 
 class InventorySessionLinesBulkUpsertView(APIView):
     def post(self, request, session_id):
@@ -452,6 +474,19 @@ class InventorySessionLinesBulkUpsertView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class InventorySessionLineDetailView(APIView):
+    def delete(self, request, session_id, line_id):
+        line = get_object_or_404(
+            InventoryCountLine.objects.select_related("session"),
+            pk=line_id,
+            session_id=session_id,
+        )
+        if line.session.status in {InventorySessionStatus.CLOSED, InventorySessionStatus.CANCELLED}:
+            return Response({"detail": "session is not editable."}, status=status.HTTP_400_BAD_REQUEST)
+        line.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class InventorySessionCloseView(APIView):

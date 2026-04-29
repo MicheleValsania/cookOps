@@ -9,6 +9,7 @@ from apps.inventory.api.v1.views import (
     InventoryRebuildFromPurchasingView,
     InventorySessionCloseView,
     InventorySessionDetailView,
+    InventorySessionLineDetailView,
     InventorySessionLinesBulkUpsertView,
     InventorySessionListCreateView,
     StockPointDetailView,
@@ -77,6 +78,11 @@ urlpatterns = [
         "inventory/sessions/<uuid:session_id>/lines/bulk-upsert/",
         InventorySessionLinesBulkUpsertView.as_view(),
         name="inventory-session-lines-bulk-upsert",
+    ),
+    path(
+        "inventory/sessions/<uuid:session_id>/lines/<uuid:line_id>/",
+        InventorySessionLineDetailView.as_view(),
+        name="inventory-session-line-detail",
     ),
     path(
         "inventory/sessions/<uuid:session_id>/close/",

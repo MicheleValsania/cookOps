@@ -116,3 +116,40 @@ class InventorySessionsApiTests(APITestCase):
         row = payload["results"][0]
         self.assertEqual(row["supplier_code"], "MOZ-001")
         self.assertEqual(row["current_stock"], "4.000")
+
+    def test_session_can_be_updated_and_line_deleted(self):
+        session = InventorySession.objects.create(
+            site=self.site,
+            sector=self.sector,
+            label="Conteggio sera",
+            source_app="cookops_web",
+            count_scope="sector",
+        )
+        line = InventoryCountLine.objects.create(
+            session=session,
+            stock_point=self.stock_point,
+            supplier_product=self.product,
+            qty_value="3.000",
+            qty_unit="kg",
+            expected_qty="4.000",
+            delta_qty="-1.000",
+        )
+
+        response = self.client.patch(
+            f"/api/v1/inventory/sessions/{session.id}/",
+            {
+                "label": "Conteggio chiusura",
+                "notes": "Verifica frigo 1",
+                "status": "in_progress",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        session.refresh_from_db()
+        self.assertEqual(session.label, "Conteggio chiusura")
+        self.assertEqual(session.notes, "Verifica frigo 1")
+        self.assertEqual(session.status, "in_progress")
+
+        response = self.client.delete(f"/api/v1/inventory/sessions/{session.id}/lines/{line.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(InventoryCountLine.objects.filter(id=line.id).exists())
