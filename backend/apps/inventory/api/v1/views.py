@@ -4,12 +4,31 @@ from decimal import Decimal, InvalidOperation
 import uuid
 
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from django.utils import timezone as dj_timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.inventory.api.v1.serializers import InventoryMovementSerializer
-from apps.inventory.models import InventoryMovement, MovementType
+from apps.catalog.models import SupplierProduct
+from apps.inventory.api.v1.serializers import (
+    InventoryCountLineBulkUpsertSerializer,
+    InventoryCountLineSerializer,
+    InventoryMovementSerializer,
+    InventorySectorSerializer,
+    InventorySessionDetailSerializer,
+    InventorySessionSerializer,
+    StockPointSerializer,
+)
+from apps.inventory.models import (
+    InventoryCountLine,
+    InventoryMovement,
+    InventorySector,
+    InventorySession,
+    InventorySessionStatus,
+    MovementType,
+    StockPoint,
+)
 from apps.core.models import Site
 from apps.purchasing.models import GoodsReceipt, GoodsReceiptLine, Invoice, InvoiceLine
 
@@ -56,6 +75,30 @@ def _movement_group_key(m: InventoryMovement) -> tuple[str, str]:
     if m.supplier_product_id and m.supplier_product:
         return (f"product:{m.supplier_product_id}", unit)
     return (_movement_label(m), unit)
+
+
+def _current_stock_map_for_site(site_id: str) -> dict[tuple[str, str], dict[str, Decimal | datetime | str]]:
+    rows: dict[tuple[str, str], dict[str, Decimal | datetime | str]] = defaultdict(
+        lambda: {"current_stock": Decimal("0"), "last_movement_at": None}
+    )
+    movements = (
+        InventoryMovement.objects.select_related("supplier_product")
+        .filter(Q(site_id=site_id) | Q(lot__site_id=site_id))
+        .order_by("-happened_at", "-id")
+    )
+    for movement in movements:
+        if not movement.supplier_product_id:
+            continue
+        key = (str(movement.supplier_product_id), str(movement.qty_unit or "").strip().lower())
+        row = rows[key]
+        qty = Decimal(str(movement.qty_value or "0"))
+        if movement.movement_type == MovementType.OUT:
+            row["current_stock"] = Decimal(str(row["current_stock"])) - qty
+        else:
+            row["current_stock"] = Decimal(str(row["current_stock"])) + qty
+        if row["last_movement_at"] is None or movement.happened_at > row["last_movement_at"]:
+            row["last_movement_at"] = movement.happened_at
+    return rows
 
 
 class InventoryStockSummaryView(APIView):
@@ -176,6 +219,282 @@ class InventoryStockSummaryView(APIView):
         ]
         results.sort(key=lambda item: (item["product_key"], item["qty_unit"]))
         return Response({"results": results, "count": len(results)}, status=status.HTTP_200_OK)
+
+
+class InventorySectorListCreateView(APIView):
+    def get(self, request):
+        site_id = (request.query_params.get("site") or "").strip()
+        queryset = InventorySector.objects.select_related("site").all()
+        if site_id:
+            queryset = queryset.filter(site_id=site_id)
+        return Response(InventorySectorSerializer(queryset.order_by("sort_order", "name"), many=True).data)
+
+    def post(self, request):
+        serializer = InventorySectorSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        site = get_object_or_404(Site, pk=serializer.validated_data["site"].id)
+        sector = InventorySector.objects.create(
+            site=site,
+            name=str(serializer.validated_data["name"]).strip(),
+            code=str(serializer.validated_data.get("code") or "").strip() or None,
+            sort_order=serializer.validated_data.get("sort_order", 0),
+            is_active=serializer.validated_data.get("is_active", True),
+        )
+        return Response(InventorySectorSerializer(sector).data, status=status.HTTP_201_CREATED)
+
+
+class InventorySectorDetailView(APIView):
+    def patch(self, request, sector_id):
+        sector = get_object_or_404(InventorySector, pk=sector_id)
+        serializer = InventorySectorSerializer(sector, data=request.data or {}, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for field in ("name", "sort_order", "is_active"):
+            if field in serializer.validated_data:
+                setattr(sector, field, serializer.validated_data[field])
+        if "code" in serializer.validated_data:
+            sector.code = str(serializer.validated_data.get("code") or "").strip() or None
+        sector.save()
+        return Response(InventorySectorSerializer(sector).data)
+
+
+class StockPointListCreateView(APIView):
+    def get(self, request):
+        site_id = (request.query_params.get("site") or "").strip()
+        sector_id = (request.query_params.get("sector") or "").strip()
+        queryset = StockPoint.objects.select_related("site", "sector").all()
+        if site_id:
+            queryset = queryset.filter(site_id=site_id)
+        if sector_id:
+            queryset = queryset.filter(sector_id=sector_id)
+        return Response(StockPointSerializer(queryset.order_by("sector__sort_order", "sort_order", "name"), many=True).data)
+
+    def post(self, request):
+        serializer = StockPointSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        site = get_object_or_404(Site, pk=serializer.validated_data["site"].id)
+        sector = get_object_or_404(InventorySector, pk=serializer.validated_data["sector"].id, site=site)
+        point = StockPoint.objects.create(
+            site=site,
+            sector=sector,
+            name=str(serializer.validated_data["name"]).strip(),
+            code=str(serializer.validated_data.get("code") or "").strip() or None,
+            sort_order=serializer.validated_data.get("sort_order", 0),
+            is_active=serializer.validated_data.get("is_active", True),
+            metadata=serializer.validated_data.get("metadata", {}),
+        )
+        return Response(StockPointSerializer(point).data, status=status.HTTP_201_CREATED)
+
+
+class StockPointDetailView(APIView):
+    def patch(self, request, point_id):
+        point = get_object_or_404(StockPoint.objects.select_related("site"), pk=point_id)
+        serializer = StockPointSerializer(point, data=request.data or {}, partial=True)
+        serializer.is_valid(raise_exception=True)
+        if "sector" in serializer.validated_data:
+            point.sector = get_object_or_404(InventorySector, pk=serializer.validated_data["sector"].id, site=point.site)
+        for field in ("name", "sort_order", "is_active", "metadata"):
+            if field in serializer.validated_data:
+                setattr(point, field, serializer.validated_data[field])
+        if "code" in serializer.validated_data:
+            point.code = str(serializer.validated_data.get("code") or "").strip() or None
+        point.save()
+        return Response(StockPointSerializer(point).data)
+
+
+class InventoryProductSearchView(APIView):
+    SEARCH_LIMIT = 120
+
+    def get(self, request):
+        site_id = (request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        q = str(request.query_params.get("q") or "").strip()
+        supplier_id = str(request.query_params.get("supplier") or "").strip()
+        category = str(request.query_params.get("category") or "").strip()
+        active_only = str(request.query_params.get("active_only") or "1").strip().lower() not in {"0", "false", "no"}
+        only_stocked = str(request.query_params.get("only_stocked") or "0").strip().lower() in {"1", "true", "yes"}
+
+        stock_map = _current_stock_map_for_site(site_id)
+        queryset = SupplierProduct.objects.select_related("supplier").all()
+        if active_only:
+            queryset = queryset.filter(active=True)
+        if supplier_id:
+            queryset = queryset.filter(supplier_id=supplier_id)
+        if category:
+            queryset = queryset.filter(category__iexact=category)
+        if q:
+            queryset = queryset.filter(
+                Q(name__icontains=q)
+                | Q(supplier_sku__icontains=q)
+                | Q(supplier__name__icontains=q)
+                | Q(category__icontains=q)
+            )
+        products = []
+        for product in queryset.order_by("supplier__name", "name")[: self.SEARCH_LIMIT * 3]:
+            key = (str(product.id), str(product.uom or "").strip().lower())
+            current_row = stock_map.get(key, {"current_stock": Decimal("0"), "last_movement_at": None})
+            current_stock = Decimal(str(current_row.get("current_stock") or "0"))
+            if only_stocked and current_stock == 0:
+                continue
+            last_movement_at = current_row.get("last_movement_at")
+            products.append(
+                {
+                    "supplier_product_id": str(product.id),
+                    "supplier_id": str(product.supplier_id),
+                    "supplier_name": product.supplier.name,
+                    "supplier_code": product.supplier_sku,
+                    "product_name": product.name,
+                    "category": product.category,
+                    "qty_unit": product.uom,
+                    "current_stock": f"{current_stock:.3f}",
+                    "last_movement_at": last_movement_at.isoformat().replace("+00:00", "Z") if last_movement_at else None,
+                    "active": bool(product.active),
+                }
+            )
+            if len(products) >= self.SEARCH_LIMIT:
+                break
+        return Response({"results": products, "count": len(products)}, status=status.HTTP_200_OK)
+
+
+class InventorySessionListCreateView(APIView):
+    def get(self, request):
+        site_id = (request.query_params.get("site") or "").strip()
+        status_filter = (request.query_params.get("status") or "").strip()
+        queryset = InventorySession.objects.select_related("site", "sector").all()
+        if site_id:
+            queryset = queryset.filter(site_id=site_id)
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return Response(InventorySessionSerializer(queryset.order_by("-started_at"), many=True).data)
+
+    def post(self, request):
+        serializer = InventorySessionSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        site = get_object_or_404(Site, pk=serializer.validated_data["site"].id)
+        sector = None
+        if serializer.validated_data.get("sector"):
+            sector = get_object_or_404(InventorySector, pk=serializer.validated_data["sector"].id, site=site)
+        session = InventorySession.objects.create(
+            site=site,
+            sector=sector,
+            label=str(serializer.validated_data.get("label") or "").strip() or None,
+            status=serializer.validated_data.get("status", InventorySessionStatus.DRAFT),
+            source_app=str(serializer.validated_data.get("source_app") or "traccia_mobile").strip() or "traccia_mobile",
+            count_scope=serializer.validated_data.get("count_scope", "site"),
+            notes=str(serializer.validated_data.get("notes") or "").strip() or None,
+            metadata=serializer.validated_data.get("metadata", {}),
+        )
+        return Response(InventorySessionSerializer(session).data, status=status.HTTP_201_CREATED)
+
+
+class InventorySessionDetailView(APIView):
+    def get(self, request, session_id):
+        session = get_object_or_404(
+            InventorySession.objects.select_related("site", "sector").prefetch_related("lines__supplier_product__supplier", "lines__stock_point"),
+            pk=session_id,
+        )
+        return Response(InventorySessionDetailSerializer(session).data)
+
+
+class InventorySessionLinesBulkUpsertView(APIView):
+    def post(self, request, session_id):
+        session = get_object_or_404(InventorySession.objects.select_related("site", "sector"), pk=session_id)
+        if session.status in {InventorySessionStatus.CLOSED, InventorySessionStatus.CANCELLED}:
+            return Response({"detail": "session is not editable."}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = InventoryCountLineBulkUpsertSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        stock_map = _current_stock_map_for_site(str(session.site_id))
+        saved_lines = []
+        for idx, row in enumerate(serializer.validated_data["lines"]):
+            product = get_object_or_404(SupplierProduct.objects.select_related("supplier"), pk=row["supplier_product"])
+            stock_point = None
+            if row.get("stock_point"):
+                stock_point = get_object_or_404(StockPoint.objects.select_related("sector"), pk=row["stock_point"], site=session.site)
+                if session.sector_id and stock_point.sector_id != session.sector_id:
+                    return Response({"detail": "stock_point sector does not match session sector."}, status=status.HTTP_400_BAD_REQUEST)
+            qty_unit = str(row["qty_unit"]).strip().lower()
+            expected_qty = Decimal(str(stock_map.get((str(product.id), qty_unit), {}).get("current_stock") or "0"))
+            qty_value = Decimal(str(row["qty_value"]))
+            delta_qty = qty_value - expected_qty
+            line = InventoryCountLine.objects.filter(
+                session=session,
+                stock_point=stock_point,
+                supplier_product=product,
+                qty_unit=qty_unit,
+            ).first()
+            if line:
+                line.qty_value = qty_value
+                line.expected_qty = expected_qty
+                line.delta_qty = delta_qty
+                line.line_order = row.get("line_order", idx)
+                line.metadata = row.get("metadata", {})
+                line.save()
+            else:
+                line = InventoryCountLine.objects.create(
+                    session=session,
+                    stock_point=stock_point,
+                    supplier_product=product,
+                    qty_value=qty_value,
+                    qty_unit=qty_unit,
+                    expected_qty=expected_qty,
+                    delta_qty=delta_qty,
+                    line_order=row.get("line_order", idx),
+                    metadata=row.get("metadata", {}),
+                )
+            saved_lines.append(line)
+        if session.status == InventorySessionStatus.DRAFT:
+            session.status = InventorySessionStatus.IN_PROGRESS
+            session.save(update_fields=["status", "updated_at"])
+        return Response(
+            {
+                "saved_count": len(saved_lines),
+                "lines": InventoryCountLineSerializer(saved_lines, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class InventorySessionCloseView(APIView):
+    def post(self, request, session_id):
+        session = get_object_or_404(
+            InventorySession.objects.select_related("site").prefetch_related("lines__supplier_product__supplier"),
+            pk=session_id,
+        )
+        if session.status == InventorySessionStatus.CLOSED:
+            return Response({"detail": "session already closed."}, status=status.HTTP_400_BAD_REQUEST)
+        if session.status == InventorySessionStatus.CANCELLED:
+            return Response({"detail": "cancelled session cannot be closed."}, status=status.HTTP_400_BAD_REQUEST)
+        now = dj_timezone.now()
+        created = 0
+        for line in session.lines.all():
+            delta = Decimal(str(line.delta_qty or "0"))
+            if delta == 0:
+                continue
+            InventoryMovement.objects.create(
+                site=session.site,
+                lot=None,
+                supplier_product=line.supplier_product,
+                supplier_code=line.supplier_product.supplier_sku,
+                raw_product_name=line.supplier_product.name,
+                movement_type=MovementType.IN if delta > 0 else MovementType.OUT,
+                qty_value=abs(delta),
+                qty_unit=line.qty_unit,
+                happened_at=now,
+                ref_type="inventory_session_close",
+                ref_id=str(session.id),
+            )
+            created += 1
+        session.status = InventorySessionStatus.CLOSED
+        session.closed_at = now
+        session.save(update_fields=["status", "closed_at", "updated_at"])
+        return Response(
+            {
+                "session_id": str(session.id),
+                "created_adjustments": created,
+                "closed_at": now.isoformat().replace("+00:00", "Z"),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class InventoryApplyView(APIView):

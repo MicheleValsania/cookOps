@@ -2,8 +2,17 @@ from django.urls import path
 
 from apps.inventory.api.v1.views import (
     InventoryApplyView,
+    InventoryProductSearchView,
     InventoryMovementViewSet,
+    InventorySectorDetailView,
+    InventorySectorListCreateView,
     InventoryRebuildFromPurchasingView,
+    InventorySessionCloseView,
+    InventorySessionDetailView,
+    InventorySessionLinesBulkUpsertView,
+    InventorySessionListCreateView,
+    StockPointDetailView,
+    StockPointListCreateView,
     InventoryStockSummaryView,
 )
 
@@ -28,5 +37,50 @@ urlpatterns = [
         "inventory/rebuild-from-purchasing/",
         InventoryRebuildFromPurchasingView.as_view(),
         name="inventory-rebuild-from-purchasing",
+    ),
+    path(
+        "inventory/sectors/",
+        InventorySectorListCreateView.as_view(),
+        name="inventory-sector-list-create",
+    ),
+    path(
+        "inventory/sectors/<uuid:sector_id>/",
+        InventorySectorDetailView.as_view(),
+        name="inventory-sector-detail",
+    ),
+    path(
+        "inventory/stock-points/",
+        StockPointListCreateView.as_view(),
+        name="inventory-stock-point-list-create",
+    ),
+    path(
+        "inventory/stock-points/<uuid:point_id>/",
+        StockPointDetailView.as_view(),
+        name="inventory-stock-point-detail",
+    ),
+    path(
+        "inventory/products/",
+        InventoryProductSearchView.as_view(),
+        name="inventory-product-search",
+    ),
+    path(
+        "inventory/sessions/",
+        InventorySessionListCreateView.as_view(),
+        name="inventory-session-list-create",
+    ),
+    path(
+        "inventory/sessions/<uuid:session_id>/",
+        InventorySessionDetailView.as_view(),
+        name="inventory-session-detail",
+    ),
+    path(
+        "inventory/sessions/<uuid:session_id>/lines/bulk-upsert/",
+        InventorySessionLinesBulkUpsertView.as_view(),
+        name="inventory-session-lines-bulk-upsert",
+    ),
+    path(
+        "inventory/sessions/<uuid:session_id>/close/",
+        InventorySessionCloseView.as_view(),
+        name="inventory-session-close",
     ),
 ]

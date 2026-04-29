@@ -5548,7 +5548,7 @@ function App() {
       return;
     }
     setNewInventorySectorName("");
-    setNotice(`Settore inventario creato: ${body.name}`);
+    setNotice(t("inventories.noticeSectorCreated", { name: body.name }));
     await loadInventoryExecutionData();
   }
 
@@ -5644,11 +5644,11 @@ function App() {
 
   async function onSaveInventorySessionLines() {
     if (!selectedInventorySessionId) {
-      setNotice("Seleziona prima una sessione inventario.");
+      setNotice(t("inventories.noticeSessionRequired"));
       return;
     }
     if (inventorySessionLines.length === 0) {
-      setNotice("Nessuna riga inventario da salvare.");
+      setNotice(t("inventories.noticeNoLines"));
       return;
     }
     setIsApplyingInventory(true);
@@ -5682,7 +5682,7 @@ function App() {
 
   async function onCloseInventorySession() {
     if (!selectedInventorySessionId) {
-      setNotice("Seleziona prima una sessione inventario.");
+      setNotice(t("inventories.noticeSessionRequired"));
       return;
     }
     setIsApplyingInventory(true);
@@ -7833,50 +7833,50 @@ function App() {
           {nav === "inventari" && (
             <div className="grid">
               <section className="panel">
-                <h2>Inventaires</h2>
-                <p className="muted">Configura struttura fisica, prepara la sessione e registra il conteggio senza passare da JSON manuale.</p>
+                <h2>{t("inventories.title")}</h2>
+                <p className="muted">{t("inventories.desc")}</p>
                 <form onSubmit={onCreateInventorySector}>
-                  <label>Nuovo settore inventario</label>
-                  <input value={newInventorySectorName} onChange={(e) => setNewInventorySectorName(e.target.value)} placeholder="Cuisine, Bar, Reserve..." />
-                  <button type="submit" disabled={!siteId}>Crea settore</button>
+                  <label>{t("inventories.newSector")}</label>
+                  <input value={newInventorySectorName} onChange={(e) => setNewInventorySectorName(e.target.value)} placeholder={t("inventories.newSectorPlaceholder")} />
+                  <button type="submit" disabled={!siteId}>{t("inventories.createSector")}</button>
                 </form>
                 <form onSubmit={onCreateStockPoint}>
-                  <label>Secteur</label>
+                  <label>{t("inventories.scopeSector")}</label>
                   <select value={selectedInventorySectorId} onChange={(e) => setSelectedInventorySectorId(e.target.value)}>
-                    <option value="">Seleziona settore</option>
+                    <option value="">{t("inventories.scopeSector")}</option>
                     {inventorySectors.map((sector) => (
                       <option key={sector.id} value={sector.id}>{sector.name}</option>
                     ))}
                   </select>
-                  <label>Nuovo punto stock</label>
-                  <input value={newStockPointName} onChange={(e) => setNewStockPointName(e.target.value)} placeholder="Frigo 1, Scaffale farine..." />
-                  <button type="submit" disabled={!siteId || !selectedInventorySectorId}>Crea punto stock</button>
+                  <label>{t("inventories.newStockPoint")}</label>
+                  <input value={newStockPointName} onChange={(e) => setNewStockPointName(e.target.value)} placeholder={t("inventories.newStockPointPlaceholder")} />
+                  <button type="submit" disabled={!siteId || !selectedInventorySectorId}>{t("inventories.createStockPoint")}</button>
                 </form>
                 <form onSubmit={onCreateInventorySession}>
-                  <label>Sessione inventario</label>
-                  <input value={newInventorySessionLabel} onChange={(e) => setNewInventorySessionLabel(e.target.value)} placeholder="Inventario fine mese - cucina" />
-                  <label>Portata</label>
+                  <label>{t("inventories.sessionLabel")}</label>
+                  <input value={newInventorySessionLabel} onChange={(e) => setNewInventorySessionLabel(e.target.value)} placeholder={t("inventories.sessionPlaceholder")} />
+                  <label>{t("inventories.scope")}</label>
                   <select value={inventorySessionScope} onChange={(e) => setInventorySessionScope(e.target.value as "site" | "sector" | "point")}>
-                    <option value="site">Sito</option>
-                    <option value="sector">Settore</option>
-                    <option value="point">Punto stock</option>
+                    <option value="site">{t("inventories.scopeSite")}</option>
+                    <option value="sector">{t("inventories.scopeSector")}</option>
+                    <option value="point">{t("inventories.scopePoint")}</option>
                   </select>
-                  <button type="submit" disabled={!siteId}>Crea sessione</button>
+                  <button type="submit" disabled={!siteId}>{t("inventories.createSession")}</button>
                 </form>
                 <div className="sheet-wrap">
                   <table className="sheet-table">
                     <thead>
                       <tr>
-                        <th>Secteurs</th>
-                        <th>Punti stock</th>
-                        <th>Sessioni</th>
+                        <th>{t("inventories.sectors")}</th>
+                        <th>{t("inventories.stockPoints")}</th>
+                        <th>{t("inventories.sessions")}</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr>
                         <td>
                           {inventorySectors.length === 0 ? (
-                            <span className="muted">Nessun settore.</span>
+                            <span className="muted">{t("inventories.noSectors")}</span>
                           ) : (
                             inventorySectors.map((sector) => (
                               <div key={sector.id}>
@@ -7889,7 +7889,7 @@ function App() {
                         </td>
                         <td>
                           {stockPoints.filter((point) => !selectedInventorySectorId || point.sector === selectedInventorySectorId).length === 0 ? (
-                            <span className="muted">Nessun punto stock.</span>
+                            <span className="muted">{t("inventories.noStockPoints")}</span>
                           ) : (
                             stockPoints
                               .filter((point) => !selectedInventorySectorId || point.sector === selectedInventorySectorId)
@@ -7904,7 +7904,7 @@ function App() {
                         </td>
                         <td>
                           {inventorySessions.length === 0 ? (
-                            <span className="muted">Nessuna sessione.</span>
+                            <span className="muted">{t("inventories.noSessions")}</span>
                           ) : (
                             inventorySessions.map((session) => (
                               <div key={session.id} style={{ marginBottom: 8 }}>
@@ -7929,7 +7929,7 @@ function App() {
                 </div>
               </section>
               <section className="panel">
-                <h2>Saisie inventaire</h2>
+                <h2>{t("inventories.entry")}</h2>
                 <div className="sheet-toolbar">
                   <input
                     value={inventoryProductSearch}
@@ -7949,21 +7949,21 @@ function App() {
                     ))}
                   </select>
                   <button type="button" onClick={loadInventoryProducts} disabled={!siteId || isInventoryLoading}>
-                    {isInventoryLoading ? t("purchases.processing") : "Carica prodotti"}
+                    {isInventoryLoading ? t("purchases.processing") : t("inventories.loadProducts")}
                   </button>
                   <button type="button" onClick={onSaveInventorySessionLines} disabled={!selectedInventorySessionId || isApplyingInventory}>
-                    {isApplyingInventory ? t("purchases.processing") : "Salva righe"}
+                    {isApplyingInventory ? t("purchases.processing") : t("inventories.saveLines")}
                   </button>
                   <button type="button" onClick={onCloseInventorySession} disabled={!selectedInventorySessionId || isApplyingInventory}>
-                    {isApplyingInventory ? t("purchases.processing") : "Chiudi sessione"}
+                    {isApplyingInventory ? t("purchases.processing") : t("inventories.closeSession")}
                   </button>
                 </div>
                 <div className="sheet-wrap">
                   <table className="sheet-table">
                     <thead>
                       <tr>
-                        <th>Prodotti disponibili</th>
-                        <th>Sessione corrente</th>
+                        <th>{t("inventories.availableProducts")}</th>
+                        <th>{t("inventories.currentSession")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -7993,7 +7993,7 @@ function App() {
                                     <td>{product.qty_unit}</td>
                                     <td>
                                       <button type="button" onClick={() => onAddProductToInventorySession(product)} disabled={!selectedInventorySessionId}>
-                                        Aggiungi
+                                        {t("inventories.add")}
                                       </button>
                                     </td>
                                   </tr>
@@ -8004,9 +8004,9 @@ function App() {
                         </td>
                         <td style={{ verticalAlign: "top" }}>
                           {!selectedInventorySessionId ? (
-                            <p className="muted">Seleziona una sessione per iniziare il conteggio.</p>
+                            <p className="muted">{t("inventories.selectSession")}</p>
                           ) : inventorySessionLines.length === 0 ? (
-                            <p className="muted">Nessuna riga conteggio.</p>
+                            <p className="muted">{t("inventories.noCountLines")}</p>
                           ) : (
                             <table className="sheet-table">
                               <thead>
@@ -8014,9 +8014,9 @@ function App() {
                                   <th>Punto stock</th>
                                   <th>Codice</th>
                                   <th>Prodotto</th>
-                                  <th>Teorico</th>
-                                  <th>Contati</th>
-                                  <th>Delta</th>
+                                  <th>{t("inventories.theoretical")}</th>
+                                  <th>{t("inventories.counted")}</th>
+                                  <th>{t("inventories.delta")}</th>
                                   <th>UM</th>
                                 </tr>
                               </thead>
@@ -8054,12 +8054,12 @@ function App() {
                     </tbody>
                   </table>
                 </div>
-                <h3 style={{ marginTop: 20 }}>Historique ajustements</h3>
+                <h3 style={{ marginTop: 20 }}>{t("inventories.adjustmentsHistory")}</h3>
                 <button type="button" onClick={loadInventoryMovements} disabled={!siteId || isInventoryLoading}>
                   {isInventoryLoading ? t("purchases.processing") : t("suppliers.refreshList")}
                 </button>
                 {inventoryMovements.filter((m) => String(m.ref_type || "").includes("inventory")).length === 0 ? (
-                  <p className="muted">Aucun ajustement inventaire.</p>
+                  <p className="muted">{t("inventories.noAdjustments")}</p>
                 ) : (
                   <table>
                     <thead>
