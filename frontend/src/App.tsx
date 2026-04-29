@@ -7186,6 +7186,7 @@ function App() {
                                   <div className="supplier-product-category-edit">
                                     <select
                                       value={supplierProductCategoryDrafts[String(item.id ?? "")] ?? String(item.category ?? "")}
+                                      disabled={savingSupplierProductId === String(item.id ?? "")}
                                       onChange={(e) =>
                                         onSupplierProductCategoryDraftChange(
                                           newSupplierProductSupplierId,
@@ -7200,17 +7201,7 @@ function App() {
                                         </option>
                                       ))}
                                     </select>
-                                    <button
-                                      type="button"
-                                      onClick={() => void onSaveSupplierProductCategory(newSupplierProductSupplierId, String(item.id ?? ""))}
-                                      disabled={
-                                        !String(item.id ?? "").trim() ||
-                                        !newSupplierProductSupplierId.trim() ||
-                                        savingSupplierProductId === String(item.id ?? "")
-                                      }
-                                    >
-                                      {savingSupplierProductId === String(item.id ?? "") ? "..." : "Sauver"}
-                                    </button>
+                                    {savingSupplierProductId === String(item.id ?? "") ? <span className="muted">...</span> : null}
                                   </div>
                                 </td>
                                 <td>{String(item.active ?? "-")}</td>
