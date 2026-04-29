@@ -2402,8 +2402,10 @@ function App() {
     }
   }
 
-  async function onSaveSupplierProductCategory(supplierId: string, productId: string) {
-    const nextCategory = String(supplierProductCategoryDrafts[productId] ?? "").trim() || null;
+  async function onSaveSupplierProductCategory(supplierId: string, productId: string, nextCategoryOverride?: string | null) {
+    const nextCategory = (nextCategoryOverride !== undefined
+      ? String(nextCategoryOverride ?? "").trim()
+      : String(supplierProductCategoryDrafts[productId] ?? "").trim()) || null;
     setSavingSupplierProductId(productId);
     try {
       const res = await apiFetch(`/suppliers/${encodeURIComponent(supplierId)}/products/${encodeURIComponent(productId)}/`, {
@@ -2435,6 +2437,15 @@ function App() {
     } finally {
       setSavingSupplierProductId("");
     }
+  }
+
+  function onSupplierProductCategoryDraftChange(supplierId: string, productId: string, value: string) {
+    setSupplierProductCategoryDrafts((prev) => ({
+      ...prev,
+      [productId]: value,
+    }));
+    if (!supplierId.trim() || !productId.trim()) return;
+    void onSaveSupplierProductCategory(supplierId, productId, value);
   }
 
   const filteredSuppliers = useMemo(() => {
@@ -7176,10 +7187,11 @@ function App() {
                                     <select
                                       value={supplierProductCategoryDrafts[String(item.id ?? "")] ?? String(item.category ?? "")}
                                       onChange={(e) =>
-                                        setSupplierProductCategoryDrafts((prev) => ({
-                                          ...prev,
-                                          [String(item.id ?? "")]: e.target.value,
-                                        }))
+                                        onSupplierProductCategoryDraftChange(
+                                          newSupplierProductSupplierId,
+                                          String(item.id ?? ""),
+                                          e.target.value,
+                                        )
                                       }
                                     >
                                       {PRODUCT_CATEGORY_OPTIONS.map((value) => (
@@ -7194,8 +7206,7 @@ function App() {
                                       disabled={
                                         !String(item.id ?? "").trim() ||
                                         !newSupplierProductSupplierId.trim() ||
-                                        savingSupplierProductId === String(item.id ?? "") ||
-                                        (supplierProductCategoryDrafts[String(item.id ?? "")] ?? String(item.category ?? "")) === String(item.category ?? "")
+                                        savingSupplierProductId === String(item.id ?? "")
                                       }
                                     >
                                       {savingSupplierProductId === String(item.id ?? "") ? "..." : "Sauver"}
