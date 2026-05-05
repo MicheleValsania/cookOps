@@ -1197,7 +1197,8 @@ function App() {
   const [selectedInventorySectorId, setSelectedInventorySectorId] = useState("");
   const [selectedStockPointId, setSelectedStockPointId] = useState("");
   const [selectedInventorySessionId, setSelectedInventorySessionId] = useState("");
-  const [inventorySessionLines, setInventorySessionLines] = useState<InventorySessionLineItem[]>([]);
+  const [inventoryDraftSessionLines, setInventoryDraftSessionLines] = useState<InventorySessionLineItem[]>([]);
+  const [inventorySavedSessionLines, setInventorySavedSessionLines] = useState<InventorySessionLineItem[]>([]);
   const [newInventorySectorName, setNewInventorySectorName] = useState("");
   const [newStockPointName, setNewStockPointName] = useState("");
   const [newInventorySessionLabel, setNewInventorySessionLabel] = useState("");
@@ -1207,6 +1208,7 @@ function App() {
   const [inventoryProductSearch, setInventoryProductSearch] = useState("");
   const [inventoryProductCategoryFilter, setInventoryProductCategoryFilter] = useState("");
   const [inventoryProductSupplierFilter, setInventoryProductSupplierFilter] = useState("");
+  const [isInventoryWorkspaceOpen, setIsInventoryWorkspaceOpen] = useState(false);
   const [isBulkIngesting, setIsBulkIngesting] = useState<"goods_receipt" | "invoice" | null>(null);
   const [bulkIngestErrors, setBulkIngestErrors] = useState<Record<string, string[]>>({});
   const [lastIngestError, setLastIngestError] = useState("");
@@ -1464,6 +1466,23 @@ function App() {
     if (!siteId) return;
     void loadInventoryExecutionData();
   }, [nav, siteId, inventorySessionStatusFilter]);
+
+  useEffect(() => {
+    if (nav !== "inventari") return;
+    if (!siteId) return;
+    const hasCriteria =
+      inventoryProductSearch.trim().length >= 2 ||
+      inventoryProductCategoryFilter.trim().length > 0 ||
+      inventoryProductSupplierFilter.trim().length > 0;
+    if (!hasCriteria) {
+      setInventoryProducts([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadInventoryProducts();
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [nav, siteId, inventoryProductSearch, inventoryProductCategoryFilter, inventoryProductSupplierFilter]);
 
   useEffect(() => {
     if (nav !== "haccp" && nav !== "tracciabilita" && nav !== "dashboard" && nav !== "report") return;
@@ -5024,9 +5043,13 @@ function App() {
     [stockPoints, selectedInventorySectorId]
   );
   const inventoryDifferenceCount = useMemo(
-    () => inventorySessionLines.filter((line) => Number.parseFloat(String(line.delta_qty ?? "0")) !== 0).length,
-    [inventorySessionLines]
+    () =>
+      [...inventoryDraftSessionLines, ...inventorySavedSessionLines].filter(
+        (line) => Number.parseFloat(String(line.delta_qty ?? "0")) !== 0
+      ).length,
+    [inventoryDraftSessionLines, inventorySavedSessionLines]
   );
+  const inventorySavedLineCount = inventorySavedSessionLines.length;
 
   function renderSourceBadge(row: Record<string, unknown>) {
     const sourceType = String(row.source_type ?? "direct");
@@ -5538,7 +5561,8 @@ function App() {
 
   async function loadInventorySessionDetail(sessionId: string) {
     if (!sessionId) {
-      setInventorySessionLines([]);
+      setInventoryDraftSessionLines([]);
+      setInventorySavedSessionLines([]);
       setInventorySessionDraft(null);
       return;
     }
@@ -5565,7 +5589,8 @@ function App() {
         started_at: detail.started_at,
         closed_at: detail.closed_at ?? null,
       });
-      setInventorySessionLines(Array.isArray(body?.lines) ? (body.lines as InventorySessionLineItem[]) : []);
+      setInventorySavedSessionLines(Array.isArray(body?.lines) ? (body.lines as InventorySessionLineItem[]) : []);
+      setInventoryDraftSessionLines([]);
     } catch {
       setNotice(t("error.documentsLoad"));
     } finally {
@@ -5637,6 +5662,8 @@ function App() {
     }
     setSelectedInventorySessionId(String(body.id ?? ""));
     setInventorySessionDraft(body as InventorySessionItem);
+    setInventoryDraftSessionLines([]);
+    setInventorySavedSessionLines([]);
     setNewInventorySessionLabel("");
     setNotice(t("inventories.noticeSessionCreated", { name: body.label || body.id }));
     await loadInventoryExecutionData();
@@ -5680,11 +5707,18 @@ function App() {
   }
 
   function onAddProductToInventorySession(product: InventoryProductItem) {
-    setInventorySessionLines((prev) => {
+    setInventoryDraftSessionLines((prev) => {
       const exists = prev.some(
         (line) => line.supplier_product === product.supplier_product_id && line.qty_unit === product.qty_unit && (line.stock_point || "") === selectedStockPointId
       );
       if (exists) return prev;
+      const alreadySaved = inventorySavedSessionLines.some(
+        (line) => line.supplier_product === product.supplier_product_id && line.qty_unit === product.qty_unit && (line.stock_point || "") === selectedStockPointId
+      );
+      if (alreadySaved) {
+        setNotice(t("inventories.noticeLineAlreadySaved"));
+        return prev;
+      }
       return [
         ...prev,
         {
@@ -5704,10 +5738,12 @@ function App() {
         },
       ];
     });
+    setInventoryProductSearch("");
+    setInventoryProducts([]);
   }
 
   function onUpdateInventorySessionLine(index: number, patch: Partial<InventorySessionLineItem>) {
-    setInventorySessionLines((prev) =>
+    setInventoryDraftSessionLines((prev) =>
       prev.map((line, lineIndex) => {
         if (lineIndex !== index) return line;
         const next = { ...line, ...patch };
@@ -5719,12 +5755,30 @@ function App() {
     );
   }
 
+  function mergeInventorySessionLines(current: InventorySessionLineItem[], incoming: InventorySessionLineItem[]) {
+    const merged = [...current];
+    incoming.forEach((line) => {
+      const existingIndex = merged.findIndex(
+        (item) =>
+          item.supplier_product === line.supplier_product &&
+          item.qty_unit === line.qty_unit &&
+          String(item.stock_point || "") === String(line.stock_point || "")
+      );
+      if (existingIndex >= 0) {
+        merged[existingIndex] = line;
+      } else {
+        merged.push(line);
+      }
+    });
+    return merged;
+  }
+
   async function onSaveInventorySessionLines() {
     if (!selectedInventorySessionId) {
       setNotice(t("inventories.noticeSessionRequired"));
       return;
     }
-    if (inventorySessionLines.length === 0) {
+    if (inventoryDraftSessionLines.length === 0) {
       setNotice(t("inventories.noticeNoLines"));
       return;
     }
@@ -5733,7 +5787,7 @@ function App() {
       const res = await apiFetch(`/inventory/sessions/${encodeURIComponent(selectedInventorySessionId)}/lines/bulk-upsert/`, {
         method: "POST",
         body: JSON.stringify({
-          lines: inventorySessionLines.map((line, index) => ({
+          lines: inventoryDraftSessionLines.map((line, index) => ({
             stock_point: line.stock_point || null,
             supplier_product: line.supplier_product,
             qty_value: String(line.qty_value ?? "0").replace(",", "."),
@@ -5749,12 +5803,73 @@ function App() {
         return;
       }
       setNotice(t("inventories.noticeLinesSaved", { count: Number(body.saved_count ?? 0) }));
-      await Promise.all([loadInventoryExecutionData(), loadInventorySessionDetail(selectedInventorySessionId)]);
+      setInventorySavedSessionLines((prev) =>
+        mergeInventorySessionLines(prev, Array.isArray(body.lines) ? (body.lines as InventorySessionLineItem[]) : [])
+      );
+      setInventoryDraftSessionLines([]);
+      await loadInventoryExecutionData();
     } catch {
       setNotice(t("error.ingest"));
     } finally {
       setIsApplyingInventory(false);
     }
+  }
+
+  async function onSaveSingleInventorySessionLine(index: number) {
+    if (!selectedInventorySessionId) {
+      setNotice(t("inventories.noticeSessionRequired"));
+      return;
+    }
+    const line = inventoryDraftSessionLines[index];
+    if (!line) return;
+    setIsApplyingInventory(true);
+    try {
+      const res = await apiFetch(`/inventory/sessions/${encodeURIComponent(selectedInventorySessionId)}/lines/bulk-upsert/`, {
+        method: "POST",
+        body: JSON.stringify({
+          lines: [
+            {
+              stock_point: line.stock_point || null,
+              supplier_product: line.supplier_product,
+              qty_value: String(line.qty_value ?? "0").replace(",", "."),
+              qty_unit: line.qty_unit,
+              line_order: typeof line.line_order === "number" ? line.line_order : index,
+              metadata: line.metadata ?? {},
+            },
+          ],
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setNotice(errorWithDetail("error.ingest", body.detail ?? JSON.stringify(body)));
+        return;
+      }
+      setInventorySavedSessionLines((prev) =>
+        mergeInventorySessionLines(prev, Array.isArray(body.lines) ? (body.lines as InventorySessionLineItem[]) : [])
+      );
+      setInventoryDraftSessionLines((prev) => prev.filter((_, lineIndex) => lineIndex !== index));
+      setNotice(t("inventories.noticeLineValidated"));
+      await loadInventoryExecutionData();
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsApplyingInventory(false);
+    }
+  }
+
+  function onEditSavedInventorySessionLine(index: number) {
+    const line = inventorySavedSessionLines[index];
+    if (!line) return;
+    setInventoryDraftSessionLines((prev) => {
+      const exists = prev.some(
+        (item) =>
+          item.supplier_product === line.supplier_product &&
+          item.qty_unit === line.qty_unit &&
+          String(item.stock_point || "") === String(line.stock_point || "")
+      );
+      return exists ? prev : [...prev, { ...line }];
+    });
+    setInventorySavedSessionLines((prev) => prev.filter((_, lineIndex) => lineIndex !== index));
   }
 
   async function onCloseInventorySession() {
@@ -5801,7 +5916,8 @@ function App() {
         return;
       }
       setNotice(t("inventories.noticeLineDeleted"));
-      await Promise.all([loadInventoryExecutionData(), loadInventorySessionDetail(selectedInventorySessionId)]);
+      setInventorySavedSessionLines((prev) => prev.filter((line) => line.id !== lineId));
+      await loadInventoryExecutionData();
     } catch {
       setNotice(t("error.ingest"));
     } finally {
@@ -8223,7 +8339,7 @@ function App() {
                               <p className="muted" style={{ marginTop: 12 }}>
                                 {t("inventories.startedAt")}: {formatDateTime(inventorySessionMeta.started_at)}<br />
                                 {t("inventories.closedAt")}: {formatDateTime(inventorySessionMeta.closed_at)}<br />
-                                {t("inventories.lineSummary", { lines: inventorySessionLines.length, diffs: inventoryDifferenceCount })}
+                                {t("inventories.lineSummary", { lines: inventoryDraftSessionLines.length + inventorySavedSessionLines.length, diffs: inventoryDifferenceCount })}
                               </p>
                             </>
                           )}
@@ -8233,9 +8349,13 @@ function App() {
                   </table>
                 </div>
               </section>
-              <section className="panel">
+              {isInventoryWorkspaceOpen ? <div className="inventory-workspace-backdrop" onClick={() => setIsInventoryWorkspaceOpen(false)} /> : null}
+              <section className={`panel traceability-grid-span inventory-workspace-panel${isInventoryWorkspaceOpen ? " inventory-workspace-panel--focus" : ""}`}>
                 <h2>{t("inventories.entry")}</h2>
                 <div className="sheet-toolbar">
+                  <button type="button" className="btn btn-outline no-print" onClick={() => setIsInventoryWorkspaceOpen((prev) => !prev)}>
+                    {isInventoryWorkspaceOpen ? t("inventories.exitWorkspace") : t("inventories.openWorkspace")}
+                  </button>
                   <input
                     value={inventoryProductSearch}
                     onChange={(e) => setInventoryProductSearch(e.target.value)}
@@ -8254,7 +8374,7 @@ function App() {
                     ))}
                   </select>
                   <button type="button" onClick={loadInventoryProducts} disabled={!siteId || isInventoryLoading}>
-                    {isInventoryLoading ? t("purchases.processing") : t("inventories.loadProducts")}
+                    {isInventoryLoading ? t("inventories.loadingProducts") : t("inventories.refreshProducts")}
                   </button>
                   <button type="button" onClick={onSaveInventorySessionLines} disabled={!selectedInventorySessionId || isApplyingInventory}>
                     {isApplyingInventory ? t("purchases.processing") : t("inventories.saveLines")}
@@ -8310,7 +8430,7 @@ function App() {
                         <td style={{ verticalAlign: "top" }}>
                           {!selectedInventorySessionId ? (
                             <p className="muted">{t("inventories.selectSession")}</p>
-                          ) : inventorySessionLines.length === 0 ? (
+                          ) : inventoryDraftSessionLines.length === 0 ? (
                             <p className="muted">{t("inventories.noCountLines")}</p>
                           ) : (
                             <table className="sheet-table">
@@ -8327,7 +8447,7 @@ function App() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {inventorySessionLines.map((line, index) => (
+                                {inventoryDraftSessionLines.map((line, index) => (
                                   <tr key={`${line.supplier_product}-${line.qty_unit}-${index}`}>
                                     <td>
                                       <select value={line.stock_point || ""} onChange={(e) => onUpdateInventorySessionLine(index, { stock_point: e.target.value || null })}>
@@ -8349,25 +8469,77 @@ function App() {
                                     <td>{line.delta_qty || "0.000"}</td>
                                     <td>{line.qty_unit}</td>
                                     <td>
-                                      {line.id ? (
-                                        <button type="button" className="btn btn-outline" onClick={() => void onDeleteInventorySessionLine(line.id || "")} disabled={isApplyingInventory}>
-                                          {t("action.remove")}
-                                        </button>
-                                      ) : (
+                                      <div className="entry-actions">
                                         <button
                                           type="button"
                                           className="btn btn-outline"
-                                          onClick={() => setInventorySessionLines((prev) => prev.filter((_, lineIndex) => lineIndex !== index))}
+                                          onClick={() => void onSaveSingleInventorySessionLine(index)}
+                                          disabled={isApplyingInventory}
+                                        >
+                                          {t("inventories.validateLine")}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="btn btn-outline"
+                                          onClick={() => setInventoryDraftSessionLines((prev) => prev.filter((_, lineIndex) => lineIndex !== index))}
                                         >
                                           {t("action.remove")}
                                         </button>
-                                      )}
+                                      </div>
                                     </td>
                                   </tr>
                                 ))}
                               </tbody>
                             </table>
                           )}
+                          {selectedInventorySessionId ? (
+                            <>
+                              <h3 style={{ marginTop: 18 }}>{t("inventories.savedLinesTitle", { count: inventorySavedLineCount })}</h3>
+                              {inventorySavedSessionLines.length === 0 ? (
+                                <p className="muted">{t("inventories.noSavedLines")}</p>
+                              ) : (
+                                <table className="sheet-table">
+                                  <thead>
+                                    <tr>
+                                      <th>{t("inventories.stockPoint")}</th>
+                                      <th>{t("table.code")}</th>
+                                      <th>{t("table.product")}</th>
+                                      <th>{t("inventories.theoretical")}</th>
+                                      <th>{t("inventories.counted")}</th>
+                                      <th>{t("inventories.delta")}</th>
+                                      <th>{t("table.unit")}</th>
+                                      <th></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {inventorySavedSessionLines.map((line, index) => (
+                                      <tr key={line.id || `${line.supplier_product}-${line.qty_unit}-${index}`}>
+                                        <td>{line.stock_point_name || "-"}</td>
+                                        <td>{line.supplier_code || "-"}</td>
+                                        <td>{line.supplier_product_name || "-"}</td>
+                                        <td>{line.expected_qty || "0.000"}</td>
+                                        <td>{line.qty_value}</td>
+                                        <td>{line.delta_qty || "0.000"}</td>
+                                        <td>{line.qty_unit}</td>
+                                        <td>
+                                          <div className="entry-actions">
+                                            <button type="button" className="btn btn-outline" onClick={() => onEditSavedInventorySessionLine(index)}>
+                                              {t("action.edit")}
+                                            </button>
+                                            {line.id ? (
+                                              <button type="button" className="btn btn-outline" onClick={() => void onDeleteInventorySessionLine(line.id || "")} disabled={isApplyingInventory}>
+                                                {t("action.remove")}
+                                              </button>
+                                            ) : null}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </>
+                          ) : null}
                         </td>
                       </tr>
                     </tbody>

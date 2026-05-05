@@ -1400,6 +1400,26 @@ th {
   grid-column: 1 / -1;
 }
 
+.inventory-workspace-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: rgba(15, 23, 42, 0.4);
+}
+
+.inventory-workspace-panel {
+  position: relative;
+  z-index: 46;
+}
+
+.inventory-workspace-panel--focus {
+  position: fixed;
+  inset: 14px;
+  overflow: auto;
+  margin: 0;
+  padding-bottom: 28px;
+}
+
 .traceability-zoom-frame {
   overflow: auto;
   max-height: 72vh;
