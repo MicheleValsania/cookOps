@@ -5089,6 +5089,10 @@ function App() {
       .replace(/'/g, "&#39;");
   }
 
+  function safeExportFilename(value: string): string {
+    return value.replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_").slice(0, 80) || "inventario";
+  }
+
   function printChecklistTable(title: string, headers: string[], rows: string[][]) {
     const siteLabel = activeSite?.name ?? t("app.selectSite");
     const dateLabel = comandaDateFrom === comandaDateTo ? comandaDateFrom : `${comandaDateFrom} -> ${comandaDateTo}`;
@@ -5274,6 +5278,220 @@ function App() {
         iframe.parentNode.removeChild(iframe);
       }
     }, 1000);
+  }
+
+  function printInventorySessionPdf() {
+    if (!inventorySessionMeta) {
+      setNotice(t("inventories.noticeSessionRequired"));
+      return;
+    }
+
+    const sessionLabel = inventorySessionMeta.label?.trim() || inventorySessionMeta.id.slice(0, 8);
+    const title = t("inventories.sessionReportTitle", { name: sessionLabel });
+    const printedAt = new Date().toLocaleString(lang === "fr" ? "fr-FR" : lang === "en" ? "en-GB" : "it-IT");
+    const selectedPointName = selectedStockPointId
+      ? stockPoints.find((point) => point.id === selectedStockPointId)?.name || "-"
+      : "-";
+    const allLines = [
+      ...inventorySavedSessionLines.map((line) => ({ ...line, _printState: "saved" as const })),
+      ...inventoryDraftSessionLines.map((line) => ({ ...line, _printState: "draft" as const })),
+    ];
+    const headers = [
+      t("table.code"),
+      t("table.product"),
+      t("table.supplier"),
+      t("inventories.stockPoint"),
+      t("inventories.theoretical"),
+      t("inventories.counted"),
+      t("table.unit"),
+      t("inventories.delta"),
+      t("inventories.lineState"),
+    ];
+    const headerHtml = headers.map((item) => `<th>${escapeHtml(item)}</th>`).join("");
+    const rowsHtml = allLines
+      .map((line) => {
+        const stateLabel =
+          line._printState === "saved" ? t("inventories.lineStateSaved") : t("inventories.lineStateDraft");
+        const cells = [
+          String(line.supplier_code || "-"),
+          String(line.supplier_product_name || "-"),
+          String(line.supplier_name || "-"),
+          String(line.stock_point_name || "-"),
+          String(line.expected_qty ?? "0.000"),
+          String(line.qty_value ?? "0.000"),
+          String(line.qty_unit || "-"),
+          String(line.delta_qty ?? "0.000"),
+          stateLabel,
+        ];
+        return `<tr>${cells.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`;
+      })
+      .join("");
+    const notes = String(inventorySessionMeta.notes || "").trim();
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title>
+      <style>
+        @page { size: A4 landscape; margin: 10mm; }
+        body { font-family: Arial, sans-serif; padding: 0; color: #111827; }
+        h1 { font-size: 18px; margin: 0 0 4px; }
+        h2 { font-size: 13px; margin: 14px 0 6px; }
+        p { margin: 0 0 8px; color: #475569; font-size: 11px; }
+        .meta { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px 12px; margin-bottom: 10px; }
+        .meta-card { border: 1px solid #cbd5e1; padding: 6px 8px; border-radius: 8px; background: #f8fafc; }
+        .meta-card strong { display: block; font-size: 10px; text-transform: uppercase; color: #64748b; margin-bottom: 2px; }
+        .summary { margin: 10px 0; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: #eef5df; color: #243b1b; font-size: 11px; }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { border: 1px solid #cbd5e1; padding: 4px 6px; font-size: 10px; text-align: left; vertical-align: top; line-height: 1.15; }
+        th { background: #eef5df; }
+        th:nth-child(1), td:nth-child(1) { width: 10%; }
+        th:nth-child(2), td:nth-child(2) { width: 24%; }
+        th:nth-child(3), td:nth-child(3) { width: 14%; }
+        th:nth-child(4), td:nth-child(4) { width: 10%; }
+        th:nth-child(5), td:nth-child(5),
+        th:nth-child(6), td:nth-child(6),
+        th:nth-child(7), td:nth-child(7),
+        th:nth-child(8), td:nth-child(8) { width: 8%; text-align: right; }
+        th:nth-child(9), td:nth-child(9) { width: 10%; }
+        .notes { white-space: pre-wrap; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #334155; }
+      </style></head><body>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(activeSite?.name ?? t("app.selectSite"))} | ${escapeHtml(printedAt)}</p>
+      <div class="meta">
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.status"))}</strong>${escapeHtml(t(`inventories.status.${inventorySessionMeta.status}`))}</div>
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.scope"))}</strong>${escapeHtml(t(`inventories.scope${inventorySessionMeta.count_scope === "site" ? "Site" : inventorySessionMeta.count_scope === "sector" ? "Sector" : "Point"}`))}</div>
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.scopeSector"))}</strong>${escapeHtml(inventorySessionMeta.sector_name || t("inventories.scopeSite"))}</div>
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.startedAt"))}</strong>${escapeHtml(formatDateTime(inventorySessionMeta.started_at))}</div>
+      </div>
+      <div class="meta">
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.closedAt"))}</strong>${escapeHtml(formatDateTime(inventorySessionMeta.closed_at))}</div>
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.stockPoint"))}</strong>${escapeHtml(selectedPointName)}</div>
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.savedLinesTitle", { count: inventorySavedLineCount }))}</strong>${escapeHtml(String(inventorySavedLineCount))}</div>
+        <div class="meta-card"><strong>${escapeHtml(t("inventories.delta"))}</strong>${escapeHtml(String(inventoryDifferenceCount))}</div>
+      </div>
+      <div class="summary">${escapeHtml(t("inventories.lineSummary", { lines: allLines.length, diffs: inventoryDifferenceCount }))}</div>
+      <table><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml || `<tr><td colspan="${headers.length}">${escapeHtml(t("inventories.noCountLines"))}</td></tr>`}</tbody></table>
+      ${notes ? `<h2>${escapeHtml(t("inventories.notes"))}</h2><div class="notes">${escapeHtml(notes)}</div>` : ""}
+      </body></html>`;
+
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc || !iframe.contentWindow) {
+      document.body.removeChild(iframe);
+      setNotice(t("error.printOpen"));
+      return;
+    }
+
+    doc.open();
+    doc.write(html);
+    doc.close();
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+    window.setTimeout(() => {
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
+    }, 1000);
+  }
+
+  function exportInventorySessionXls() {
+    if (!inventorySessionMeta) {
+      setNotice(t("inventories.noticeSessionRequired"));
+      return;
+    }
+
+    const sessionLabel = inventorySessionMeta.label?.trim() || inventorySessionMeta.id.slice(0, 8);
+    const title = t("inventories.sessionReportTitle", { name: sessionLabel });
+    const exportedAt = new Date().toLocaleString(lang === "fr" ? "fr-FR" : lang === "en" ? "en-GB" : "it-IT");
+    const selectedPointName = selectedStockPointId
+      ? stockPoints.find((point) => point.id === selectedStockPointId)?.name || "-"
+      : "-";
+    const allLines = [
+      ...inventorySavedSessionLines.map((line) => ({ ...line, _exportState: "saved" as const })),
+      ...inventoryDraftSessionLines.map((line) => ({ ...line, _exportState: "draft" as const })),
+    ];
+    const headers = [
+      t("table.code"),
+      t("table.product"),
+      t("table.supplier"),
+      t("inventories.stockPoint"),
+      t("inventories.theoretical"),
+      t("inventories.counted"),
+      t("table.unit"),
+      t("inventories.delta"),
+      t("inventories.lineState"),
+    ];
+    const headerHtml = headers.map((item) => `<th>${escapeHtml(item)}</th>`).join("");
+    const rowsHtml = allLines
+      .map((line) => {
+        const stateLabel =
+          line._exportState === "saved" ? t("inventories.lineStateSaved") : t("inventories.lineStateDraft");
+        const cells = [
+          String(line.supplier_code || "-"),
+          String(line.supplier_product_name || "-"),
+          String(line.supplier_name || "-"),
+          String(line.stock_point_name || "-"),
+          String(line.expected_qty ?? "0.000"),
+          String(line.qty_value ?? "0.000"),
+          String(line.qty_unit || "-"),
+          String(line.delta_qty ?? "0.000"),
+          stateLabel,
+        ];
+        return `<tr>${cells.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`;
+      })
+      .join("");
+    const notes = String(inventorySessionMeta.notes || "").trim();
+    const html = `<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title>
+      <style>
+        body { font-family: Arial, sans-serif; color: #111827; }
+        h1 { font-size: 18px; margin: 0 0 4px; }
+        h2 { font-size: 13px; margin: 14px 0 6px; }
+        p { margin: 0 0 8px; color: #475569; font-size: 11px; }
+        .meta { border-collapse: separate; border-spacing: 8px 6px; margin-bottom: 10px; }
+        .meta td { border: 1px solid #cbd5e1; padding: 6px 8px; border-radius: 8px; background: #f8fafc; font-size: 11px; vertical-align: top; }
+        .meta strong { display: block; font-size: 10px; text-transform: uppercase; color: #64748b; margin-bottom: 2px; }
+        .summary { margin: 10px 0; padding: 8px 10px; border: 1px solid #cbd5e1; background: #eef5df; color: #243b1b; font-size: 11px; }
+        table.sheet { width: 100%; border-collapse: collapse; }
+        .sheet th, .sheet td { border: 1px solid #cbd5e1; padding: 4px 6px; font-size: 11px; text-align: left; vertical-align: top; }
+        .sheet th { background: #eef5df; }
+        .notes { white-space: pre-wrap; border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 11px; color: #334155; }
+      </style></head><body>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(activeSite?.name ?? t("app.selectSite"))} | ${escapeHtml(exportedAt)}</p>
+      <table class="meta">
+        <tr>
+          <td><strong>${escapeHtml(t("inventories.status"))}</strong>${escapeHtml(t(`inventories.status.${inventorySessionMeta.status}`))}</td>
+          <td><strong>${escapeHtml(t("inventories.scope"))}</strong>${escapeHtml(t(`inventories.scope${inventorySessionMeta.count_scope === "site" ? "Site" : inventorySessionMeta.count_scope === "sector" ? "Sector" : "Point"}`))}</td>
+          <td><strong>${escapeHtml(t("inventories.scopeSector"))}</strong>${escapeHtml(inventorySessionMeta.sector_name || t("inventories.scopeSite"))}</td>
+          <td><strong>${escapeHtml(t("inventories.startedAt"))}</strong>${escapeHtml(formatDateTime(inventorySessionMeta.started_at))}</td>
+        </tr>
+        <tr>
+          <td><strong>${escapeHtml(t("inventories.closedAt"))}</strong>${escapeHtml(formatDateTime(inventorySessionMeta.closed_at))}</td>
+          <td><strong>${escapeHtml(t("inventories.stockPoint"))}</strong>${escapeHtml(selectedPointName)}</td>
+          <td><strong>${escapeHtml(t("inventories.savedLinesTitle", { count: inventorySavedLineCount }))}</strong>${escapeHtml(String(inventorySavedLineCount))}</td>
+          <td><strong>${escapeHtml(t("inventories.delta"))}</strong>${escapeHtml(String(inventoryDifferenceCount))}</td>
+        </tr>
+      </table>
+      <div class="summary">${escapeHtml(t("inventories.lineSummary", { lines: allLines.length, diffs: inventoryDifferenceCount }))}</div>
+      <table class="sheet"><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml || `<tr><td colspan="${headers.length}">${escapeHtml(t("inventories.noCountLines"))}</td></tr>`}</tbody></table>
+      ${notes ? `<h2>${escapeHtml(t("inventories.notes"))}</h2><div class="notes">${escapeHtml(notes)}</div>` : ""}
+      </body></html>`;
+
+    const blob = new Blob(["\ufeff", html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${safeExportFilename(sessionLabel)}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function printSectorOrderCard(group: { section: string; rows: Array<Record<string, unknown>> }) {
@@ -5699,6 +5917,47 @@ function App() {
       setNotice(t("inventories.noticeSessionUpdated", { name: body.label || body.id }));
       await loadInventoryExecutionData();
       await loadInventorySessionDetail(selectedInventorySessionId);
+    } catch {
+      setNotice(t("error.ingest"));
+    } finally {
+      setIsApplyingInventory(false);
+    }
+  }
+
+  async function onDeleteInventorySession(session: InventorySessionItem) {
+    if (!session.id) return;
+    const removable = session.status === "draft" || session.status === "cancelled";
+    if (!removable) {
+      setNotice(t("inventories.noticeSessionDeleteBlocked"));
+      return;
+    }
+    const label = session.label || session.id.slice(0, 8);
+    const confirmed = window.confirm(`Supprimer la session d'inventaire "${label}" ?`);
+    if (!confirmed) return;
+    setIsApplyingInventory(true);
+    try {
+      const res = await apiFetch(`/inventory/sessions/${encodeURIComponent(session.id)}/`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const body = await res.json();
+          detail = String(body?.detail || JSON.stringify(body));
+        } catch {
+          detail = "";
+        }
+        setNotice(errorWithDetail("error.ingest", detail));
+        return;
+      }
+      if (selectedInventorySessionId === session.id) {
+        setSelectedInventorySessionId("");
+        setInventorySessionDraft(null);
+        setInventoryDraftSessionLines([]);
+        setInventorySavedSessionLines([]);
+      }
+      setNotice(t("inventories.noticeSessionDeleted", { name: label }));
+      await loadInventoryExecutionData();
     } catch {
       setNotice(t("error.ingest"));
     } finally {
@@ -8254,6 +8513,13 @@ function App() {
                                   {selectedInventorySessionId === session.id ? "✓ " : ""}
                                   {(session.label || session.id.slice(0, 8))} · {t(`inventories.status.${session.status}`)}
                                 </button>
+                                {session.status === "draft" || session.status === "cancelled" ? (
+                                  <div style={{ marginTop: 6 }}>
+                                    <button type="button" className="danger-btn" onClick={() => void onDeleteInventorySession(session)}>
+                                      {t("action.delete")}
+                                    </button>
+                                  </div>
+                                ) : null}
                                 <div className="muted" style={{ marginTop: 4 }}>
                                   {session.sector_name || t("inventories.scopeSite")} · {formatDateTime(session.started_at)}
                                 </div>
@@ -8335,6 +8601,24 @@ function App() {
                                 <button type="button" className="btn btn-outline" onClick={() => void loadInventorySessionDetail(selectedInventorySessionId)} disabled={!selectedInventorySessionId}>
                                   {t("inventories.reloadSession")}
                                 </button>
+                                <button type="button" className="btn btn-outline" onClick={printInventorySessionPdf} disabled={!selectedInventorySessionId}>
+                                  {t("inventories.printSession")}
+                                </button>
+                                <button type="button" className="btn btn-outline" onClick={exportInventorySessionXls} disabled={!selectedInventorySessionId}>
+                                  {t("inventories.exportXls")}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger-btn"
+                                  onClick={() => inventorySessionMeta && void onDeleteInventorySession(inventorySessionMeta)}
+                                  disabled={
+                                    !inventorySessionMeta ||
+                                    isApplyingInventory ||
+                                    !["draft", "cancelled"].includes(inventorySessionMeta.status)
+                                  }
+                                >
+                                  {t("action.delete")}
+                                </button>
                               </div>
                               <p className="muted" style={{ marginTop: 12 }}>
                                 {t("inventories.startedAt")}: {formatDateTime(inventorySessionMeta.started_at)}<br />
@@ -8375,6 +8659,12 @@ function App() {
                   </select>
                   <button type="button" onClick={loadInventoryProducts} disabled={!siteId || isInventoryLoading}>
                     {isInventoryLoading ? t("inventories.loadingProducts") : t("inventories.refreshProducts")}
+                  </button>
+                  <button type="button" className="btn btn-outline" onClick={printInventorySessionPdf} disabled={!selectedInventorySessionId}>
+                    {t("inventories.printSession")}
+                  </button>
+                  <button type="button" className="btn btn-outline" onClick={exportInventorySessionXls} disabled={!selectedInventorySessionId}>
+                    {t("inventories.exportXls")}
                   </button>
                   <button type="button" onClick={onSaveInventorySessionLines} disabled={!selectedInventorySessionId || isApplyingInventory}>
                     {isApplyingInventory ? t("purchases.processing") : t("inventories.saveLines")}

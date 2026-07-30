@@ -1189,6 +1189,13 @@ th {
   margin-bottom: 10px;
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.sheet-toolbar > button {
+  width: auto;
+  margin-top: 0;
 }
 
 .sheet-wrap {

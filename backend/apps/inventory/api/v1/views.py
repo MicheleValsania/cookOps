@@ -417,6 +417,16 @@ class InventorySessionDetailView(APIView):
         session.save()
         return Response(InventorySessionSerializer(session).data)
 
+    def delete(self, request, session_id):
+        session = get_object_or_404(InventorySession.objects.select_related("site", "sector"), pk=session_id)
+        if session.status not in {InventorySessionStatus.DRAFT, InventorySessionStatus.CANCELLED}:
+            return Response(
+                {"detail": "only draft or cancelled sessions can be deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        session.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class InventorySessionLinesBulkUpsertView(APIView):
     def post(self, request, session_id):

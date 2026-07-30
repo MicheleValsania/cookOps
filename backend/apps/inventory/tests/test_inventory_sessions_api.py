@@ -153,3 +153,43 @@ class InventorySessionsApiTests(APITestCase):
         response = self.client.delete(f"/api/v1/inventory/sessions/{session.id}/lines/{line.id}/")
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(InventoryCountLine.objects.filter(id=line.id).exists())
+
+    def test_draft_session_can_be_deleted(self):
+        session = InventorySession.objects.create(
+            site=self.site,
+            sector=self.sector,
+            label="Brouillon inutile",
+            status="draft",
+            source_app="cookops_web",
+            count_scope="sector",
+        )
+        InventoryCountLine.objects.create(
+            session=session,
+            stock_point=self.stock_point,
+            supplier_product=self.product,
+            qty_value="1.000",
+            qty_unit="kg",
+            expected_qty="1.000",
+            delta_qty="0.000",
+        )
+
+        response = self.client.delete(f"/api/v1/inventory/sessions/{session.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(InventorySession.objects.filter(id=session.id).exists())
+        self.assertEqual(InventoryCountLine.objects.filter(session_id=session.id).count(), 0)
+
+    def test_in_progress_session_cannot_be_deleted(self):
+        session = InventorySession.objects.create(
+            site=self.site,
+            sector=self.sector,
+            label="Sessione avviata",
+            status="in_progress",
+            source_app="cookops_web",
+            count_scope="sector",
+        )
+
+        response = self.client.delete(f"/api/v1/inventory/sessions/{session.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(InventorySession.objects.filter(id=session.id).exists())
