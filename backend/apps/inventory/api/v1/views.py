@@ -419,9 +419,13 @@ class InventorySessionDetailView(APIView):
 
     def delete(self, request, session_id):
         session = get_object_or_404(InventorySession.objects.select_related("site", "sector"), pk=session_id)
-        if session.status not in {InventorySessionStatus.DRAFT, InventorySessionStatus.CANCELLED}:
+        if session.status not in {
+            InventorySessionStatus.DRAFT,
+            InventorySessionStatus.IN_PROGRESS,
+            InventorySessionStatus.CANCELLED,
+        }:
             return Response(
-                {"detail": "only draft or cancelled sessions can be deleted."},
+                {"detail": "closed sessions cannot be deleted because they may have generated stock adjustments."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         session.delete()

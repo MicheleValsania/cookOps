@@ -179,12 +179,27 @@ class InventorySessionsApiTests(APITestCase):
         self.assertFalse(InventorySession.objects.filter(id=session.id).exists())
         self.assertEqual(InventoryCountLine.objects.filter(session_id=session.id).count(), 0)
 
-    def test_in_progress_session_cannot_be_deleted(self):
+    def test_in_progress_session_can_be_deleted(self):
         session = InventorySession.objects.create(
             site=self.site,
             sector=self.sector,
             label="Sessione avviata",
             status="in_progress",
+            source_app="cookops_web",
+            count_scope="sector",
+        )
+
+        response = self.client.delete(f"/api/v1/inventory/sessions/{session.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(InventorySession.objects.filter(id=session.id).exists())
+
+    def test_closed_session_cannot_be_deleted(self):
+        session = InventorySession.objects.create(
+            site=self.site,
+            sector=self.sector,
+            label="Inventario chiuso",
+            status="closed",
             source_app="cookops_web",
             count_scope="sector",
         )

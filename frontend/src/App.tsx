@@ -5926,13 +5926,13 @@ function App() {
 
   async function onDeleteInventorySession(session: InventorySessionItem) {
     if (!session.id) return;
-    const removable = session.status === "draft" || session.status === "cancelled";
+    const removable = ["draft", "in_progress", "cancelled"].includes(session.status);
     if (!removable) {
       setNotice(t("inventories.noticeSessionDeleteBlocked"));
       return;
     }
     const label = session.label || session.id.slice(0, 8);
-    const confirmed = window.confirm(`Supprimer la session d'inventaire "${label}" ?`);
+    const confirmed = window.confirm(t("inventories.confirmDeleteSession", { name: label }));
     if (!confirmed) return;
     setIsApplyingInventory(true);
     try {
@@ -8513,7 +8513,7 @@ function App() {
                                   {selectedInventorySessionId === session.id ? "✓ " : ""}
                                   {(session.label || session.id.slice(0, 8))} · {t(`inventories.status.${session.status}`)}
                                 </button>
-                                {session.status === "draft" || session.status === "cancelled" ? (
+                                {["draft", "in_progress", "cancelled"].includes(session.status) ? (
                                   <div style={{ marginTop: 6 }}>
                                     <button type="button" className="danger-btn" onClick={() => void onDeleteInventorySession(session)}>
                                       {t("action.delete")}
@@ -8614,7 +8614,7 @@ function App() {
                                   disabled={
                                     !inventorySessionMeta ||
                                     isApplyingInventory ||
-                                    !["draft", "cancelled"].includes(inventorySessionMeta.status)
+                                    !["draft", "in_progress", "cancelled"].includes(inventorySessionMeta.status)
                                   }
                                 >
                                   {t("action.delete")}
