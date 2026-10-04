@@ -194,7 +194,7 @@ class InventorySessionsApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(InventorySession.objects.filter(id=session.id).exists())
 
-    def test_closed_session_cannot_be_deleted(self):
+    def test_closed_session_deletes_its_stock_adjustments(self):
         session = InventorySession.objects.create(
             site=self.site,
             sector=self.sector,
@@ -203,8 +203,34 @@ class InventorySessionsApiTests(APITestCase):
             source_app="cookops_web",
             count_scope="sector",
         )
+        adjustment = InventoryMovement.objects.create(
+            site=self.site,
+            supplier_product=self.product,
+            supplier_code=self.product.supplier_sku,
+            raw_product_name=self.product.name,
+            movement_type="OUT",
+            qty_value="2.000",
+            qty_unit="kg",
+            happened_at="2026-04-20T10:00:00Z",
+            ref_type="inventory_session_close",
+            ref_id=str(session.id),
+        )
+        unrelated_movement = InventoryMovement.objects.create(
+            site=self.site,
+            supplier_product=self.product,
+            supplier_code=self.product.supplier_sku,
+            raw_product_name=self.product.name,
+            movement_type="IN",
+            qty_value="3.000",
+            qty_unit="kg",
+            happened_at="2026-04-20T11:00:00Z",
+            ref_type="goods_receipt_line",
+            ref_id=str(session.id),
+        )
 
         response = self.client.delete(f"/api/v1/inventory/sessions/{session.id}/")
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertTrue(InventorySession.objects.filter(id=session.id).exists())
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(InventorySession.objects.filter(id=session.id).exists())
+        self.assertFalse(InventoryMovement.objects.filter(id=adjustment.id).exists())
+        self.assertTrue(InventoryMovement.objects.filter(id=unrelated_movement.id).exists())

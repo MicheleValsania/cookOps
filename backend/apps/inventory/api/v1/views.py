@@ -3,6 +3,7 @@ from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 import uuid
 
+from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone as dj_timezone
@@ -417,17 +418,17 @@ class InventorySessionDetailView(APIView):
         session.save()
         return Response(InventorySessionSerializer(session).data)
 
+    @transaction.atomic
     def delete(self, request, session_id):
-        session = get_object_or_404(InventorySession.objects.select_related("site", "sector"), pk=session_id)
-        if session.status not in {
-            InventorySessionStatus.DRAFT,
-            InventorySessionStatus.IN_PROGRESS,
-            InventorySessionStatus.CANCELLED,
-        }:
-            return Response(
-                {"detail": "closed sessions cannot be deleted because they may have generated stock adjustments."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        session = get_object_or_404(
+            InventorySession.objects.select_for_update().select_related("site", "sector"),
+            pk=session_id,
+        )
+        if session.status == InventorySessionStatus.CLOSED:
+            InventoryMovement.objects.filter(
+                ref_type="inventory_session_close",
+                ref_id=str(session.id),
+            ).delete()
         session.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -504,9 +505,12 @@ class InventorySessionLineDetailView(APIView):
 
 
 class InventorySessionCloseView(APIView):
+    @transaction.atomic
     def post(self, request, session_id):
         session = get_object_or_404(
-            InventorySession.objects.select_related("site").prefetch_related("lines__supplier_product__supplier"),
+            InventorySession.objects.select_for_update()
+            .select_related("site")
+            .prefetch_related("lines__supplier_product__supplier"),
             pk=session_id,
         )
         if session.status == InventorySessionStatus.CLOSED:

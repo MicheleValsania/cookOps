@@ -5926,13 +5926,11 @@ function App() {
 
   async function onDeleteInventorySession(session: InventorySessionItem) {
     if (!session.id) return;
-    const removable = ["draft", "in_progress", "cancelled"].includes(session.status);
-    if (!removable) {
-      setNotice(t("inventories.noticeSessionDeleteBlocked"));
-      return;
-    }
     const label = session.label || session.id.slice(0, 8);
-    const confirmed = window.confirm(t("inventories.confirmDeleteSession", { name: label }));
+    const confirmationKey = session.status === "closed"
+      ? "inventories.confirmDeleteClosedSession"
+      : "inventories.confirmDeleteSession";
+    const confirmed = window.confirm(t(confirmationKey, { name: label }));
     if (!confirmed) return;
     setIsApplyingInventory(true);
     try {
@@ -8513,13 +8511,11 @@ function App() {
                                   {selectedInventorySessionId === session.id ? "✓ " : ""}
                                   {(session.label || session.id.slice(0, 8))} · {t(`inventories.status.${session.status}`)}
                                 </button>
-                                {["draft", "in_progress", "cancelled"].includes(session.status) ? (
-                                  <div style={{ marginTop: 6 }}>
-                                    <button type="button" className="danger-btn" onClick={() => void onDeleteInventorySession(session)}>
-                                      {t("action.delete")}
-                                    </button>
-                                  </div>
-                                ) : null}
+                                <div style={{ marginTop: 6 }}>
+                                  <button type="button" className="danger-btn" onClick={() => void onDeleteInventorySession(session)}>
+                                    {t("action.delete")}
+                                  </button>
+                                </div>
                                 <div className="muted" style={{ marginTop: 4 }}>
                                   {session.sector_name || t("inventories.scopeSite")} · {formatDateTime(session.started_at)}
                                 </div>
@@ -8613,8 +8609,7 @@ function App() {
                                   onClick={() => inventorySessionMeta && void onDeleteInventorySession(inventorySessionMeta)}
                                   disabled={
                                     !inventorySessionMeta ||
-                                    isApplyingInventory ||
-                                    !["draft", "in_progress", "cancelled"].includes(inventorySessionMeta.status)
+                                    isApplyingInventory
                                   }
                                 >
                                   {t("action.delete")}
