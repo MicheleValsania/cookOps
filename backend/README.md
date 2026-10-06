@@ -37,6 +37,8 @@ Proxy endpoints exposed by CookOps:
 - `PATCH/DELETE /api/v1/haccp/schedules/{schedule_id}/`
 
 ## Import snapshots da Fiches (JSON v1.1)
+- Per la lettura automatica via API configurare `FICHES_API_BASE_URL` e `FICHES_API_SERVICE_TOKEN`.
+- `FICHES_API_SERVICE_TOKEN` deve coincidere con `FICHES_SERVICE_TOKEN` del backend fiches-recettes.
 - Endpoint: `POST /api/v1/integration/fiches/snapshots/import-envelope/`
 - Header richiesto: `X-API-Key`
 - Idempotenza consigliata: `Idempotency-Key`

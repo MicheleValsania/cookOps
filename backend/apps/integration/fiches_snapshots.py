@@ -86,7 +86,11 @@ def _normalize_text(value: Any) -> str:
 
 
 def _http_get_json(url: str) -> Any:
-    request = Request(url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    service_token = getattr(settings, "FICHES_API_SERVICE_TOKEN", "").strip()
+    if service_token:
+        headers["X-Service-Token"] = service_token
+    request = Request(url, headers=headers)
     with urlopen(request, timeout=30) as response:
         raw = response.read().decode("utf-8")
     return json.loads(raw)
