@@ -5,13 +5,16 @@ from django.core import signing
 TOKEN_SALT = "cookops.access.v1"
 
 
-def issue_access_token(*, organization_id, role: str = "owner", kind: str = "legacy") -> str:
+def issue_access_token(*, organization_id, user_id=None, role: str = "owner", kind: str = "legacy") -> str:
+    payload = {
+        "organization_id": str(organization_id),
+        "role": role,
+        "kind": kind,
+    }
+    if user_id:
+        payload["user_id"] = str(user_id)
     return signing.dumps(
-        {
-            "organization_id": str(organization_id),
-            "role": role,
-            "kind": kind,
-        },
+        payload,
         key=settings.SECRET_KEY,
         salt=TOKEN_SALT,
         compress=True,

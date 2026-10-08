@@ -1,11 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { apiFetch, clearAccessToken, getAccessToken, getApiBase, getAuthHeaders, loginWithPassword } from "./api/client";
+import { apiFetch, clearAccessToken, getAccessToken, getApiBase, getAuthHeaders } from "./api/client";
+import AuthPortal from "./components/AuthPortal";
 import { HaccpWorkspace } from "./components/HaccpWorkspace";
 import { TraceabilityWorkspace } from "./components/TraceabilityWorkspace";
 import { getInitialLang, LANG_STORAGE_KEY, t as translate, type Lang } from "./i18n";
 
 const FICHES_RECETTES_URL = (import.meta.env.VITE_FICHES_RECETTES_URL ?? "").toString().trim();
-const LANDING_FICHES_FALLBACK = "https://fiches-recettes.netlify.app";
 
 type NavKey =
   | "dashboard"
@@ -1114,9 +1114,6 @@ function normalizeHaccpReconciliationOverview(body: unknown, context?: { siteId?
 function App() {
   const [lang, setLang] = useState<Lang>(() => getInitialLang());
   const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(getAccessToken()));
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [isLoginPending, setIsLoginPending] = useState(false);
   const [nav, setNav] = useState<NavKey>("dashboard");
   const [isTraceabilityReconciliationPage, setIsTraceabilityReconciliationPage] = useState(
     () => parseTraceabilityReconciliationHash(window.location.hash).active
@@ -6537,28 +6534,7 @@ function App() {
     }
   }
 
-  const landingFichesUrl = FICHES_RECETTES_URL || LANDING_FICHES_FALLBACK;
   const showLanding = !isAuthenticated;
-  const enterApp = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!loginPassword.trim() || isLoginPending) return;
-    setIsLoginPending(true);
-    setLoginError("");
-    try {
-      await loginWithPassword(loginPassword);
-      setLoginPassword("");
-      setIsAuthenticated(true);
-      window.location.reload();
-    } catch (error) {
-      setLoginError(
-        error instanceof Error && error.message === "rate_limited"
-          ? "Troppi tentativi. Attendi qualche minuto e riprova."
-          : "Password non valida."
-      );
-    } finally {
-      setIsLoginPending(false);
-    }
-  };
 
   const logout = () => {
     clearAccessToken();
@@ -6566,50 +6542,14 @@ function App() {
   };
 
   return showLanding ? (
-    <div className="landing-shell">
-      <header className="landing-top">
-        <div className="landing-brand">
-          <img className="landing-logo" src="/chefside-logo.svg" alt="Chef Side" />
-          <div>
-            <p className="landing-kicker">Chefside</p>
-            <p className="landing-subtitle">Accesso riservato</p>
-          </div>
-        </div>
-        <span className="landing-badge">Private preview</span>
-      </header>
-      <main className="landing-main">
-        <div className="landing-hero">
-          <h1 className="landing-title">CookOps</h1>
-          <p className="landing-lead">
-            Workspace operativo per gestione menu, acquisti, inventario e tracciabilita.
-          </p>
-        </div>
-        <form className="landing-login" onSubmit={enterApp}>
-          <label htmlFor="cookops-password">Password</label>
-          <input
-            id="cookops-password"
-            type="password"
-            value={loginPassword}
-            onChange={(event) => setLoginPassword(event.target.value)}
-            autoComplete="current-password"
-            autoFocus
-          />
-          {loginError ? <p className="landing-login-error" role="alert">{loginError}</p> : null}
-          <button type="submit" className="landing-primary-btn" disabled={isLoginPending || !loginPassword.trim()}>
-            {isLoginPending ? "Accesso..." : "Entra in CookOps"}
-          </button>
-        </form>
-        <div className="landing-actions">
-          <a className="landing-secondary-btn" href={landingFichesUrl} target="_blank" rel="noreferrer">
-            Apri Fiches Recettes
-          </a>
-        </div>
-      </main>
-      <footer className="landing-footer">
-        <span>chefside.fr</span>
-        <span>Supporto interno</span>
-      </footer>
-    </div>
+    <AuthPortal
+      lang={lang}
+      onLangChange={setLang}
+      onAuthenticated={() => {
+        setIsAuthenticated(true);
+        window.location.reload();
+      }}
+    />
   ) : (
     <div className="shell">
       <header className="topbar">

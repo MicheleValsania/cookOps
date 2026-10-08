@@ -5,11 +5,16 @@ import hashlib
 import re
 import secrets
 import unicodedata
+import uuid
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.db import transaction
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
+from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
+from django.utils.text import slugify
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -21,7 +26,7 @@ from apps.core.api.v1.serializers import (
     SiteSerializer,
     SiteWriteSerializer,
 )
-from apps.core.models import ServiceMenuEntry, Site
+from apps.core.models import Organization, OrganizationMembership, ServiceMenuEntry, Site
 from apps.core.services.service_ingredients import extract_ingredients, normalize_qty_unit
 from apps.integration.models import RecipeSnapshot
 from apps.core.api.tokens import issue_access_token
@@ -60,31 +65,164 @@ class LegacyLoginView(APIView):
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        password = str((request.data or {}).get("password") or "")
-        matched = any(
-            secrets.compare_digest(password.encode("utf-8"), key.encode("utf-8"))
-            for key in settings.COOKOPS_API_KEYS
-        )
-        if not matched:
+        payload = request.data or {}
+        email = str(payload.get("email") or "").strip().lower()
+        password = str(payload.get("password") or "")
+        membership = None
+        if email:
+            user = get_user_model().objects.filter(email__iexact=email, is_active=True).first()
+            if user and user.check_password(password):
+                membership = (
+                    OrganizationMembership.objects.select_related("organization")
+                    .filter(user=user, is_active=True, organization__is_active=True)
+                    .order_by("created_at")
+                    .first()
+                )
+        else:
+            matched = settings.COOKOPS_LEGACY_LOGIN_ENABLED and any(
+                secrets.compare_digest(password.encode("utf-8"), key.encode("utf-8"))
+                for key in settings.COOKOPS_API_KEYS
+            )
+            if matched:
+                organization = Organization.objects.get(pk=settings.DEFAULT_ORGANIZATION_ID)
+
+        if (email and not membership) or (not email and not matched):
             cache.set(attempt_key, attempts + 1, timeout=15 * 60)
             return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
         cache.delete(attempt_key)
+        if membership:
+            organization = membership.organization
+            user = membership.user
+            role = membership.role
+            kind = "personal"
+        else:
+            user = None
+            role = "owner"
+            kind = "legacy"
         token = issue_access_token(
-            organization_id=settings.DEFAULT_ORGANIZATION_ID,
-            role="owner",
-            kind="legacy",
+            organization_id=organization.id,
+            user_id=getattr(user, "id", None),
+            role=role,
+            kind=kind,
         )
         return Response(
             {
                 "token": token,
                 "expires_in": settings.COOKOPS_SESSION_TTL_SECONDS,
                 "organization": {
-                    "id": str(settings.DEFAULT_ORGANIZATION_ID),
-                    "name": settings.DEFAULT_ORGANIZATION_NAME,
-                    "slug": settings.DEFAULT_ORGANIZATION_SLUG,
+                    "id": str(organization.id),
+                    "name": organization.name,
+                    "slug": organization.slug,
                 },
+                "user": (
+                    {"id": user.id, "email": user.email, "name": user.get_full_name(), "role": role}
+                    if user
+                    else None
+                ),
             }
+        )
+
+
+class AuthOptionsView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        return Response(
+            {
+                "registration_enabled": settings.COOKOPS_REGISTRATION_ENABLED,
+                "legacy_login_enabled": settings.COOKOPS_LEGACY_LOGIN_ENABLED,
+            }
+        )
+
+
+class RegisterView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        if not settings.COOKOPS_REGISTRATION_ENABLED:
+            return Response({"code": "registration_disabled"}, status=status.HTTP_403_FORBIDDEN)
+
+        forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        client_ip = forwarded_for.split(",", 1)[0].strip() or request.META.get("REMOTE_ADDR", "unknown")
+        attempt_key = f"cookops-register:{hashlib.sha256(client_ip.encode('utf-8')).hexdigest()}"
+        attempts = int(cache.get(attempt_key, 0) or 0)
+        if attempts >= 5:
+            return Response({"code": "rate_limited"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        payload = request.data or {}
+        invite_code = str(payload.get("invite_code") or "").strip()
+        if not secrets.compare_digest(
+            invite_code.encode("utf-8"),
+            settings.COOKOPS_REGISTRATION_INVITE_CODE.encode("utf-8"),
+        ):
+            cache.set(attempt_key, attempts + 1, timeout=15 * 60)
+            return Response({"code": "invalid_invite"}, status=status.HTTP_403_FORBIDDEN)
+
+        email = str(payload.get("email") or "").strip().lower()
+        password = str(payload.get("password") or "")
+        display_name = str(payload.get("display_name") or "").strip()
+        organization_name = str(payload.get("organization_name") or "").strip()
+        try:
+            validate_email(email)
+        except DjangoValidationError:
+            return Response({"code": "invalid_registration"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(password) < 12 or len(display_name) < 2 or len(organization_name) < 2:
+            return Response({"code": "invalid_registration"}, status=status.HTTP_400_BAD_REQUEST)
+
+        User = get_user_model()
+        if User.objects.filter(username__iexact=email).exists() or User.objects.filter(email__iexact=email).exists():
+            return Response({"code": "account_exists"}, status=status.HTTP_409_CONFLICT)
+
+        name_parts = display_name.split(maxsplit=1)
+        slug_base = slugify(organization_name)[:100] or "organization"
+        try:
+            with transaction.atomic():
+                organization = Organization.objects.create(
+                    name=organization_name,
+                    slug=f"{slug_base}-{uuid.uuid4().hex[:6]}",
+                )
+                user = User.objects.create_user(
+                    username=email,
+                    email=email,
+                    password=password,
+                    first_name=name_parts[0],
+                    last_name=name_parts[1] if len(name_parts) > 1 else "",
+                )
+                membership = OrganizationMembership.objects.create(
+                    organization=organization,
+                    user=user,
+                    role=OrganizationMembership.Role.OWNER,
+                )
+        except IntegrityError:
+            return Response({"code": "account_exists"}, status=status.HTTP_409_CONFLICT)
+
+        cache.delete(attempt_key)
+        token = issue_access_token(
+            organization_id=organization.id,
+            user_id=user.id,
+            role=membership.role,
+            kind="personal",
+        )
+        return Response(
+            {
+                "token": token,
+                "expires_in": settings.COOKOPS_SESSION_TTL_SECONDS,
+                "organization": {
+                    "id": str(organization.id),
+                    "name": organization.name,
+                    "slug": organization.slug,
+                },
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "name": user.get_full_name(),
+                    "role": membership.role,
+                },
+            },
+            status=status.HTTP_201_CREATED,
         )
 
 
@@ -100,6 +238,15 @@ class AuthStatusView(APIView):
                 },
                 "role": request.user.role,
                 "kind": request.user.kind,
+                "user": (
+                    {
+                        "id": request.user.user.id,
+                        "email": request.user.user.email,
+                        "name": request.user.user.get_full_name(),
+                    }
+                    if request.user.user
+                    else None
+                ),
             }
         )
 

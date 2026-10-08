@@ -47,6 +47,9 @@ Both services should share the same variables:
 - `POSTGRES_PORT`
 - `COOKOPS_API_KEYS`
 - `COOKOPS_SESSION_TTL_SECONDS=28800`
+- `COOKOPS_LEGACY_LOGIN_ENABLED=true`
+- `COOKOPS_REGISTRATION_ENABLED=true` to expose invited workspace creation
+- `COOKOPS_REGISTRATION_INVITE_CODE` with a long private pilot code
 - `DEFAULT_ORGANIZATION_ID=00000000-0000-4000-8000-000000000001`
 - `DEFAULT_ORGANIZATION_SLUG=chefside-france`
 - `DEFAULT_ORGANIZATION_NAME=ChefSide France`

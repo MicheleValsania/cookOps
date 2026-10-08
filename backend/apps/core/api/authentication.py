@@ -3,13 +3,14 @@ from dataclasses import dataclass
 
 from rest_framework import authentication, exceptions
 
-from apps.core.models import Organization
+from apps.core.models import Organization, OrganizationMembership
 from apps.core.api.tokens import read_access_token
 
 
 @dataclass(frozen=True)
 class CookOpsPrincipal:
     organization: Organization
+    user: object | None = None
     role: str = "owner"
     kind: str = "legacy_api_key"
 
@@ -20,6 +21,10 @@ class CookOpsPrincipal:
     @property
     def organization_id(self):
         return self.organization.id
+
+    @property
+    def id(self):
+        return getattr(self.user, "id", None)
 
 
 class ApiKeyAuthentication(authentication.BaseAuthentication):
@@ -41,6 +46,26 @@ class ApiKeyAuthentication(authentication.BaseAuthentication):
                 )
             except (Organization.DoesNotExist, ValueError, TypeError) as exc:
                 raise exceptions.AuthenticationFailed("Session organization is unavailable.") from exc
+            user_id = payload.get("user_id")
+            if user_id:
+                try:
+                    membership = OrganizationMembership.objects.select_related("user").get(
+                        organization=organization,
+                        user_id=user_id,
+                        user__is_active=True,
+                        is_active=True,
+                    )
+                except (OrganizationMembership.DoesNotExist, ValueError, TypeError) as exc:
+                    raise exceptions.AuthenticationFailed("Session membership is unavailable.") from exc
+                return (
+                    CookOpsPrincipal(
+                        organization=organization,
+                        user=membership.user,
+                        role=membership.role,
+                        kind="personal",
+                    ),
+                    payload,
+                )
             return (
                 CookOpsPrincipal(
                     organization=organization,

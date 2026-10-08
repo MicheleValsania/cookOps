@@ -24,6 +24,16 @@ La landing di CookOps richiede la password e la invia una sola volta a `POST /ap
 
 Il login applica un limite di cinque errori per indirizzo IP in quindici minuti. Il limite usa la cache Django locale ed e adatto all'attuale servizio Railway a singola istanza; prima di scalare orizzontalmente dovra passare a una cache condivisa.
 
+## Portale multi-tenant
+
+La pagina pubblica offre tre percorsi distinti:
+
+- accesso personale con email e password;
+- creazione su invito di una nuova organizzazione isolata;
+- accesso storico ChefSide con la password operativa esistente.
+
+La registrazione e disattivata in assenza di entrambe le variabili `COOKOPS_REGISTRATION_ENABLED=true` e `COOKOPS_REGISTRATION_INVITE_CODE`. Il codice non viene salvato nel frontend. Il nuovo proprietario riceve una membership `owner`; il token personale viene accettato solo finche utente, organizzazione e membership restano attivi.
+
 ## Isolamento applicato
 
 - elenco, creazione, modifica ed eliminazione dei siti;
