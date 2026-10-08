@@ -1,9 +1,10 @@
 ﻿import uuid
 
+from django.conf import settings
 from django.db import models
 
 from apps.catalog.models import SupplierProduct
-from apps.core.models import Site
+from apps.core.models import Organization, Site
 from apps.purchasing.models import InvoiceGoodsReceiptMatch
 
 
@@ -23,6 +24,12 @@ class IntegrationImportBatch(models.Model):
         FAILED = "failed", "failed"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="integration_import_batches",
+        default=settings.DEFAULT_ORGANIZATION_ID,
+    )
     source = models.CharField(max_length=64)
     import_type = models.CharField(max_length=64)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.STARTED)
@@ -44,6 +51,12 @@ class IntegrationImportBatch(models.Model):
 
 class RecipeSnapshot(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="recipe_snapshots",
+        default=settings.DEFAULT_ORGANIZATION_ID,
+    )
     fiche_product_id = models.UUIDField()
     title = models.CharField(max_length=255)
     category = models.CharField(max_length=128, blank=True, null=True)
@@ -58,8 +71,8 @@ class RecipeSnapshot(models.Model):
         ordering = ["-created_at"]
         constraints = [
             models.UniqueConstraint(
-                fields=["fiche_product_id", "snapshot_hash"],
-                name="uq_integration_recipe_snapshot_fiche_hash",
+                fields=["organization", "fiche_product_id", "snapshot_hash"],
+                name="uq_integration_recipe_snapshot_org_fiche_hash",
             )
         ]
 
@@ -69,6 +82,12 @@ class RecipeSnapshot(models.Model):
 
 class RecipeIngredientLink(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="recipe_ingredient_links",
+        default=settings.DEFAULT_ORGANIZATION_ID,
+    )
     fiche_product_id = models.UUIDField()
     supplier_product = models.ForeignKey(
         SupplierProduct,
@@ -220,6 +239,12 @@ class CleaningCadence(models.TextChoices):
 
 class CleaningCategory(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="cleaning_categories",
+        default=settings.DEFAULT_ORGANIZATION_ID,
+    )
     name = models.CharField(max_length=160)
     description = models.TextField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
@@ -236,6 +261,12 @@ class CleaningCategory(models.Model):
 
 class CleaningProcedure(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="cleaning_procedures",
+        default=settings.DEFAULT_ORGANIZATION_ID,
+    )
     category = models.ForeignKey(
         CleaningCategory,
         on_delete=models.SET_NULL,

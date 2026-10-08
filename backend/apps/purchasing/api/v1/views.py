@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
+from apps.core.api.tenancy import organization_id_for
 from apps.purchasing.api.v1.serializers import (
     AutoReconciliationSerializer,
     GoodsReceiptSerializer,
@@ -19,25 +20,26 @@ class GoodsReceiptViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewse
     serializer_class = GoodsReceiptSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().filter(site__organization_id=organization_id_for(self.request))
         site_id = (self.request.query_params.get("site") or "").strip()
         if site_id:
             queryset = queryset.filter(site_id=site_id)
         return queryset.order_by("-received_at", "-created_at")
 
     def create(self, request, *args, **kwargs):
+        organization_id = organization_id_for(request)
         source = "api"
         import_type = "goods_receipt"
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
             raise ValidationError({"idempotency_key": "Idempotency-Key header is required."})
 
-        existing = find_completed_batch(source, import_type, idempotency_key)
+        existing = find_completed_batch(organization_id, source, import_type, idempotency_key)
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
-        batch = start_batch(source, import_type, idempotency_key, request.data)
+        batch = start_batch(organization_id, source, import_type, idempotency_key, request.data)
 
         try:
             serializer = self.get_serializer(data=request.data)
@@ -60,25 +62,26 @@ class InvoiceViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.Ge
     serializer_class = InvoiceSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().filter(site__organization_id=organization_id_for(self.request))
         site_id = (self.request.query_params.get("site") or "").strip()
         if site_id:
             queryset = queryset.filter(site_id=site_id)
         return queryset.order_by("-invoice_date", "-created_at")
 
     def create(self, request, *args, **kwargs):
+        organization_id = organization_id_for(request)
         source = "api"
         import_type = "invoice"
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
             raise ValidationError({"idempotency_key": "Idempotency-Key header is required."})
 
-        existing = find_completed_batch(source, import_type, idempotency_key)
+        existing = find_completed_batch(organization_id, source, import_type, idempotency_key)
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
-        batch = start_batch(source, import_type, idempotency_key, request.data)
+        batch = start_batch(organization_id, source, import_type, idempotency_key, request.data)
 
         try:
             serializer = self.get_serializer(data=request.data)
@@ -103,10 +106,15 @@ class InvoiceGoodsReceiptMatchViewSet(mixins.CreateModelMixin, mixins.ListModelM
     ).all()
     serializer_class = InvoiceGoodsReceiptMatchSerializer
 
+    def get_queryset(self):
+        return super().get_queryset().filter(
+            invoice_line__invoice__site__organization_id=organization_id_for(self.request)
+        )
+
 
 class InvoiceAutoMatchView(APIView):
     def post(self, request):
-        serializer = AutoReconciliationSerializer(data=request.data or {}, context={})
+        serializer = AutoReconciliationSerializer(data=request.data or {}, context={"request": request})
         serializer.is_valid(raise_exception=True)
         invoice = serializer.context["invoice"]
         qty_tolerance_ratio = serializer.validated_data["qty_tolerance_ratio"]

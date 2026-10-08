@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, time, timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.http import Http404, HttpResponse
 from django.db import IntegrityError
 from django.utils import timezone as dj_timezone
@@ -18,6 +19,7 @@ from rest_framework.views import APIView
 
 from apps.catalog.models import Supplier, SupplierProduct
 from apps.core.models import Site
+from apps.core.api.tenancy import get_tenant_site, organization_id_for
 from apps.integration.api.v1.serializers import (
     ClaudeExtractSerializer,
     DocumentReviewSerializer,
@@ -832,9 +834,14 @@ def _normalize_supplier_code(value, rules: dict | None = None):
     return raw
 
 
-def _resolve_supplier_id(source: dict, supplier_id):
+def _resolve_supplier_id(source: dict, supplier_id, organization_id):
     if supplier_id:
-        return supplier_id
+        supplier_uuid = _safe_uuid(supplier_id)
+        if supplier_uuid and Supplier.objects.filter(
+            id=supplier_uuid,
+            organization_id=organization_id,
+        ).exists():
+            return supplier_uuid
 
     metadata = _as_dict(source.get("metadata"))
     supplier_name = str(_pick_first(source, "supplier_name", default=metadata.get("supplier_name")) or "").strip()
@@ -842,14 +849,17 @@ def _resolve_supplier_id(source: dict, supplier_id):
     supplier_vat = _clean_vat(supplier_vat_raw)
 
     if supplier_vat:
-        for candidate in Supplier.objects.exclude(vat_number__isnull=True).exclude(vat_number=""):
+        for candidate in Supplier.objects.filter(organization_id=organization_id).exclude(
+            vat_number__isnull=True
+        ).exclude(vat_number=""):
             if _clean_vat(candidate.vat_number) == supplier_vat:
                 return str(candidate.id)
 
     if supplier_name:
-        existing = Supplier.objects.filter(name__iexact=supplier_name).first() or Supplier.find_by_normalized_name(
-            supplier_name
-        )
+        existing = Supplier.objects.filter(
+            organization_id=organization_id,
+            name__iexact=supplier_name,
+        ).first() or Supplier.find_by_normalized_name(supplier_name, organization_id=organization_id)
         if existing:
             if supplier_vat and not existing.vat_number:
                 existing.vat_number = supplier_vat
@@ -858,14 +868,18 @@ def _resolve_supplier_id(source: dict, supplier_id):
 
         try:
             created = Supplier.objects.create(
+                organization_id=organization_id,
                 name=supplier_name[:255],
                 vat_number=(supplier_vat or None),
                 metadata={"source": "claude_auto"},
             )
             return str(created.id)
         except IntegrityError:
-            fallback = Supplier.objects.filter(name__iexact=supplier_name[:255]).first() or Supplier.find_by_normalized_name(
-                supplier_name[:255]
+            fallback = Supplier.objects.filter(
+                organization_id=organization_id,
+                name__iexact=supplier_name[:255],
+            ).first() or Supplier.find_by_normalized_name(
+                supplier_name[:255], organization_id=organization_id
             )
             if fallback:
                 return str(fallback.id)
@@ -875,8 +889,12 @@ def _resolve_supplier_id(source: dict, supplier_id):
 
 def _normalize_payload_for_ingest(payload: dict, target: str, document: IntegrationDocument):
     source = _as_dict(payload)
-    site_id = _pick_first(source, "site", default=str(document.site_id))
-    supplier_id = _resolve_supplier_id(source, _pick_first(source, "supplier"))
+    site_id = str(document.site_id)
+    supplier_id = _resolve_supplier_id(
+        source,
+        _pick_first(source, "supplier"),
+        document.site.organization_id,
+    )
     lines = _normalize_lines(source.get("lines"), target)
     _apply_supplier_product_refs(lines, supplier_id)
 
@@ -1146,7 +1164,9 @@ class IntegrationDocumentViewSet(
     parser_classes = (MultiPartParser, FormParser)
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().filter(
+            site__organization_id=organization_id_for(self.request)
+        )
         site_id = (self.request.query_params.get("site") or "").strip()
         if site_id:
             queryset = queryset.filter(site_id=site_id)
@@ -1181,7 +1201,11 @@ class IntegrationDocumentViewSet(
 
 class DocumentFileView(APIView):
     def get(self, request, document_id):
-        document = get_object_or_404(IntegrationDocument, pk=document_id)
+        document = get_object_or_404(
+            IntegrationDocument,
+            pk=document_id,
+            site__organization_id=organization_id_for(request),
+        )
         file_bytes, content_type = read_document_bytes(document)
         if not file_bytes:
             raise Http404("Document binary is not available.")
@@ -1195,7 +1219,7 @@ class TracciaAssetImportView(APIView):
         serializer = TracciaAssetImportSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
 
-        site = get_object_or_404(Site, pk=serializer.validated_data["site"])
+        site = get_tenant_site(request, pk=serializer.validated_data["site"])
         limit = serializer.validated_data["limit"]
         asset_type = serializer.validated_data["asset_type"]
         idempotency_key = (
@@ -1204,12 +1228,15 @@ class TracciaAssetImportView(APIView):
         )
 
         if idempotency_key:
-            existing = find_completed_batch("traccia", "asset_import", idempotency_key)
+            existing = find_completed_batch(
+                organization_id_for(request), "traccia", "asset_import", idempotency_key
+            )
             if existing:
                 result = existing.result or {}
                 return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
         batch = start_batch(
+            organization_id_for(request),
             "traccia",
             "asset_import",
             idempotency_key,
@@ -1312,7 +1339,7 @@ class DriveAssetImportView(APIView):
         serializer = DriveAssetImportSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
 
-        site = get_object_or_404(Site, pk=serializer.validated_data["site"])
+        site = get_tenant_site(request, pk=serializer.validated_data["site"])
         limit = serializer.validated_data["limit"]
         folder_id = serializer.validated_data.get("folder_id", "").strip()
         document_type = serializer.validated_data["document_type"]
@@ -1322,12 +1349,15 @@ class DriveAssetImportView(APIView):
         )
 
         if idempotency_key:
-            existing = find_completed_batch("drive", "asset_import", idempotency_key)
+            existing = find_completed_batch(
+                organization_id_for(request), "drive", "asset_import", idempotency_key
+            )
             if existing:
                 result = existing.result or {}
                 return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
         batch = start_batch(
+            organization_id_for(request),
             "drive",
             "asset_import",
             idempotency_key,
@@ -1357,7 +1387,11 @@ class DocumentExtractionViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet
     queryset = DocumentExtraction.objects.all()
 
     def get_document(self) -> IntegrationDocument:
-        return get_object_or_404(IntegrationDocument, pk=self.kwargs["document_id"])
+        return get_object_or_404(
+            IntegrationDocument,
+            pk=self.kwargs["document_id"],
+            site__organization_id=organization_id_for(self.request),
+        )
 
     def perform_create(self, serializer):
         serializer.save(document=self.get_document())
@@ -1368,7 +1402,11 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
     serializer_class = ExtractionIngestSerializer
 
     def get_document(self) -> IntegrationDocument:
-        return get_object_or_404(IntegrationDocument, pk=self.kwargs["document_id"])
+        return get_object_or_404(
+            IntegrationDocument,
+            pk=self.kwargs["document_id"],
+            site__organization_id=organization_id_for(self.request),
+        )
 
     def create(self, request, *args, **kwargs):
         document = self.get_document()
@@ -1379,10 +1417,11 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
         extraction = serializer.validated_data["extraction"]
         target = serializer.validated_data["target"]
 
+        organization_id = organization_id_for(request)
         source = "ocr"
         import_type = target
 
-        existing = find_completed_batch(source, import_type, idempotency_key)
+        existing = find_completed_batch(organization_id, source, import_type, idempotency_key)
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
@@ -1404,6 +1443,7 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
                 data = InvoiceSerializer(existing_duplicate).data
                 return Response(data, status=status.HTTP_200_OK)
         batch = start_batch(
+            organization_id,
             source,
             import_type,
             idempotency_key,
@@ -1420,7 +1460,7 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             lines = payload.get("lines") or []
             supplier_id = str(payload.get("supplier") or "").strip()
             _apply_supplier_product_categories(lines, supplier_id)
-            import_serializer = import_serializer_class(data=payload)
+            import_serializer = import_serializer_class(data=payload, context={"request": request})
             import_serializer.is_valid(raise_exception=True)
             instance = import_serializer.save()
             created_lines = getattr(instance, "_created_lines", None)
@@ -1548,7 +1588,11 @@ class DocumentIngestViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 
 class DocumentClaudeExtractView(APIView):
     def post(self, request, document_id):
-        document = get_object_or_404(IntegrationDocument, pk=document_id)
+        document = get_object_or_404(
+            IntegrationDocument,
+            pk=document_id,
+            site__organization_id=organization_id_for(request),
+        )
         serializer = ClaudeExtractSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
 
@@ -1557,14 +1601,16 @@ class DocumentClaudeExtractView(APIView):
             or request.headers.get("Idempotency-Key", "")
             or f"claude-extract:{document.id}"
         )
+        organization_id = organization_id_for(request)
         source = "claude"
         import_type = "document_extraction"
-        existing = find_completed_batch(source, import_type, idempotency_key)
+        existing = find_completed_batch(organization_id, source, import_type, idempotency_key)
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
         batch = start_batch(
+            organization_id,
             source,
             import_type,
             idempotency_key,
@@ -1648,7 +1694,11 @@ def _sync_validated_label_capture_to_traccia(document: IntegrationDocument):
 
 class DocumentReviewView(APIView):
     def post(self, request, document_id):
-        document = get_object_or_404(IntegrationDocument, pk=document_id)
+        document = get_object_or_404(
+            IntegrationDocument,
+            pk=document_id,
+            site__organization_id=organization_id_for(request),
+        )
         serializer = DocumentReviewSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
 
@@ -1686,7 +1736,9 @@ class DocumentReviewView(APIView):
 
 class TraceabilityReconciliationDecisionListCreateView(APIView):
     def get(self, request):
-        queryset = TraceabilityReconciliationDecision.objects.select_related("site", "linked_document", "linked_match").all()
+        queryset = TraceabilityReconciliationDecision.objects.select_related(
+            "site", "linked_document", "linked_match"
+        ).filter(site__organization_id=organization_id_for(request))
         site_id = (request.query_params.get("site") or "").strip()
         if site_id:
             queryset = queryset.filter(site_id=site_id)
@@ -1697,8 +1749,15 @@ class TraceabilityReconciliationDecisionListCreateView(APIView):
         serializer = TraceabilityReconciliationDecisionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
+        site = get_tenant_site(request, pk=validated["site"].id)
+        linked_document = validated.get("linked_document")
+        if linked_document and linked_document.site_id != site.id:
+            raise ValidationError({"linked_document": "linked document not found."})
+        linked_match = validated.get("linked_match")
+        if linked_match and linked_match.invoice_line.invoice.site_id != site.id:
+            raise ValidationError({"linked_match": "linked match not found."})
         decision, _created = TraceabilityReconciliationDecision.objects.update_or_create(
-            site=validated["site"],
+            site=site,
             event_id=validated["event_id"],
             defaults={
                 "decision_status": validated["decision_status"],
@@ -1719,7 +1778,8 @@ class TraceabilityReconciliationDecisionListCreateView(APIView):
                 {"detail": "site and event_id query parameters are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        deleted, _ = TraceabilityReconciliationDecision.objects.filter(site_id=site_id, event_id=event_id).delete()
+        site = get_tenant_site(request, pk=site_id)
+        deleted, _ = TraceabilityReconciliationDecision.objects.filter(site=site, event_id=event_id).delete()
         if deleted == 0:
             return Response({"detail": "decision not found."}, status=status.HTTP_404_NOT_FOUND)
         _delete_traceability_lot_allocation(event_id)
@@ -1734,12 +1794,22 @@ class FicheRecipeTitleListView(APIView):
         except ValueError:
             limit = 30
 
-        titles = fetch_recipe_titles(query=query, limit=limit)
+        titles = fetch_recipe_titles(
+            organization_id=organization_id_for(request),
+            query=query,
+            limit=limit,
+        )
         return Response({"results": titles})
 
 
 class FicheSnapshotImportView(APIView):
     def post(self, request):
+        organization_id = organization_id_for(request)
+        if str(organization_id) != str(settings.DEFAULT_ORGANIZATION_ID):
+            return Response(
+                {"detail": "Direct Fiches synchronization is not configured for this organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = FicheSnapshotImportSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
 
@@ -1752,19 +1822,25 @@ class FicheSnapshotImportView(APIView):
             or f"fiches-snapshots:{query}:{limit}"
         )
 
-        existing = find_completed_batch("fiches", "recipe_snapshot", idempotency_key)
+        existing = find_completed_batch(organization_id, "fiches", "recipe_snapshot", idempotency_key)
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
         batch = start_batch(
+            organization_id,
             "fiches",
             "recipe_snapshot",
             idempotency_key,
             {"query": query, "limit": limit},
         )
         try:
-            result = import_recipe_snapshots(query=query, limit=limit, refresh_existing=refresh_existing)
+            result = import_recipe_snapshots(
+                organization_id=organization_id,
+                query=query,
+                limit=limit,
+                refresh_existing=refresh_existing,
+            )
             if not result.get("ok"):
                 fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
                 return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)
@@ -1802,19 +1878,27 @@ class FicheSnapshotEnvelopeImportView(APIView):
             or f"fiches-snapshots-envelope:{exported_at}:{fiches_count}"
         )
 
-        existing = find_completed_batch("fiches", "recipe_snapshot_envelope", idempotency_key)
+        organization_id = organization_id_for(request)
+        existing = find_completed_batch(
+            organization_id, "fiches", "recipe_snapshot_envelope", idempotency_key
+        )
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
         batch = start_batch(
+            organization_id,
             "fiches",
             "recipe_snapshot_envelope",
             idempotency_key,
             {"exported_at": exported_at, "fiches_count": fiches_count},
         )
         try:
-            result = import_recipe_snapshots_from_v11_envelope(envelope, refresh_existing=refresh_existing)
+            result = import_recipe_snapshots_from_v11_envelope(
+                envelope,
+                organization_id=organization_id,
+                refresh_existing=refresh_existing,
+            )
             if not result.get("ok"):
                 fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
                 return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)
@@ -1827,6 +1911,12 @@ class FicheSnapshotEnvelopeImportView(APIView):
 
 class FicheCatalogImportView(APIView):
     def post(self, request):
+        organization_id = organization_id_for(request)
+        if str(organization_id) != str(settings.DEFAULT_ORGANIZATION_ID):
+            return Response(
+                {"detail": "Direct Fiches synchronization is not configured for this organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = FicheCatalogImportSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
 
@@ -1835,19 +1925,20 @@ class FicheCatalogImportView(APIView):
             or request.headers.get("Idempotency-Key", "")
             or "fiches-catalog"
         )
-        existing = find_completed_batch("fiches", "supplier_catalog", idempotency_key)
+        existing = find_completed_batch(organization_id, "fiches", "supplier_catalog", idempotency_key)
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
         batch = start_batch(
+            organization_id,
             "fiches",
             "supplier_catalog",
             idempotency_key,
             {},
         )
         try:
-            result = import_supplier_catalog_from_fiches()
+            result = import_supplier_catalog_from_fiches(organization_id=organization_id)
             if not result.get("ok"):
                 fail_batch(batch, status.HTTP_400_BAD_REQUEST, {"detail": result.get("detail", "Import failed")})
                 return Response({"detail": result.get("detail", "Import failed")}, status=status.HTTP_400_BAD_REQUEST)

@@ -9,11 +9,12 @@ def normalize_payload(data):
     return json.loads(json.dumps(data, default=str))
 
 
-def find_completed_batch(source: str, import_type: str, idempotency_key: str):
+def find_completed_batch(organization_id, source: str, import_type: str, idempotency_key: str):
     if not idempotency_key:
         return None
     return (
         IntegrationImportBatch.objects.filter(
+            organization_id=organization_id,
             source=source,
             import_type=import_type,
             idempotency_key=idempotency_key,
@@ -24,8 +25,9 @@ def find_completed_batch(source: str, import_type: str, idempotency_key: str):
     )
 
 
-def start_batch(source: str, import_type: str, idempotency_key: str, payload):
+def start_batch(organization_id, source: str, import_type: str, idempotency_key: str, payload):
     return IntegrationImportBatch.objects.create(
+        organization_id=organization_id,
         source=source,
         import_type=import_type,
         idempotency_key=idempotency_key or None,

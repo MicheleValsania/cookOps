@@ -52,11 +52,14 @@ def _to_decimal_or_none(value: object):
         return None
 
 
-def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, object]]:
+def fetch_recipe_titles(organization_id, query: str = "", limit: int = 30) -> list[dict[str, object]]:
     limit = max(1, min(limit, 2000))
     query = query.strip()
 
-    if "fiches" in connections.databases:
+    if (
+        str(organization_id) == str(settings.DEFAULT_ORGANIZATION_ID)
+        and "fiches" in connections.databases
+    ):
         table_name = _safe_identifier(getattr(settings, "FICHES_RECIPE_TABLE", "public.recipes"), "public.recipes")
         id_col = _safe_identifier(getattr(settings, "FICHES_RECIPE_ID_COLUMN", "id"), "id")
         title_col = _safe_identifier(getattr(settings, "FICHES_RECIPE_TITLE_COLUMN", "title"), "title")
@@ -97,7 +100,9 @@ def fetch_recipe_titles(query: str = "", limit: int = 30) -> list[dict[str, obje
             # Fallback to local snapshots when fiches DB is unavailable in current env/test.
             pass
 
-    queryset = RecipeSnapshot.objects.values("fiche_product_id", "title", "portions", "category")
+    queryset = RecipeSnapshot.objects.filter(organization_id=organization_id).values(
+        "fiche_product_id", "title", "portions", "category"
+    )
     if query:
         queryset = queryset.filter(title__icontains=query)
     titles = queryset.order_by("title").distinct()[:limit]

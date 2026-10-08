@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integration.models import DocumentType, IntegrationDocument
+from apps.core.api.tenancy import get_tenant_site
 from apps.integration.api.v1.serializers import (
     HaccpColdPointSerializer,
     HaccpLabelProfileSerializer,
@@ -26,6 +27,10 @@ def _pass_through_headers(request: HttpRequest):
 
 def _proxy_error(exc: TracciaClientError):
     return Response(exc.payload, status=exc.status_code)
+
+
+def _validate_tenant_site(request, site_id):
+    return get_tenant_site(request, pk=site_id)
 
 
 def _payload_results(payload):
@@ -136,6 +141,7 @@ class HaccpTracciaReconciliationOverviewView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         limit = (request.query_params.get("limit") or "120").strip()
 
         try:
@@ -394,6 +400,7 @@ class HaccpOcrQueueView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         limit = (request.query_params.get("limit") or "100").strip()
         try:
             client = TracciaClient()
@@ -412,6 +419,10 @@ class HaccpOcrValidateView(APIView):
     def post(self, request, document_id):
         serializer = HaccpOcrValidationSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
+        site_id = str(request.data.get("site") or request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -430,6 +441,7 @@ class HaccpLifecycleEventListView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         limit = (request.query_params.get("limit") or "200").strip()
         try:
             client = TracciaClient()
@@ -449,6 +461,7 @@ class HaccpSectorListView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -466,6 +479,10 @@ class HaccpSectorDetailView(APIView):
     def patch(self, request, sector_id):
         serializer = HaccpSectorSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        site_id = str(serializer.validated_data.get("site") or request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -479,6 +496,10 @@ class HaccpSectorDetailView(APIView):
             return _proxy_error(exc)
 
     def delete(self, request, sector_id):
+        site_id = str(request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -493,6 +514,14 @@ class HaccpSectorDetailView(APIView):
 
 class HaccpSiteSyncView(APIView):
     def post(self, request):
+        rows = request.data.get("sites") if isinstance(request.data, dict) else None
+        if not isinstance(rows, list) or not rows:
+            return Response({"detail": "sites is required."}, status=status.HTTP_400_BAD_REQUEST)
+        for row in rows:
+            site_id = str((row or {}).get("external_id") or (row or {}).get("external_site_id") or "").strip()
+            if not site_id:
+                return Response({"detail": "site external_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+            _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -511,6 +540,7 @@ class HaccpColdPointListView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         sector_id = (request.query_params.get("sector") or "").strip()
         try:
             client = TracciaClient()
@@ -529,6 +559,10 @@ class HaccpColdPointDetailView(APIView):
     def patch(self, request, point_id):
         serializer = HaccpColdPointSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        site_id = str(serializer.validated_data.get("site") or request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -542,6 +576,10 @@ class HaccpColdPointDetailView(APIView):
             return _proxy_error(exc)
 
     def delete(self, request, point_id):
+        site_id = str(request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -559,6 +597,7 @@ class HaccpTemperatureReadingListView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -579,6 +618,10 @@ class HaccpTemperatureReadingListView(APIView):
 
 class HaccpSectorSyncView(APIView):
     def post(self, request):
+        site_id = str(request.data.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -594,6 +637,10 @@ class HaccpSectorSyncView(APIView):
 
 class HaccpColdPointSyncView(APIView):
     def post(self, request):
+        site_id = str(request.data.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -610,6 +657,9 @@ class HaccpColdPointSyncView(APIView):
 class HaccpScheduleListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         task_type = (request.query_params.get("task_type") or "").strip()
         try:
             client = TracciaClient()
@@ -626,6 +676,7 @@ class HaccpScheduleListCreateView(APIView):
     def post(self, request):
         serializer = HaccpScheduleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        _validate_tenant_site(request, serializer.validated_data["site"])
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -643,6 +694,10 @@ class HaccpScheduleDetailView(APIView):
     def patch(self, request, schedule_id):
         serializer = HaccpScheduleSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        site_id = str(serializer.validated_data.get("site") or request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -659,6 +714,9 @@ class HaccpScheduleDetailView(APIView):
 class HaccpLabelProfileListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -674,6 +732,7 @@ class HaccpLabelProfileListCreateView(APIView):
     def post(self, request):
         serializer = HaccpLabelProfileSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        _validate_tenant_site(request, serializer.validated_data["site"])
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -691,6 +750,10 @@ class HaccpLabelProfileDetailView(APIView):
     def patch(self, request, profile_id):
         serializer = HaccpLabelProfileSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        site_id = str(serializer.validated_data.get("site") or request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -704,6 +767,10 @@ class HaccpLabelProfileDetailView(APIView):
             return _proxy_error(exc)
 
     def delete(self, request, profile_id):
+        site_id = str(request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -719,6 +786,9 @@ class HaccpLabelProfileDetailView(APIView):
 class HaccpLabelSessionListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
+        if not site_id:
+            return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        _validate_tenant_site(request, site_id)
         try:
             client = TracciaClient()
             code, payload = client.request_json(
@@ -734,6 +804,7 @@ class HaccpLabelSessionListCreateView(APIView):
     def post(self, request):
         serializer = HaccpLabelSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        _validate_tenant_site(request, serializer.validated_data["site"])
         try:
             client = TracciaClient()
             code, payload = client.request_json(

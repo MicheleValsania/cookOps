@@ -145,7 +145,10 @@ class ServiceMenuEntrySyncView(APIView):
     def _resolve_recipe_category_for_entry(entry: ServiceMenuEntry) -> str:
         if entry.fiche_product_id:
             snap = (
-                RecipeSnapshot.objects.filter(fiche_product_id=entry.fiche_product_id)
+                RecipeSnapshot.objects.filter(
+                    organization_id=entry.site.organization_id,
+                    fiche_product_id=entry.fiche_product_id,
+                )
                 .order_by("-source_updated_at", "-created_at")
                 .first()
             )
@@ -154,10 +157,11 @@ class ServiceMenuEntrySyncView(APIView):
         title = (entry.title or "").strip()
         if not title:
             return ""
-        snap = RecipeSnapshot.objects.filter(title__iexact=title).order_by("-source_updated_at", "-created_at").first()
+        snapshots = RecipeSnapshot.objects.filter(organization_id=entry.site.organization_id)
+        snap = snapshots.filter(title__iexact=title).order_by("-source_updated_at", "-created_at").first()
         if snap and snap.category:
             return str(snap.category).strip()
-        snap = RecipeSnapshot.objects.filter(title__icontains=title).order_by("-source_updated_at", "-created_at").first()
+        snap = snapshots.filter(title__icontains=title).order_by("-source_updated_at", "-created_at").first()
         if snap and snap.category:
             return str(snap.category).strip()
         return ""
@@ -467,7 +471,10 @@ class ServiceIngredientsView(APIView):
     def _resolve_snapshot_for_entry(entry: ServiceMenuEntry):
         if entry.fiche_product_id:
             snapshot = (
-                RecipeSnapshot.objects.filter(fiche_product_id=entry.fiche_product_id)
+                RecipeSnapshot.objects.filter(
+                    organization_id=entry.site.organization_id,
+                    fiche_product_id=entry.fiche_product_id,
+                )
                 .order_by("-source_updated_at", "-created_at")
                 .first()
             )
@@ -477,17 +484,25 @@ class ServiceIngredientsView(APIView):
         title = (entry.title or "").strip()
         if not title:
             return None
-        snapshot = RecipeSnapshot.objects.filter(title__iexact=title).order_by("-source_updated_at", "-created_at").first()
+        snapshots = RecipeSnapshot.objects.filter(organization_id=entry.site.organization_id)
+        snapshot = snapshots.filter(title__iexact=title).order_by("-source_updated_at", "-created_at").first()
         if snapshot:
             return snapshot
-        return RecipeSnapshot.objects.filter(title__icontains=title).order_by("-source_updated_at", "-created_at").first()
+        return snapshots.filter(title__icontains=title).order_by("-source_updated_at", "-created_at").first()
 
     @staticmethod
-    def _resolve_snapshot_for_ingredient_title(title: str):
+    def _resolve_snapshot_for_ingredient_title(title: str, organization_id):
         cleaned = (title or "").strip()
         if not cleaned:
             return None
-        return RecipeSnapshot.objects.filter(title__iexact=cleaned).order_by("-source_updated_at", "-created_at").first()
+        return (
+            RecipeSnapshot.objects.filter(
+                organization_id=organization_id,
+                title__iexact=cleaned,
+            )
+            .order_by("-source_updated_at", "-created_at")
+            .first()
+        )
 
     @staticmethod
     def _parse_iso_date(raw_value):
@@ -629,7 +644,10 @@ class ServiceIngredientsView(APIView):
             supplier = ing.get("supplier") or "Senza fornitore"
             supplier_code = (ing.get("supplier_code") or "").strip()
 
-            nested_snapshot = self._resolve_snapshot_for_ingredient_title(ingredient_name)
+            nested_snapshot = self._resolve_snapshot_for_ingredient_title(
+                ingredient_name,
+                snapshot.organization_id,
+            )
             nested_key = ""
             if nested_snapshot:
                 nested_key = str(nested_snapshot.fiche_product_id).lower()

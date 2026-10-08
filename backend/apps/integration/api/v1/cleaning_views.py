@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.core.models import Site
+from apps.core.api.tenancy import get_tenant_site, organization_id_for
 from apps.integration.api.v1.serializers import (
     CleaningBatchCompleteSerializer,
     CleaningCategorySerializer,
@@ -103,34 +103,46 @@ def _generate_due_dates(*, start_date: date, cadence: str, horizon_days: int) ->
 
 class CleaningCategoryListCreateView(APIView):
     def get(self, request):
-        categories = CleaningCategory.objects.all().order_by("name")
+        categories = CleaningCategory.objects.filter(
+            organization_id=organization_id_for(request)
+        ).order_by("name")
         serializer = CleaningCategorySerializer(categories, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
         serializer = CleaningCategorySerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
-        category = serializer.save()
+        category = serializer.save(organization_id=organization_id_for(request))
         return Response(CleaningCategorySerializer(category).data, status=status.HTTP_201_CREATED)
 
 
 class CleaningCategoryDetailView(APIView):
     def patch(self, request, category_id):
-        category = get_object_or_404(CleaningCategory, pk=category_id)
+        category = get_object_or_404(
+            CleaningCategory,
+            pk=category_id,
+            organization_id=organization_id_for(request),
+        )
         serializer = CleaningCategorySerializer(category, data=request.data or {}, partial=True)
         serializer.is_valid(raise_exception=True)
         category = serializer.save()
         return Response(CleaningCategorySerializer(category).data, status=status.HTTP_200_OK)
 
     def delete(self, request, category_id):
-        category = get_object_or_404(CleaningCategory, pk=category_id)
+        category = get_object_or_404(
+            CleaningCategory,
+            pk=category_id,
+            organization_id=organization_id_for(request),
+        )
         category.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class CleaningProcedureListCreateView(APIView):
     def get(self, request):
-        qs = CleaningProcedure.objects.all().order_by("name")
+        qs = CleaningProcedure.objects.filter(
+            organization_id=organization_id_for(request)
+        ).order_by("name")
         category = (request.query_params.get("category") or "").strip()
         if category:
             qs = qs.filter(category_id=category)
@@ -138,22 +150,35 @@ class CleaningProcedureListCreateView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = CleaningProcedureSerializer(data=request.data or {})
+        serializer = CleaningProcedureSerializer(data=request.data or {}, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        procedure = serializer.save()
+        category = serializer.validated_data.get("category")
+        if category and category.organization_id != organization_id_for(request):
+            return Response({"detail": "category not found."}, status=status.HTTP_404_NOT_FOUND)
+        procedure = serializer.save(organization_id=organization_id_for(request))
         return Response(CleaningProcedureSerializer(procedure).data, status=status.HTTP_201_CREATED)
 
 
 class CleaningProcedureDetailView(APIView):
     def patch(self, request, procedure_id):
-        procedure = get_object_or_404(CleaningProcedure, pk=procedure_id)
-        serializer = CleaningProcedureSerializer(procedure, data=request.data or {}, partial=True)
+        procedure = get_object_or_404(
+            CleaningProcedure,
+            pk=procedure_id,
+            organization_id=organization_id_for(request),
+        )
+        serializer = CleaningProcedureSerializer(
+            procedure, data=request.data or {}, partial=True, context={"request": request}
+        )
         serializer.is_valid(raise_exception=True)
         procedure = serializer.save()
         return Response(CleaningProcedureSerializer(procedure).data, status=status.HTTP_200_OK)
 
     def delete(self, request, procedure_id):
-        procedure = get_object_or_404(CleaningProcedure, pk=procedure_id)
+        procedure = get_object_or_404(
+            CleaningProcedure,
+            pk=procedure_id,
+            organization_id=organization_id_for(request),
+        )
         procedure.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -161,14 +186,16 @@ class CleaningProcedureDetailView(APIView):
 class CleaningElementListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
-        qs = CleaningElement.objects.select_related("category", "procedure").prefetch_related("areas").order_by("name")
+        qs = CleaningElement.objects.select_related("category", "procedure").prefetch_related("areas").filter(
+            site__organization_id=organization_id_for(request)
+        ).order_by("name")
         if site_id:
             qs = qs.filter(site_id=site_id)
         serializer = CleaningElementSerializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = CleaningElementSerializer(data=request.data or {})
+        serializer = CleaningElementSerializer(data=request.data or {}, context={"request": request})
         serializer.is_valid(raise_exception=True)
         element = serializer.save()
         return Response(CleaningElementSerializer(element).data, status=status.HTTP_201_CREATED)
@@ -176,14 +203,24 @@ class CleaningElementListCreateView(APIView):
 
 class CleaningElementDetailView(APIView):
     def patch(self, request, element_id):
-        element = get_object_or_404(CleaningElement, pk=element_id)
-        serializer = CleaningElementSerializer(element, data=request.data or {}, partial=True)
+        element = get_object_or_404(
+            CleaningElement,
+            pk=element_id,
+            site__organization_id=organization_id_for(request),
+        )
+        serializer = CleaningElementSerializer(
+            element, data=request.data or {}, partial=True, context={"request": request}
+        )
         serializer.is_valid(raise_exception=True)
         element = serializer.save()
         return Response(CleaningElementSerializer(element).data, status=status.HTTP_200_OK)
 
     def delete(self, request, element_id):
-        element = get_object_or_404(CleaningElement, pk=element_id)
+        element = get_object_or_404(
+            CleaningElement,
+            pk=element_id,
+            site__organization_id=organization_id_for(request),
+        )
         element.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -191,14 +228,16 @@ class CleaningElementDetailView(APIView):
 class CleaningPlanListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
-        qs = CleaningPlan.objects.select_related("element").order_by("-created_at")
+        qs = CleaningPlan.objects.select_related("element").filter(
+            site__organization_id=organization_id_for(request)
+        ).order_by("-created_at")
         if site_id:
             qs = qs.filter(site_id=site_id)
         serializer = CleaningPlanSerializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = CleaningPlanSerializer(data=request.data or {})
+        serializer = CleaningPlanSerializer(data=request.data or {}, context={"request": request})
         serializer.is_valid(raise_exception=True)
         plan = serializer.save()
         return Response(CleaningPlanSerializer(plan).data, status=status.HTTP_201_CREATED)
@@ -206,14 +245,24 @@ class CleaningPlanListCreateView(APIView):
 
 class CleaningPlanDetailView(APIView):
     def patch(self, request, plan_id):
-        plan = get_object_or_404(CleaningPlan, pk=plan_id)
-        serializer = CleaningPlanSerializer(plan, data=request.data or {}, partial=True)
+        plan = get_object_or_404(
+            CleaningPlan,
+            pk=plan_id,
+            site__organization_id=organization_id_for(request),
+        )
+        serializer = CleaningPlanSerializer(
+            plan, data=request.data or {}, partial=True, context={"request": request}
+        )
         serializer.is_valid(raise_exception=True)
         plan = serializer.save()
         return Response(CleaningPlanSerializer(plan).data, status=status.HTTP_200_OK)
 
     def delete(self, request, plan_id):
-        plan = get_object_or_404(CleaningPlan, pk=plan_id)
+        plan = get_object_or_404(
+            CleaningPlan,
+            pk=plan_id,
+            site__organization_id=organization_id_for(request),
+        )
         plan.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -222,7 +271,11 @@ class CleaningPlanGenerateView(APIView):
     def post(self, request):
         serializer = CleaningPlanGenerateSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
-        plan = get_object_or_404(CleaningPlan.objects.select_related("element", "element__category", "element__procedure", "site"), pk=serializer.validated_data["plan_id"])
+        plan = get_object_or_404(
+            CleaningPlan.objects.select_related("element", "element__category", "element__procedure", "site"),
+            pk=serializer.validated_data["plan_id"],
+            site__organization_id=organization_id_for(request),
+        )
         horizon_days = serializer.validated_data["horizon_days"]
 
         if plan.cadence == CleaningCadence.AFTER_USE:
@@ -320,6 +373,7 @@ class CleaningBatchCompleteView(APIView):
     def post(self, request):
         serializer = CleaningBatchCompleteSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
+        get_tenant_site(request, pk=serializer.validated_data["site"])
         schedule_ids: Iterable[str] = serializer.validated_data["schedule_ids"]
         client = TracciaClient()
         completed = 0

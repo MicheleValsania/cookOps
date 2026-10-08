@@ -132,7 +132,9 @@ def _map_fiche_to_v11_export(fiche: dict[str, Any], fallback_summary: dict[str, 
     }
 
 
-def import_recipe_snapshots_from_api(query: str = "", limit: int = 500, refresh_existing: bool = False) -> dict[str, Any]:
+def import_recipe_snapshots_from_api(
+    organization_id, query: str = "", limit: int = 500, refresh_existing: bool = False
+) -> dict[str, Any]:
     base_url = getattr(settings, "FICHES_API_BASE_URL", "").strip().rstrip("/")
     if not base_url:
         return {"ok": False, "detail": "FICHES API non configurata."}
@@ -180,7 +182,11 @@ def import_recipe_snapshots_from_api(query: str = "", limit: int = 500, refresh_
         "fiches": fiches_export,
         "warnings": [],
     }
-    return import_recipe_snapshots_from_v11_envelope(envelope, refresh_existing=refresh_existing)
+    return import_recipe_snapshots_from_v11_envelope(
+        envelope,
+        organization_id=organization_id,
+        refresh_existing=refresh_existing,
+    )
 
 
 def _enrich_payload_supplier_codes(payload: dict[str, Any]) -> dict[str, Any]:
@@ -264,7 +270,7 @@ def _enrich_payload_supplier_codes(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def import_recipe_snapshots_from_v11_envelope(
-    envelope: dict[str, Any], refresh_existing: bool = False
+    envelope: dict[str, Any], organization_id, refresh_existing: bool = False
 ) -> dict[str, Any]:
     export_version = str(envelope.get("export_version") or "").strip()
     if export_version != "1.1":
@@ -307,6 +313,7 @@ def import_recipe_snapshots_from_v11_envelope(
         portions = _to_decimal(fiche.get("portions"))
 
         snapshot, was_created = RecipeSnapshot.objects.get_or_create(
+            organization_id=organization_id,
             fiche_product_id=fiche_id,
             snapshot_hash=snapshot_hash,
             defaults={
@@ -360,9 +367,16 @@ def import_recipe_snapshots_from_v11_envelope(
     }
 
 
-def import_recipe_snapshots(query: str = "", limit: int = 500, refresh_existing: bool = False) -> dict[str, Any]:
+def import_recipe_snapshots(
+    organization_id, query: str = "", limit: int = 500, refresh_existing: bool = False
+) -> dict[str, Any]:
     if getattr(settings, "FICHES_API_BASE_URL", "").strip():
-        return import_recipe_snapshots_from_api(query=query, limit=limit, refresh_existing=refresh_existing)
+        return import_recipe_snapshots_from_api(
+            organization_id=organization_id,
+            query=query,
+            limit=limit,
+            refresh_existing=refresh_existing,
+        )
 
     if "fiches" not in connections.databases:
         return {"ok": False, "detail": "FICHES DB non configurato."}
@@ -428,6 +442,7 @@ def import_recipe_snapshots(query: str = "", limit: int = 500, refresh_existing:
             source_updated_at = updated_at if not isinstance(updated_at, str) else parse_datetime(updated_at)
 
         snapshot, was_created = RecipeSnapshot.objects.get_or_create(
+            organization_id=organization_id,
             fiche_product_id=fiche_id,
             snapshot_hash=snapshot_hash,
             defaults={

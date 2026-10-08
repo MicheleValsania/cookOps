@@ -3452,7 +3452,7 @@ function App() {
     if (!scheduleIds.length) return;
     const res = await apiFetch("/haccp/cleaning/schedules/complete/", {
       method: "POST",
-      body: JSON.stringify({ schedule_ids: scheduleIds }),
+      body: JSON.stringify({ site: siteId, schedule_ids: scheduleIds }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
@@ -3641,7 +3641,7 @@ function App() {
     }
     setIsHaccpSaving(true);
     try {
-      const res = await apiFetch(`/haccp/traccia/sectors/${targetId}/`, { method: "DELETE" });
+      const res = await apiFetch(`/haccp/traccia/sectors/${targetId}/?site=${encodeURIComponent(siteId)}`, { method: "DELETE" });
       const body = res.status === 204 ? {} : await res.json();
       if (!res.ok) {
         setNotice(errorWithDetail("error.siteCreate", (body as Record<string, unknown>).detail ?? JSON.stringify(body)));
@@ -3748,7 +3748,7 @@ function App() {
     }
     setIsHaccpSaving(true);
     try {
-      const res = await apiFetch(`/haccp/traccia/cold-points/${targetId}/`, { method: "DELETE" });
+      const res = await apiFetch(`/haccp/traccia/cold-points/${targetId}/?site=${encodeURIComponent(siteId)}`, { method: "DELETE" });
       const body = res.status === 204 ? {} : await res.json();
       if (!res.ok) {
         setNotice(errorWithDetail("error.siteCreate", (body as Record<string, unknown>).detail ?? JSON.stringify(body)));
@@ -4019,7 +4019,7 @@ function App() {
       return;
     }
     try {
-      const res = await apiFetch(editingLabelProfileId ? `/haccp/label-profiles/${editingLabelProfileId}/` : "/haccp/label-profiles/", {
+      const res = await apiFetch(editingLabelProfileId ? `/haccp/label-profiles/${editingLabelProfileId}/?site=${encodeURIComponent(siteId)}` : "/haccp/label-profiles/", {
         method: editingLabelProfileId ? "PATCH" : "POST",
         body: JSON.stringify({
           site: siteId,
@@ -4077,7 +4077,7 @@ function App() {
     }
     setIsHaccpSaving(true);
     try {
-      const res = await apiFetch(`/haccp/label-profiles/${profileId}/`, { method: "DELETE" });
+      const res = await apiFetch(`/haccp/label-profiles/${profileId}/?site=${encodeURIComponent(siteId)}`, { method: "DELETE" });
       const body = res.status === 204 ? {} : await res.json();
       if (!res.ok) {
         setNotice(errorWithDetail("error.siteCreate", (body as Record<string, unknown>).detail ?? JSON.stringify(body)));
@@ -4155,7 +4155,7 @@ function App() {
   async function onSetHaccpScheduleStatus(scheduleId: string, statusValue: "planned" | "done" | "skipped" | "cancelled") {
     if (!siteId) return;
     try {
-      const res = await apiFetch(`/haccp/schedules/${scheduleId}/`, {
+      const res = await apiFetch(`/haccp/schedules/${scheduleId}/?site=${encodeURIComponent(siteId)}`, {
         method: "PATCH",
         body: JSON.stringify({ status: statusValue }),
       });
@@ -4174,7 +4174,7 @@ function App() {
   async function onDeleteHaccpSchedule(scheduleId: string) {
     if (!siteId) return;
     try {
-      const res = await apiFetch(`/haccp/schedules/${scheduleId}/`, {
+      const res = await apiFetch(`/haccp/schedules/${scheduleId}/?site=${encodeURIComponent(siteId)}`, {
         method: "DELETE",
       });
       if (!res.ok) {

@@ -30,7 +30,7 @@ from apps.inventory.models import (
     MovementType,
     StockPoint,
 )
-from apps.core.models import Site
+from apps.core.api.tenancy import get_tenant_site, organization_id_for
 from apps.purchasing.models import GoodsReceipt, GoodsReceiptLine, Invoice, InvoiceLine
 
 
@@ -39,7 +39,10 @@ class InventoryMovementViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     queryset = InventoryMovement.objects.select_related("supplier_product", "lot").all()
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        organization_id = organization_id_for(self.request)
+        queryset = super().get_queryset().filter(
+            Q(site__organization_id=organization_id) | Q(lot__site__organization_id=organization_id)
+        )
         site_id = (self.request.query_params.get("site") or "").strip()
         if site_id:
             queryset = queryset.filter(Q(site_id=site_id) | Q(lot__site_id=site_id))
@@ -107,6 +110,7 @@ class InventoryStockSummaryView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        get_tenant_site(request, pk=site_id)
 
         movements = list(
             InventoryMovement.objects.select_related("supplier_product", "supplier_product__supplier")
@@ -225,7 +229,9 @@ class InventoryStockSummaryView(APIView):
 class InventorySectorListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
-        queryset = InventorySector.objects.select_related("site").all()
+        queryset = InventorySector.objects.select_related("site").filter(
+            site__organization_id=organization_id_for(request)
+        )
         if site_id:
             queryset = queryset.filter(site_id=site_id)
         return Response(InventorySectorSerializer(queryset.order_by("sort_order", "name"), many=True).data)
@@ -233,7 +239,7 @@ class InventorySectorListCreateView(APIView):
     def post(self, request):
         serializer = InventorySectorSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
-        site = get_object_or_404(Site, pk=serializer.validated_data["site"].id)
+        site = get_tenant_site(request, pk=serializer.validated_data["site"].id)
         sector = InventorySector.objects.create(
             site=site,
             name=str(serializer.validated_data["name"]).strip(),
@@ -246,7 +252,11 @@ class InventorySectorListCreateView(APIView):
 
 class InventorySectorDetailView(APIView):
     def patch(self, request, sector_id):
-        sector = get_object_or_404(InventorySector, pk=sector_id)
+        sector = get_object_or_404(
+            InventorySector,
+            pk=sector_id,
+            site__organization_id=organization_id_for(request),
+        )
         serializer = InventorySectorSerializer(sector, data=request.data or {}, partial=True)
         serializer.is_valid(raise_exception=True)
         for field in ("name", "sort_order", "is_active"):
@@ -262,7 +272,9 @@ class StockPointListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
         sector_id = (request.query_params.get("sector") or "").strip()
-        queryset = StockPoint.objects.select_related("site", "sector").all()
+        queryset = StockPoint.objects.select_related("site", "sector").filter(
+            site__organization_id=organization_id_for(request)
+        )
         if site_id:
             queryset = queryset.filter(site_id=site_id)
         if sector_id:
@@ -272,7 +284,7 @@ class StockPointListCreateView(APIView):
     def post(self, request):
         serializer = StockPointSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
-        site = get_object_or_404(Site, pk=serializer.validated_data["site"].id)
+        site = get_tenant_site(request, pk=serializer.validated_data["site"].id)
         sector = get_object_or_404(InventorySector, pk=serializer.validated_data["sector"].id, site=site)
         point = StockPoint.objects.create(
             site=site,
@@ -288,7 +300,11 @@ class StockPointListCreateView(APIView):
 
 class StockPointDetailView(APIView):
     def patch(self, request, point_id):
-        point = get_object_or_404(StockPoint.objects.select_related("site"), pk=point_id)
+        point = get_object_or_404(
+            StockPoint.objects.select_related("site"),
+            pk=point_id,
+            site__organization_id=organization_id_for(request),
+        )
         serializer = StockPointSerializer(point, data=request.data or {}, partial=True)
         serializer.is_valid(raise_exception=True)
         if "sector" in serializer.validated_data:
@@ -309,6 +325,7 @@ class InventoryProductSearchView(APIView):
         site_id = (request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        get_tenant_site(request, pk=site_id)
         q = str(request.query_params.get("q") or "").strip()
         supplier_id = str(request.query_params.get("supplier") or "").strip()
         category = str(request.query_params.get("category") or "").strip()
@@ -316,7 +333,9 @@ class InventoryProductSearchView(APIView):
         only_stocked = str(request.query_params.get("only_stocked") or "0").strip().lower() in {"1", "true", "yes"}
 
         stock_map = _current_stock_map_for_site(site_id)
-        queryset = SupplierProduct.objects.select_related("supplier").all()
+        queryset = SupplierProduct.objects.select_related("supplier").filter(
+            supplier__organization_id=organization_id_for(request)
+        )
         if active_only:
             queryset = queryset.filter(active=True)
         if supplier_id:
@@ -361,7 +380,9 @@ class InventorySessionListCreateView(APIView):
     def get(self, request):
         site_id = (request.query_params.get("site") or "").strip()
         status_filter = (request.query_params.get("status") or "").strip()
-        queryset = InventorySession.objects.select_related("site", "sector").all()
+        queryset = InventorySession.objects.select_related("site", "sector").filter(
+            site__organization_id=organization_id_for(request)
+        )
         if site_id:
             queryset = queryset.filter(site_id=site_id)
         if status_filter:
@@ -371,7 +392,7 @@ class InventorySessionListCreateView(APIView):
     def post(self, request):
         serializer = InventorySessionSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
-        site = get_object_or_404(Site, pk=serializer.validated_data["site"].id)
+        site = get_tenant_site(request, pk=serializer.validated_data["site"].id)
         sector = None
         if serializer.validated_data.get("sector"):
             sector = get_object_or_404(InventorySector, pk=serializer.validated_data["sector"].id, site=site)
@@ -393,11 +414,16 @@ class InventorySessionDetailView(APIView):
         session = get_object_or_404(
             InventorySession.objects.select_related("site", "sector").prefetch_related("lines__supplier_product__supplier", "lines__stock_point"),
             pk=session_id,
+            site__organization_id=organization_id_for(request),
         )
         return Response(InventorySessionDetailSerializer(session).data)
 
     def patch(self, request, session_id):
-        session = get_object_or_404(InventorySession.objects.select_related("site", "sector"), pk=session_id)
+        session = get_object_or_404(
+            InventorySession.objects.select_related("site", "sector"),
+            pk=session_id,
+            site__organization_id=organization_id_for(request),
+        )
         if session.status == InventorySessionStatus.CLOSED:
             return Response({"detail": "closed session is not editable."}, status=status.HTTP_400_BAD_REQUEST)
         serializer = InventorySessionSerializer(session, data=request.data or {}, partial=True)
@@ -423,11 +449,13 @@ class InventorySessionDetailView(APIView):
         session = get_object_or_404(
             InventorySession.objects.select_for_update().select_related("site", "sector"),
             pk=session_id,
+            site__organization_id=organization_id_for(request),
         )
         if session.status == InventorySessionStatus.CLOSED:
             InventoryMovement.objects.filter(
                 ref_type="inventory_session_close",
                 ref_id=str(session.id),
+                site=session.site,
             ).delete()
         session.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -435,7 +463,11 @@ class InventorySessionDetailView(APIView):
 
 class InventorySessionLinesBulkUpsertView(APIView):
     def post(self, request, session_id):
-        session = get_object_or_404(InventorySession.objects.select_related("site", "sector"), pk=session_id)
+        session = get_object_or_404(
+            InventorySession.objects.select_related("site", "sector"),
+            pk=session_id,
+            site__organization_id=organization_id_for(request),
+        )
         if session.status in {InventorySessionStatus.CLOSED, InventorySessionStatus.CANCELLED}:
             return Response({"detail": "session is not editable."}, status=status.HTTP_400_BAD_REQUEST)
         serializer = InventoryCountLineBulkUpsertSerializer(data=request.data or {})
@@ -443,7 +475,11 @@ class InventorySessionLinesBulkUpsertView(APIView):
         stock_map = _current_stock_map_for_site(str(session.site_id))
         saved_lines = []
         for idx, row in enumerate(serializer.validated_data["lines"]):
-            product = get_object_or_404(SupplierProduct.objects.select_related("supplier"), pk=row["supplier_product"])
+            product = get_object_or_404(
+                SupplierProduct.objects.select_related("supplier"),
+                pk=row["supplier_product"],
+                supplier__organization_id=organization_id_for(request),
+            )
             stock_point = None
             if row.get("stock_point"):
                 stock_point = get_object_or_404(StockPoint.objects.select_related("sector"), pk=row["stock_point"], site=session.site)
@@ -494,9 +530,10 @@ class InventorySessionLinesBulkUpsertView(APIView):
 class InventorySessionLineDetailView(APIView):
     def delete(self, request, session_id, line_id):
         line = get_object_or_404(
-            InventoryCountLine.objects.select_related("session"),
+            InventoryCountLine.objects.select_related("session", "session__site"),
             pk=line_id,
             session_id=session_id,
+            session__site__organization_id=organization_id_for(request),
         )
         if line.session.status in {InventorySessionStatus.CLOSED, InventorySessionStatus.CANCELLED}:
             return Response({"detail": "session is not editable."}, status=status.HTTP_400_BAD_REQUEST)
@@ -512,6 +549,7 @@ class InventorySessionCloseView(APIView):
             .select_related("site")
             .prefetch_related("lines__supplier_product__supplier"),
             pk=session_id,
+            site__organization_id=organization_id_for(request),
         )
         if session.status == InventorySessionStatus.CLOSED:
             return Response({"detail": "session already closed."}, status=status.HTTP_400_BAD_REQUEST)
@@ -560,8 +598,7 @@ class InventoryApplyView(APIView):
 
         if not site_id:
             return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
-        if not Site.objects.filter(pk=site_id).exists():
-            return Response({"detail": "site not found."}, status=status.HTTP_400_BAD_REQUEST)
+        site = get_tenant_site(request, pk=site_id)
         if not lines:
             return Response({"detail": "lines is required."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -604,7 +641,7 @@ class InventoryApplyView(APIView):
                 continue
             movement_type = "IN" if delta > 0 else "OUT"
             InventoryMovement.objects.create(
-                site_id=site_id,
+                site=site,
                 lot=None,
                 supplier_product=None,
                 supplier_code=product_key if line.get("supplier_code") else None,
@@ -645,19 +682,22 @@ class InventoryRebuildFromPurchasingView(APIView):
         site_id = str(payload.get("site") or request.query_params.get("site") or "").strip()
         if not site_id:
             return Response({"detail": "site is required."}, status=status.HTTP_400_BAD_REQUEST)
-        if not Site.objects.filter(pk=site_id).exists():
-            return Response({"detail": "site not found."}, status=status.HTTP_400_BAD_REQUEST)
+        site = get_tenant_site(request, pk=site_id)
 
         created_goods = 0
         created_invoices = 0
         skipped_goods = 0
         skipped_invoices = 0
 
-        receipts = GoodsReceipt.objects.prefetch_related("lines").filter(site_id=site_id)
+        receipts = GoodsReceipt.objects.prefetch_related("lines").filter(site=site)
         for receipt in receipts:
             for line in receipt.lines.all():
                 ref_id = str(line.id)
-                if InventoryMovement.objects.filter(ref_type="goods_receipt_line", ref_id=ref_id).exists():
+                if InventoryMovement.objects.filter(
+                    site=site,
+                    ref_type="goods_receipt_line",
+                    ref_id=ref_id,
+                ).exists():
                     skipped_goods += 1
                     continue
                 InventoryMovement.objects.create(
@@ -675,13 +715,17 @@ class InventoryRebuildFromPurchasingView(APIView):
                 )
                 created_goods += 1
 
-        invoices = Invoice.objects.prefetch_related("lines").filter(site_id=site_id)
+        invoices = Invoice.objects.prefetch_related("lines").filter(site=site)
         for invoice in invoices:
             for line in invoice.lines.all():
                 if line.goods_receipt_line_id:
                     continue
                 ref_id = str(line.id)
-                if InventoryMovement.objects.filter(ref_type="invoice_line_fallback", ref_id=ref_id).exists():
+                if InventoryMovement.objects.filter(
+                    site=site,
+                    ref_type="invoice_line_fallback",
+                    ref_id=ref_id,
+                ).exists():
                     skipped_invoices += 1
                     continue
                 happened_at = datetime.combine(invoice.invoice_date, time.min, tzinfo=timezone.utc)

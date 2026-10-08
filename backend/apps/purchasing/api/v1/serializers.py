@@ -23,8 +23,9 @@ class AutoReconciliationSerializer(serializers.Serializer):
     )
 
     def validate_invoice_id(self, value):
+        organization_id = self.context["request"].user.organization_id
         try:
-            invoice = Invoice.objects.get(pk=value)
+            invoice = Invoice.objects.get(pk=value, site__organization_id=organization_id)
         except Invoice.DoesNotExist as exc:
             raise serializers.ValidationError("invoice_id not found.") from exc
         self.context["invoice"] = invoice
@@ -74,10 +75,17 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at", "updated_at")
 
     def validate(self, attrs):
+        organization_id = self.context["request"].user.organization_id
+        site = attrs.get("site")
         supplier = attrs.get("supplier")
         lines = attrs.get("lines", [])
         line_errors = []
         has_errors = False
+
+        if site.organization_id != organization_id:
+            raise serializers.ValidationError({"site": "site not found."})
+        if supplier.organization_id != organization_id:
+            raise serializers.ValidationError({"supplier": "supplier not found."})
 
         for line in lines:
             supplier_product = line.get("supplier_product")
@@ -152,11 +160,17 @@ class InvoiceSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at", "updated_at")
 
     def validate(self, attrs):
+        organization_id = self.context["request"].user.organization_id
         site = attrs.get("site")
         supplier = attrs.get("supplier")
         lines = attrs.get("lines", [])
         line_errors = []
         has_errors = False
+
+        if site.organization_id != organization_id:
+            raise serializers.ValidationError({"site": "site not found."})
+        if supplier.organization_id != organization_id:
+            raise serializers.ValidationError({"supplier": "supplier not found."})
 
         for line in lines:
             current_error = {}
@@ -221,6 +235,10 @@ class InvoiceGoodsReceiptMatchSerializer(serializers.ModelSerializer):
 
         invoice = invoice_line.invoice
         receipt = goods_receipt_line.receipt
+        organization_id = self.context["request"].user.organization_id
+
+        if invoice.site.organization_id != organization_id or receipt.site.organization_id != organization_id:
+            raise serializers.ValidationError({"invoice_line": "linked records not found."})
 
         if invoice.site_id != receipt.site_id:
             raise serializers.ValidationError(

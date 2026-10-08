@@ -48,6 +48,10 @@ class IntegrationDocumentSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         source = attrs.get("source", "upload")
+        request = self.context.get("request")
+        site = attrs.get("site")
+        if request and site and site.organization_id != request.user.organization_id:
+            raise serializers.ValidationError({"site": "site not found."})
         if source == "upload" and not attrs.get("file"):
             raise serializers.ValidationError({"file": "file is required when source is upload."})
         return attrs
@@ -289,6 +293,13 @@ class CleaningProcedureSerializer(serializers.ModelSerializer):
         fields = ("id", "category", "name", "steps", "notes", "is_active", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        category = attrs.get("category")
+        if request and category and category.organization_id != request.user.organization_id:
+            raise serializers.ValidationError({"category": "category not found."})
+        return attrs
+
 
 class CleaningElementAreaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -316,6 +327,22 @@ class CleaningElementSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if not request:
+            return attrs
+        organization_id = request.user.organization_id
+        site = attrs.get("site") or getattr(self.instance, "site", None)
+        category = attrs.get("category")
+        procedure = attrs.get("procedure")
+        if not site or site.organization_id != organization_id:
+            raise serializers.ValidationError({"site": "site not found."})
+        if category and category.organization_id != organization_id:
+            raise serializers.ValidationError({"category": "category not found."})
+        if procedure and procedure.organization_id != organization_id:
+            raise serializers.ValidationError({"procedure": "procedure not found."})
+        return attrs
 
     def create(self, validated_data):
         areas_data = validated_data.pop("areas", [])
@@ -373,6 +400,21 @@ class CleaningPlanSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "created_at", "updated_at")
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if not request:
+            return attrs
+        organization_id = request.user.organization_id
+        site = attrs.get("site") or getattr(self.instance, "site", None)
+        element = attrs.get("element") or getattr(self.instance, "element", None)
+        if not site or site.organization_id != organization_id:
+            raise serializers.ValidationError({"site": "site not found."})
+        if not element or element.site.organization_id != organization_id:
+            raise serializers.ValidationError({"element": "element not found."})
+        if element.site_id != site.id:
+            raise serializers.ValidationError({"element": "element must belong to the selected site."})
+        return attrs
+
 
 class CleaningPlanGenerateSerializer(serializers.Serializer):
     plan_id = serializers.UUIDField()
@@ -380,6 +422,7 @@ class CleaningPlanGenerateSerializer(serializers.Serializer):
 
 
 class CleaningBatchCompleteSerializer(serializers.Serializer):
+    site = serializers.UUIDField()
     schedule_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
 
 

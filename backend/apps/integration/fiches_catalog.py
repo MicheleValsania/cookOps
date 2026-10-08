@@ -3,6 +3,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from django.conf import settings
 from django.db import connections, transaction
 
 from apps.catalog.models import Supplier, SupplierProduct
@@ -46,7 +47,7 @@ def _normalize_uom(unit: str | None) -> str:
     return aliases.get(candidate, "pc")
 
 
-def import_supplier_catalog_from_fiches() -> dict[str, Any]:
+def import_supplier_catalog_from_fiches(organization_id) -> dict[str, Any]:
     if "fiches" not in connections.databases:
         return {"ok": False, "detail": "FICHES DB non configurato."}
 
@@ -85,12 +86,20 @@ def import_supplier_catalog_from_fiches() -> dict[str, Any]:
             except (TypeError, ValueError):
                 invalid_supplier_ids += 1
 
-            supplier = Supplier.objects.filter(name=supplier_name).first() or Supplier.find_by_normalized_name(
-                supplier_name
+            supplier = Supplier.objects.filter(
+                organization_id=organization_id,
+                name=supplier_name,
+            ).first() or Supplier.find_by_normalized_name(
+                supplier_name,
+                organization_id=organization_id,
             )
             if supplier is None:
-                create_kwargs = {"name": supplier_name, "metadata": {"source": "fiches", "fiches_supplier_id": str(source_id)}}
-                if supplier_uuid:
+                create_kwargs = {
+                    "organization_id": organization_id,
+                    "name": supplier_name,
+                    "metadata": {"source": "fiches", "fiches_supplier_id": str(source_id)},
+                }
+                if supplier_uuid and str(organization_id) == str(settings.DEFAULT_ORGANIZATION_ID):
                     create_kwargs["id"] = supplier_uuid
                 supplier = Supplier.objects.create(**create_kwargs)
                 supplier_created += 1
@@ -139,7 +148,7 @@ def import_supplier_catalog_from_fiches() -> dict[str, Any]:
                     "allergens": [],
                     "metadata": metadata,
                 }
-                if product_uuid:
+                if product_uuid and str(organization_id) == str(settings.DEFAULT_ORGANIZATION_ID):
                     create_kwargs["id"] = product_uuid
                 SupplierProduct.objects.create(**create_kwargs)
                 product_created += 1

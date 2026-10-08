@@ -3,6 +3,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from apps.integration.import_batches import complete_batch, fail_batch, find_completed_batch, start_batch
+from apps.core.api.tenancy import organization_id_for
 from apps.pos.api.v1.serializers import SalesEventDailyImportSerializer
 from apps.pos.models import SalesEventDaily
 
@@ -11,19 +12,23 @@ class SalesEventDailyImportViewSet(mixins.CreateModelMixin, viewsets.GenericView
     queryset = SalesEventDaily.objects.all()
     serializer_class = SalesEventDailyImportSerializer
 
+    def get_queryset(self):
+        return super().get_queryset().filter(site__organization_id=organization_id_for(self.request))
+
     def create(self, request, *args, **kwargs):
+        organization_id = organization_id_for(request)
         source = "api"
         import_type = "pos_sales_daily"
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
             raise ValidationError({"idempotency_key": "Idempotency-Key header is required."})
 
-        existing = find_completed_batch(source, import_type, idempotency_key)
+        existing = find_completed_batch(organization_id, source, import_type, idempotency_key)
         if existing:
             result = existing.result or {}
             return Response(result.get("data", {}), status=result.get("status_code", status.HTTP_200_OK))
 
-        batch = start_batch(source, import_type, idempotency_key, request.data)
+        batch = start_batch(organization_id, source, import_type, idempotency_key, request.data)
 
         try:
             serializer = self.get_serializer(data=request.data)

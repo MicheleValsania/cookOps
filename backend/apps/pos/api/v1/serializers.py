@@ -26,9 +26,10 @@ class SalesEventDailyImportSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         site_id = attrs.pop("site_id", None)
         pos_source_id = attrs.pop("pos_source_id", None)
+        organization_id = self.context["request"].user.organization_id
 
         try:
-            site = Site.objects.get(pk=site_id)
+            site = Site.objects.get(pk=site_id, organization_id=organization_id)
         except Site.DoesNotExist as exc:
             raise serializers.ValidationError({"site_id": "Invalid site_id."}) from exc
 
