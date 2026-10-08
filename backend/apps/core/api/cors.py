@@ -4,7 +4,7 @@ from django.http import HttpResponse
 
 class SimpleCORSMiddleware:
     allow_methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-    allow_headers = "Content-Type, X-API-Key, Idempotency-Key"
+    allow_headers = "Content-Type, Authorization, X-API-Key, Idempotency-Key"
 
     def __init__(self, get_response):
         self.get_response = get_response

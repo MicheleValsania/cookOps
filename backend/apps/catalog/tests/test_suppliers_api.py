@@ -37,7 +37,7 @@ class SupplierApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("name", response.json())
+        self.assertIn("name", response.json()["field_errors"])
 
     def test_list_supplier_products_returns_200(self):
         supplier = Supplier.objects.create(name="Supplier A")

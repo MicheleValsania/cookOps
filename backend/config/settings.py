@@ -1,6 +1,9 @@
 import os
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse, unquote
+
+from django.core.exceptions import ImproperlyConfigured
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,8 +24,10 @@ def load_dotenv(path: Path) -> None:
 
 load_dotenv(BASE_DIR / ".env")
 
+DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
-DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
+if not DEBUG and SECRET_KEY == "dev-only-change-me":
+    raise ImproperlyConfigured("DJANGO_SECRET_KEY must be configured when DJANGO_DEBUG is false.")
 USE_X_FORWARDED_HOST = os.getenv("DJANGO_USE_X_FORWARDED_HOST", "true").lower() == "true"
 if os.getenv("DJANGO_TRUST_X_FORWARDED_PROTO", "true").lower() == "true":
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -145,9 +150,18 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 COOKOPS_API_KEYS = [
     item.strip()
-    for item in os.getenv("COOKOPS_API_KEYS", "dev-api-key").split(",")
+    for item in os.getenv("COOKOPS_API_KEYS", "dev-api-key" if DEBUG else "").split(",")
     if item.strip()
 ]
+if not DEBUG and not COOKOPS_API_KEYS:
+    raise ImproperlyConfigured("COOKOPS_API_KEYS must be configured when DJANGO_DEBUG is false.")
+COOKOPS_SESSION_TTL_SECONDS = int(os.getenv("COOKOPS_SESSION_TTL_SECONDS", "28800"))
+
+DEFAULT_ORGANIZATION_ID = uuid.UUID(
+    os.getenv("DEFAULT_ORGANIZATION_ID", "00000000-0000-4000-8000-000000000001")
+)
+DEFAULT_ORGANIZATION_SLUG = os.getenv("DEFAULT_ORGANIZATION_SLUG", "chefside-france").strip()
+DEFAULT_ORGANIZATION_NAME = os.getenv("DEFAULT_ORGANIZATION_NAME", "ChefSide France").strip()
 
 CORS_ALLOWED_ORIGINS = [
     item.strip()

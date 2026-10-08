@@ -6,8 +6,13 @@ from apps.catalog.models import Supplier, SupplierProduct
 
 
 class SupplierViewSet(viewsets.ModelViewSet):
-    queryset = Supplier.objects.all()
     serializer_class = SupplierSerializer
+
+    def get_queryset(self):
+        return Supplier.objects.filter(organization_id=self.request.user.organization_id).order_by("name")
+
+    def perform_create(self, serializer):
+        serializer.save(organization_id=self.request.user.organization_id)
 
 
 class SupplierProductViewSet(
@@ -22,7 +27,7 @@ class SupplierProductViewSet(
     def get_supplier(self) -> Supplier:
         supplier_id = self.kwargs.get("supplier_id")
         try:
-            return Supplier.objects.get(pk=supplier_id)
+            return Supplier.objects.get(pk=supplier_id, organization_id=self.request.user.organization_id)
         except Supplier.DoesNotExist as exc:
             raise NotFound("Supplier not found.") from exc
 
@@ -37,7 +42,9 @@ class SupplierProductCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewS
     serializer_class = SupplierProductSerializer
 
     def get_queryset(self):
-        queryset = SupplierProduct.objects.select_related("supplier").order_by("name")
+        queryset = SupplierProduct.objects.select_related("supplier").filter(
+            supplier__organization_id=self.request.user.organization_id
+        ).order_by("name")
         active_only = self.request.query_params.get("active")
         if active_only in {"1", "true", "True"}:
             queryset = queryset.filter(active=True)

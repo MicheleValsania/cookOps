@@ -1,12 +1,26 @@
 ﻿from django.contrib import admin
 
-from apps.core.models import ServiceMenuEntry, Site
+from apps.core.models import Organization, OrganizationMembership, ServiceMenuEntry, Site
+
+
+@admin.register(Organization)
+class OrganizationAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "is_active", "created_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "slug")
+
+
+@admin.register(OrganizationMembership)
+class OrganizationMembershipAdmin(admin.ModelAdmin):
+    list_display = ("organization", "user", "role", "is_active", "created_at")
+    list_filter = ("organization", "role", "is_active")
+    search_fields = ("organization__name", "user__username", "user__email")
 
 
 @admin.register(Site)
 class SiteAdmin(admin.ModelAdmin):
-    list_display = ("name", "code", "is_active", "created_at")
-    list_filter = ("is_active",)
+    list_display = ("name", "code", "organization", "is_active", "created_at")
+    list_filter = ("organization", "is_active")
     search_fields = ("name", "code")
 
 

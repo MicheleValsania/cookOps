@@ -167,6 +167,39 @@ li {
   gap: 14px;
 }
 
+.landing-login {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 420px);
+}
+
+.landing-login label {
+  color: #0f2644;
+  font-weight: 700;
+}
+
+.landing-login input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 38, 68, 0.24);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #0f2644;
+  font: inherit;
+}
+
+.landing-login input:focus {
+  border-color: #0f2644;
+  box-shadow: 0 0 0 3px rgba(15, 38, 68, 0.12);
+  outline: none;
+}
+
+.landing-login-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 14px;
+}
+
 .landing-primary-btn,
 .landing-secondary-btn {
   border: none;

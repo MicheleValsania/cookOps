@@ -5,7 +5,9 @@ from apps.catalog.models import Supplier, SupplierProduct
 
 class SupplierSerializer(serializers.ModelSerializer):
     def validate_name(self, value):
-        duplicate = Supplier.find_by_normalized_name(value)
+        request = self.context.get("request")
+        organization_id = getattr(getattr(request, "user", None), "organization_id", None)
+        duplicate = Supplier.find_by_normalized_name(value, organization_id=organization_id)
         if duplicate and (not self.instance or duplicate.id != self.instance.id):
             raise serializers.ValidationError(
                 f"A supplier with equivalent normalized name already exists: {duplicate.name}."

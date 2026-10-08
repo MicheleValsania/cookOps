@@ -2,7 +2,10 @@ import re
 import unicodedata
 import uuid
 
+from django.conf import settings
 from django.db import models
+
+from apps.core.models import Organization
 
 
 def normalize_supplier_name(value: str | None) -> str:
@@ -19,7 +22,13 @@ def normalize_supplier_name(value: str | None) -> str:
 
 class Supplier(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=255, unique=True)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="suppliers",
+        default=settings.DEFAULT_ORGANIZATION_ID,
+    )
+    name = models.CharField(max_length=255)
     vat_number = models.CharField(max_length=64, blank=True, null=True)
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -28,16 +37,22 @@ class Supplier(models.Model):
     class Meta:
         db_table = "catalog_supplier"
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "name"], name="uq_catalog_supplier_organization_name")
+        ]
 
     def __str__(self) -> str:
         return self.name
 
     @classmethod
-    def find_by_normalized_name(cls, value: str | None):
+    def find_by_normalized_name(cls, value: str | None, organization_id=None):
         normalized = normalize_supplier_name(value)
         if not normalized:
             return None
-        for candidate in cls.objects.all():
+        queryset = cls.objects.all()
+        if organization_id:
+            queryset = queryset.filter(organization_id=organization_id)
+        for candidate in queryset:
             if normalize_supplier_name(candidate.name) == normalized:
                 return candidate
         return None

@@ -1,9 +1,13 @@
 ﻿from collections import defaultdict
 from datetime import date
 from decimal import Decimal
+import hashlib
 import re
+import secrets
 import unicodedata
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -20,6 +24,7 @@ from apps.core.api.v1.serializers import (
 from apps.core.models import ServiceMenuEntry, Site
 from apps.core.services.service_ingredients import extract_ingredients, normalize_qty_unit
 from apps.integration.models import RecipeSnapshot
+from apps.core.api.tokens import issue_access_token
 
 PERMANENT_SERVICE_DATE = date(1900, 1, 1)
 SCHEDULE_PERMANENT = "permanent"
@@ -40,30 +45,91 @@ class HealthView(APIView):
         return Response({"status": "ok", "service": "cookops", "version": "v1"})
 
 
+class LegacyLoginView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        client_ip = forwarded_for.split(",", 1)[0].strip() or request.META.get("REMOTE_ADDR", "unknown")
+        attempt_key = f"cookops-login:{hashlib.sha256(client_ip.encode('utf-8')).hexdigest()}"
+        attempts = int(cache.get(attempt_key, 0) or 0)
+        if attempts >= 5:
+            return Response(
+                {"detail": "Too many login attempts. Try again later."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        password = str((request.data or {}).get("password") or "")
+        matched = any(
+            secrets.compare_digest(password.encode("utf-8"), key.encode("utf-8"))
+            for key in settings.COOKOPS_API_KEYS
+        )
+        if not matched:
+            cache.set(attempt_key, attempts + 1, timeout=15 * 60)
+            return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        cache.delete(attempt_key)
+        token = issue_access_token(
+            organization_id=settings.DEFAULT_ORGANIZATION_ID,
+            role="owner",
+            kind="legacy",
+        )
+        return Response(
+            {
+                "token": token,
+                "expires_in": settings.COOKOPS_SESSION_TTL_SECONDS,
+                "organization": {
+                    "id": str(settings.DEFAULT_ORGANIZATION_ID),
+                    "name": settings.DEFAULT_ORGANIZATION_NAME,
+                    "slug": settings.DEFAULT_ORGANIZATION_SLUG,
+                },
+            }
+        )
+
+
+class AuthStatusView(APIView):
+    def get(self, request):
+        return Response(
+            {
+                "authenticated": True,
+                "organization": {
+                    "id": str(request.user.organization_id),
+                    "name": request.user.organization.name,
+                    "slug": request.user.organization.slug,
+                },
+                "role": request.user.role,
+                "kind": request.user.kind,
+            }
+        )
+
+
 class SiteListView(APIView):
     def get(self, request):
         include_inactive = request.query_params.get("include_inactive") in {"1", "true", "True"}
-        queryset = Site.objects.all() if include_inactive else Site.objects.filter(is_active=True)
+        queryset = Site.objects.filter(organization_id=request.user.organization_id)
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
         queryset = queryset.order_by("name")
         return Response(SiteSerializer(queryset, many=True).data)
 
     def post(self, request):
         serializer = SiteWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        site = serializer.save()
+        site = serializer.save(organization_id=request.user.organization_id)
         return Response(SiteSerializer(site).data, status=status.HTTP_201_CREATED)
 
 
 class SiteDetailView(APIView):
     def patch(self, request, site_id):
-        site = get_object_or_404(Site, id=site_id)
+        site = get_object_or_404(Site, id=site_id, organization_id=request.user.organization_id)
         serializer = SiteWriteSerializer(site, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(SiteSerializer(site).data)
 
     def delete(self, request, site_id):
-        site = get_object_or_404(Site, id=site_id)
+        site = get_object_or_404(Site, id=site_id, organization_id=request.user.organization_id)
         confirmation = (request.data or {}).get("confirm_text", "")
         if confirmation != "ELIMINA DEFINITIVAMENTE":
             return Response(
@@ -281,6 +347,7 @@ class ServiceMenuEntrySyncView(APIView):
         if not parsed_service_date:
             return Response({"detail": "Query param 'date' must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
 
+        get_object_or_404(Site, id=site_id, organization_id=request.user.organization_id)
         effective_entries = self._get_effective_entries(site_id, parsed_service_date)
         self._enrich_entries_recipe_category(effective_entries)
         return Response({"count": len(effective_entries), "entries": ServiceMenuEntrySerializer(effective_entries, many=True).data})
@@ -290,7 +357,11 @@ class ServiceMenuEntrySyncView(APIView):
         serializer = ServiceMenuEntrySyncSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        site = get_object_or_404(Site, id=serializer.validated_data["site_id"])
+        site = get_object_or_404(
+            Site,
+            id=serializer.validated_data["site_id"],
+            organization_id=request.user.organization_id,
+        )
         service_date = serializer.validated_data["service_date"]
         entries = serializer.validated_data["entries"]
 
@@ -634,6 +705,7 @@ class ServiceIngredientsView(APIView):
         if not parsed_service_date:
             return Response({"detail": "Query param 'date' must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
 
+        get_object_or_404(Site, id=site_id, organization_id=request.user.organization_id)
         entries = ServiceMenuEntrySyncView._get_effective_entries(site_id, parsed_service_date)
         if not entries:
             return Response({"rows": [], "warnings": ["Nessuna voce menu attiva per data/sede selezionata."]})

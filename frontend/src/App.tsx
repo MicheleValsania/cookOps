@@ -1,12 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { apiFetch, getApiBase, getDefaultApiKey, setDefaultApiKey } from "./api/client";
+import { apiFetch, clearAccessToken, getAccessToken, getApiBase, getAuthHeaders, loginWithPassword } from "./api/client";
 import { HaccpWorkspace } from "./components/HaccpWorkspace";
 import { TraceabilityWorkspace } from "./components/TraceabilityWorkspace";
 import { getInitialLang, LANG_STORAGE_KEY, t as translate, type Lang } from "./i18n";
 
 const FICHES_RECETTES_URL = (import.meta.env.VITE_FICHES_RECETTES_URL ?? "").toString().trim();
 const LANDING_FICHES_FALLBACK = "https://fiches-recettes.netlify.app";
-const LANDING_SKIP_STORAGE_KEY = "cookops_landing_skip_v1";
 
 type NavKey =
   | "dashboard"
@@ -1114,17 +1113,16 @@ function normalizeHaccpReconciliationOverview(body: unknown, context?: { siteId?
 
 function App() {
   const [lang, setLang] = useState<Lang>(() => getInitialLang());
-  const [isLandingDismissed, setIsLandingDismissed] = useState(
-    () => localStorage.getItem(LANDING_SKIP_STORAGE_KEY) === "true"
-  );
-  const [isLandingSkipChecked, setIsLandingSkipChecked] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(getAccessToken()));
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [isLoginPending, setIsLoginPending] = useState(false);
   const [nav, setNav] = useState<NavKey>("dashboard");
   const [isTraceabilityReconciliationPage, setIsTraceabilityReconciliationPage] = useState(
     () => parseTraceabilityReconciliationHash(window.location.hash).active
   );
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSidebarOpenMobile, setIsSidebarOpenMobile] = useState(false);
-  const [apiKey, setApiKey] = useState(getDefaultApiKey());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [siteId, setSiteId] = useState(() => localStorage.getItem(SELECTED_SITE_STORAGE_KEY) ?? "");
   const [sites, setSites] = useState<SiteItem[]>([]);
@@ -1389,10 +1387,6 @@ function App() {
   );
 
   useEffect(() => {
-    setDefaultApiKey(apiKey);
-  }, [apiKey]);
-
-  useEffect(() => {
     localStorage.setItem(LANG_STORAGE_KEY, lang);
   }, [lang]);
 
@@ -1582,9 +1576,8 @@ function App() {
     let active = true;
     let nextBlobUrl = "";
     setIsOriginalDocumentLoading(true);
-    const apiKey = getDefaultApiKey();
     fetch(resolvedUrl, {
-      headers: apiKey ? { "X-API-Key": apiKey } : {},
+      headers: getAuthHeaders(),
     })
       .then((res) => {
         if (!res.ok) throw new Error(`preview_http_${res.status}`);
@@ -5689,9 +5682,8 @@ function App() {
       return;
     }
     try {
-      const authApiKey = getDefaultApiKey();
       const response = await fetch(resolvedUrl, {
-        headers: authApiKey ? { "X-API-Key": authApiKey } : {},
+        headers: getAuthHeaders(),
       });
       if (!response.ok) {
         throw new Error(`pdf_http_${response.status}`);
@@ -6546,12 +6538,31 @@ function App() {
   }
 
   const landingFichesUrl = FICHES_RECETTES_URL || LANDING_FICHES_FALLBACK;
-  const showLanding = !isLandingDismissed;
-  const enterApp = () => {
-    if (isLandingSkipChecked) {
-      localStorage.setItem(LANDING_SKIP_STORAGE_KEY, "true");
+  const showLanding = !isAuthenticated;
+  const enterApp = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!loginPassword.trim() || isLoginPending) return;
+    setIsLoginPending(true);
+    setLoginError("");
+    try {
+      await loginWithPassword(loginPassword);
+      setLoginPassword("");
+      setIsAuthenticated(true);
+      window.location.reload();
+    } catch (error) {
+      setLoginError(
+        error instanceof Error && error.message === "rate_limited"
+          ? "Troppi tentativi. Attendi qualche minuto e riprova."
+          : "Password non valida."
+      );
+    } finally {
+      setIsLoginPending(false);
     }
-    setIsLandingDismissed(true);
+  };
+
+  const logout = () => {
+    clearAccessToken();
+    setIsAuthenticated(false);
   };
 
   return showLanding ? (
@@ -6573,22 +6584,26 @@ function App() {
             Workspace operativo per gestione menu, acquisti, inventario e tracciabilita.
           </p>
         </div>
-        <div className="landing-actions">
-          <button type="button" className="landing-primary-btn" onClick={enterApp}>
-            Entra in CookOps
+        <form className="landing-login" onSubmit={enterApp}>
+          <label htmlFor="cookops-password">Password</label>
+          <input
+            id="cookops-password"
+            type="password"
+            value={loginPassword}
+            onChange={(event) => setLoginPassword(event.target.value)}
+            autoComplete="current-password"
+            autoFocus
+          />
+          {loginError ? <p className="landing-login-error" role="alert">{loginError}</p> : null}
+          <button type="submit" className="landing-primary-btn" disabled={isLoginPending || !loginPassword.trim()}>
+            {isLoginPending ? "Accesso..." : "Entra in CookOps"}
           </button>
+        </form>
+        <div className="landing-actions">
           <a className="landing-secondary-btn" href={landingFichesUrl} target="_blank" rel="noreferrer">
             Apri Fiches Recettes
           </a>
         </div>
-        <label className="landing-checkbox">
-          <input
-            type="checkbox"
-            checked={isLandingSkipChecked}
-            onChange={(e) => setIsLandingSkipChecked(e.target.checked)}
-          />
-          Non mostrare piu questa pagina
-        </label>
       </main>
       <footer className="landing-footer">
         <span>chefside.fr</span>
@@ -6626,6 +6641,9 @@ function App() {
           </select>
           <button type="button" className="nav-gear-btn" onClick={() => setIsSettingsOpen(true)} aria-label={t("app.settings")}>
             {t("app.configShort")}
+          </button>
+          <button type="button" className="nav-gear-btn" onClick={logout} aria-label="Disconnetti">
+            Esci
           </button>
         </div>
       </header>
@@ -9544,8 +9562,6 @@ function App() {
             </button>
             <h2>{t("settings.title")}</h2>
             <p className="params-note">{notice}</p>
-            <label>{t("settings.apiKey")}</label>
-            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
             <button type="button" onClick={loadSites}>{t("settings.refreshSites")}</button>
             <div className="site-admin-grid">
               <form onSubmit={onCreateSite}>

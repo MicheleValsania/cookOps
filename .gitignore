@@ -12,6 +12,7 @@ backend/.venv/
 backend/.env
 .env
 backend/media/
+backups/
 
 # IDE
 .vscode/

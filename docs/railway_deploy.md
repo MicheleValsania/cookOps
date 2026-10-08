@@ -46,6 +46,10 @@ Both services should share the same variables:
 - `POSTGRES_HOST`
 - `POSTGRES_PORT`
 - `COOKOPS_API_KEYS`
+- `COOKOPS_SESSION_TTL_SECONDS=28800`
+- `DEFAULT_ORGANIZATION_ID=00000000-0000-4000-8000-000000000001`
+- `DEFAULT_ORGANIZATION_SLUG=chefside-france`
+- `DEFAULT_ORGANIZATION_NAME=ChefSide France`
 - `GOOGLE_DRIVE_FOLDER_ID`
 - `GOOGLE_DRIVE_OAUTH_CLIENT_ID`
 - `GOOGLE_DRIVE_OAUTH_CLIENT_SECRET`
@@ -74,6 +78,10 @@ When you are ready to deploy:
 6. Set the start command to `bash railway/run-drive-sync-cron.sh`
 7. Set a cron schedule in Railway UI
 8. Reuse the same database and Google Drive variables
+
+Before the first tenancy deployment, create and verify a PostgreSQL backup. The web start command runs migrations automatically and assigns every existing site and supplier to `ChefSide France`; it does not delete or duplicate operational data.
+
+Deploy the backend before the frontend in the same maintenance session. During the short interval, existing integrations continue to authenticate with `X-API-Key`; the new frontend exchanges the same server-side credential for a signed browser session.
 
 ## Why this layout
 

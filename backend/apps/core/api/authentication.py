@@ -1,12 +1,55 @@
 ﻿from django.conf import settings
-from django.contrib.auth.models import AnonymousUser
+from dataclasses import dataclass
+
 from rest_framework import authentication, exceptions
+
+from apps.core.models import Organization
+from apps.core.api.tokens import read_access_token
+
+
+@dataclass(frozen=True)
+class CookOpsPrincipal:
+    organization: Organization
+    role: str = "owner"
+    kind: str = "legacy_api_key"
+
+    @property
+    def is_authenticated(self) -> bool:
+        return True
+
+    @property
+    def organization_id(self):
+        return self.organization.id
 
 
 class ApiKeyAuthentication(authentication.BaseAuthentication):
     header_name = "HTTP_X_API_KEY"
 
+    def authenticate_header(self, request):
+        return "Bearer"
+
     def authenticate(self, request):
+        authorization = request.META.get("HTTP_AUTHORIZATION", "")
+        if authorization.startswith("Bearer "):
+            payload = read_access_token(authorization[7:].strip())
+            if not payload:
+                raise exceptions.AuthenticationFailed("Invalid or expired session.")
+            try:
+                organization = Organization.objects.get(
+                    id=payload.get("organization_id"),
+                    is_active=True,
+                )
+            except (Organization.DoesNotExist, ValueError, TypeError) as exc:
+                raise exceptions.AuthenticationFailed("Session organization is unavailable.") from exc
+            return (
+                CookOpsPrincipal(
+                    organization=organization,
+                    role=str(payload.get("role") or "viewer"),
+                    kind=str(payload.get("kind") or "session"),
+                ),
+                payload,
+            )
+
         api_key = request.META.get(self.header_name)
         if not api_key:
             return None
@@ -15,4 +58,12 @@ class ApiKeyAuthentication(authentication.BaseAuthentication):
         if api_key not in valid_keys:
             raise exceptions.AuthenticationFailed("Invalid API key.")
 
-        return (AnonymousUser(), api_key)
+        try:
+            organization = Organization.objects.get(
+                id=settings.DEFAULT_ORGANIZATION_ID,
+                is_active=True,
+            )
+        except Organization.DoesNotExist as exc:
+            raise exceptions.AuthenticationFailed("Default organization is not configured.") from exc
+
+        return (CookOpsPrincipal(organization=organization), api_key)
