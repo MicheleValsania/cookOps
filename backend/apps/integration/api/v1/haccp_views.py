@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integration.models import DocumentType, IntegrationDocument
-from apps.core.api.tenancy import get_tenant_site
+from apps.core.api.tenancy import get_tenant_site, organization_id_for
 from apps.integration.api.v1.serializers import (
     HaccpColdPointSerializer,
     HaccpLabelProfileSerializer,
@@ -22,7 +22,10 @@ from apps.purchasing.models import GoodsReceiptLine, InvoiceGoodsReceiptMatch, I
 
 def _pass_through_headers(request: HttpRequest):
     idempotency_key = request.headers.get("Idempotency-Key")
-    return {"Idempotency-Key": idempotency_key} if idempotency_key else {}
+    headers = {"X-Organization-ID": str(organization_id_for(request))}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
 
 
 def _proxy_error(exc: TracciaClientError):

@@ -31,11 +31,18 @@ def _headers(extra_headers: dict | None = None):
 
 
 class TracciaClient:
-    def __init__(self):
+    def __init__(self, organization_id=None):
         if not settings.TRACCIA_API_BASE_URL:
             raise TracciaClientError(503, {"detail": "TRACCIA_API_BASE_URL is not configured."})
         self.base_url = settings.TRACCIA_API_BASE_URL
         self.timeout = float(settings.TRACCIA_TIMEOUT_SECONDS)
+        self.organization_id = str(organization_id or "").strip()
+
+    def _headers(self, headers: dict | None = None):
+        scoped_headers = dict(headers or {})
+        if self.organization_id:
+            scoped_headers["X-Organization-ID"] = self.organization_id
+        return scoped_headers
 
     def _build_url(self, path: str, params: dict | None = None):
         clean_path = path if path.startswith("/") else f"/{path}"
@@ -48,7 +55,7 @@ class TracciaClient:
 
     def request_json(self, method: str, path: str, params: dict | None = None, data=None, headers: dict | None = None):
         payload = None
-        req_headers = _headers(headers)
+        req_headers = _headers(self._headers(headers))
         if data is not None:
             payload = json.dumps(data).encode("utf-8")
             req_headers["Content-Type"] = "application/json"
@@ -74,7 +81,7 @@ class TracciaClient:
         req = request.Request(
             url=self._build_url(path, params),
             method=method.upper(),
-            headers=_headers(headers),
+            headers=_headers(self._headers(headers)),
         )
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:

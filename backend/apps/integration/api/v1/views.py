@@ -1244,7 +1244,7 @@ class TracciaAssetImportView(APIView):
         )
 
         try:
-            client = TracciaClient()
+            client = TracciaClient(organization_id_for(request))
             _status_code, payload = client.request_json(
                 "GET",
                 "/api/v1/haccp/assets/",
@@ -1669,7 +1669,7 @@ def _sync_validated_label_capture_to_traccia(document: IntegrationDocument):
     supplier_lot_code = _pick_first(payload, "supplier_lot_code", "lot_code", "lot")
     internal_lot_code = _pick_first(payload, "origin_lot_code", "source_lot_code", "internal_lot_code")
     product_guess = _pick_first(payload, "product_guess", "product_name", "label") or document.filename
-    client = TracciaClient()
+    client = TracciaClient(document.site.organization_id)
     _, sync_payload = client.request_json(
         "POST",
         "/api/v1/haccp/traceability-validations/",

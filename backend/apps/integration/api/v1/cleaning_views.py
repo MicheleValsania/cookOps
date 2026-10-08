@@ -291,7 +291,7 @@ class CleaningPlanGenerateView(APIView):
         steps = element.procedure.steps if element.procedure_id else []
         sector_name = plan.sector_name or ""
 
-        client = TracciaClient()
+        client = TracciaClient(organization_id_for(request))
         existing_keys: set[str] = set()
         duplicate_ids: list[str] = []
         try:
@@ -375,7 +375,7 @@ class CleaningBatchCompleteView(APIView):
         serializer.is_valid(raise_exception=True)
         get_tenant_site(request, pk=serializer.validated_data["site"])
         schedule_ids: Iterable[str] = serializer.validated_data["schedule_ids"]
-        client = TracciaClient()
+        client = TracciaClient(organization_id_for(request))
         completed = 0
         errors = []
         for schedule_id in schedule_ids:
